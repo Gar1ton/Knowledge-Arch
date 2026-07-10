@@ -1,10 +1,11 @@
 #!/bin/bash
 # 一键停止、清理缓存、重新编译、同步并后台启动前后端的开发调试脚本。
 #
-# 用法：bash rebuild.sh [--standalone] [--data-dir DIR] [--tests] [--build-only]
-#   （默认）      内存后端 tests/run_webui.py + next dev 热重载（与插件时代行为一致）
-#   --standalone  后端改为真实独立应用（python3 -m ka_standalone serve），前端仍 next dev
-#   --data-dir    --standalone 模式的数据目录（默认 ~/.knowledge-arch）
+# 用法：bash rebuild.sh [--memory] [--data-dir DIR] [--tests] [--build-only]
+#   （默认）      后端 = 真实独立应用（python3 -m ka_standalone serve）+ next dev 热重载
+#   --memory      后端改为内存测试桩 tests/run_webui.py（旧插件开发链路，接口对换调试用）
+#   --standalone  同默认（兼容别名）
+#   --data-dir    独立应用模式的数据目录（默认 ~/.knowledge-arch）
 #   --tests       构建前先跑 python -m pytest tests/backend（红了就不拉起服务）
 #   --build-only  只做 编译前端 → 同步 pages/，不启动任何服务（CI/发布前刷新产物用）
 
@@ -24,17 +25,18 @@ LOCAL_FRONTEND_URL="http://127.0.0.1:${FRONTEND_PORT}"
 PYTHON_REQUIREMENTS="requirements.txt"
 PYTHON_DEPS_STAMP="/tmp/kr-python-deps.stamp"
 
-STANDALONE=0
+STANDALONE=1
 BUILD_ONLY=0
 RUN_TESTS=0
 STANDALONE_DATA_DIR=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --standalone) STANDALONE=1 ;;
+    --memory) STANDALONE=0 ;;
     --data-dir) shift; STANDALONE_DATA_DIR="${1:-}" ;;
     --tests) RUN_TESTS=1 ;;
     --build-only) BUILD_ONLY=1 ;;
-    *) error "未知参数：$1（支持 --standalone / --data-dir DIR / --tests / --build-only）"; exit 1 ;;
+    *) error "未知参数：$1（支持 --memory / --standalone / --data-dir DIR / --tests / --build-only）"; exit 1 ;;
   esac
   shift
 done

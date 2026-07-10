@@ -659,9 +659,9 @@ const MOCK_ASK: AskResult = {
 // 认证 Auth
 // ─────────────────────────────────────────────────────────────
 
-export async function getAuth(): Promise<{ logged_in: boolean }> {
-  if (isMock()) return { logged_in: true };
-  return apiFetch<{ logged_in: boolean }>("/api/auth");
+export async function getAuth(): Promise<{ logged_in: boolean; shell?: string }> {
+  if (isMock()) return { logged_in: true, shell: "plugin" };
+  return apiFetch<{ logged_in: boolean; shell?: string }>("/api/auth");
 }
 
 export async function login(username: string, password: string): Promise<void> {
@@ -1173,9 +1173,9 @@ export interface AgentChatEvent {
   sources?: AskSource[];
 }
 
-export async function getChatAgentInfo(): Promise<{ available: boolean }> {
-  if (isMock()) return { available: false };
-  return apiFetch<{ available: boolean }>("/api/chat/agent/info");
+export async function getChatAgentInfo(): Promise<{ available: boolean; llm_ready?: boolean }> {
+  if (isMock()) return { available: false, llm_ready: false };
+  return apiFetch<{ available: boolean; llm_ready?: boolean }>("/api/chat/agent/info");
 }
 
 /** POST /api/chat/agent 的 SSE 流；每个事件回调 onEvent，连接结束时返回。 */

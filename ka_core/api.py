@@ -480,8 +480,16 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin):
         self._chat_agent = agent
 
     def chat_agent_available(self) -> bool:
-        """对话 Agent 是否可用（独立壳 + 主 LLM 支持 chat_stream 时为 True）。"""
+        """对话 Agent 是否装配（standalone 壳恒装配；插件壳一般不装配）。"""
         return getattr(self, "_chat_agent", None) is not None
+
+    def chat_agent_info(self) -> dict[str, Any]:
+        """对话 Agent 可用性详情：available（已装配）+ llm_ready（主模型已配置）。"""
+        agent = getattr(self, "_chat_agent", None)
+        return {
+            "available": agent is not None,
+            "llm_ready": bool(getattr(agent, "llm_ready", False)) if agent else False,
+        }
 
     def chat_agent_stream(self, message: str, conversation_id: str) -> Any:
         """委派对话 Agent 事件流（SSE 载荷由 ka_web 原样转发）。"""

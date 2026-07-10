@@ -139,13 +139,49 @@ def _tool_schemas() -> list[dict[str, Any]]:
     ]
 
 
-class ChatAgentService:
-    """独立版对话 Agent：命令分发 + 注入 + 工具循环（构造器注入，自身无状态存储）。"""
+_LLM_NOT_CONFIGURED_TEXT = (
+    "主模型尚未配置，暂时无法进行自然语言对话。\n\n"
+    "请点击右上角「控制台 →」，在 设置 → 主模型（OpenAI 兼容） 填写端点 base_url 与模型名"
+    "（API Key 经环境变量 KR_MAIN_LLM_API_KEY 注入），保存后回到本页即可对话，无需重启。\n"
+    "（/ka 运营命令不依赖主模型，现在就可以使用，例如 /ka status。）"
+)
 
-    def __init__(self, initializer: PluginInitializer, llm_adapter: Any) -> None:
+
+class ChatAgentService:
+    """独立版对话 Agent：命令分发 + 注入 + 工具循环（构造器注入，自身无状态存储）。
+
+    主 LLM 二选一注入：``llm_adapter`` 固定适配器（测试/插件场景），或 ``llm_factory``
+    惰性工厂（独立壳——每轮对话按最新持久化配置解析，设置页保存 main_llm 后即刻生效）。
+    /ka 命令通路不依赖主 LLM，未配置时仍可用。
+    """
+
+    def __init__(
+        self,
+        initializer: PluginInitializer,
+        llm_adapter: Any | None = None,
+        *,
+        llm_factory: Any | None = None,
+    ) -> None:
         self._init = initializer
         self._llm = llm_adapter  # 须支持 chat_stream(messages, tools=...)
+        self._llm_factory = llm_factory
         self._handler = EventHandler(initializer)
+
+    def _resolve_llm(self) -> Any | None:
+        if self._llm is not None:
+            return self._llm
+        if self._llm_factory is not None:
+            try:
+                return self._llm_factory()
+            except Exception as exc:  # noqa: BLE001 - 工厂失败按未配置处理并记日志
+                logger.error("chat agent llm factory failed: %s", exc)
+        return None
+
+    @property
+    def llm_ready(self) -> bool:
+        """主 LLM 是否就绪（决定自然语言通路可用性；/ka 命令不受影响）。"""
+        adapter = self._resolve_llm()
+        return adapter is not None and hasattr(adapter, "chat_stream")
 
     # ── 入口 ─────────────────────────────────────────────────────
 
@@ -230,12 +266,19 @@ class ChatAgentService:
     async def _agent_stream(
         self, text: str, conversation_id: str
     ) -> AsyncIterator[dict[str, Any]]:
+        llm = self._resolve_llm()
+        if llm is None or not hasattr(llm, "chat_stream"):
+            yield await self._emit_assistant(
+                conversation_id, _LLM_NOT_CONFIGURED_TEXT, mode="agent"
+            )
+            return
+
         messages = await self._build_messages(text, conversation_id)
         tools = _tool_schemas()
 
         for _ in range(_MAX_TOOL_ROUNDS):
             final: dict[str, Any] | None = None
-            async for event in self._llm.chat_stream(messages, tools=tools):
+            async for event in llm.chat_stream(messages, tools=tools):
                 if event.get("type") == "delta":
                     yield {"type": "delta", "text": event.get("text", "")}
                 elif event.get("type") == "final":

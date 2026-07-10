@@ -4,7 +4,7 @@ import React, { useEffect, useState, useCallback, useRef } from "react";
 import { ToastProvider } from "@/components/ui/Toast";
 import { I18nContext, Lang, makeT } from "@/lib/i18n";
 import { initColorTheme } from "@/lib/theme";
-import { getAuth, getChatAgentInfo } from "@/lib/api";
+import { getAuth } from "@/lib/api";
 import { ConsoleProvider, useConsole } from "@/lib/ConsoleContext";
 import { LoginScreen } from "@/components/auth/LoginScreen";
 import { AgentChatView } from "@/components/agent/AgentChatView";
@@ -222,8 +222,9 @@ function ConsoleCanvas({
 function ConsoleShell() {
   const [authChecked, setAuthChecked] = useState(false);
   const [loggedIn, setLoggedIn] = useState(false);
-  // 对话 Agent（独立版）：可用时提供「agent ⇄ console」双视图切换。
-  const [agentAvailable, setAgentAvailable] = useState(false);
+  // 运行壳（/api/auth 下发，公开非敏感）：standalone 提供「agent ⇄ console」双视图，
+  // 并隐藏 AstrBot 专属界面元素；plugin 保持原有呈现。
+  const [shell, setShell] = useState<string>("plugin");
   const [view, setView] = useState<"agent" | "console">(() => {
     if (typeof localStorage === "undefined") return "console";
     return localStorage.getItem("kr-view") === "agent" ? "agent" : "console";
@@ -236,8 +237,9 @@ function ConsoleShell() {
 
   useEffect(() => {
     getAuth()
-      .then(({ logged_in }) => {
+      .then(({ logged_in, shell: shellName }) => {
         setLoggedIn(logged_in);
+        setShell(shellName === "standalone" ? "standalone" : "plugin");
         setAuthChecked(true);
       })
       .catch(() => {
@@ -246,12 +248,7 @@ function ConsoleShell() {
       });
   }, []);
 
-  useEffect(() => {
-    if (!loggedIn) return;
-    getChatAgentInfo()
-      .then(({ available }) => setAgentAvailable(available))
-      .catch(() => setAgentAvailable(false));
-  }, [loggedIn]);
+  const agentAvailable = shell === "standalone";
 
   const handleLogout = useCallback(() => {
     setLoggedIn(false);
@@ -277,7 +274,12 @@ function ConsoleShell() {
   }
 
   if (!loggedIn) {
-    return <LoginScreen onLogin={() => setLoggedIn(true)} />;
+    return (
+      <LoginScreen
+        onLogin={() => setLoggedIn(true)}
+        subtitle={shell === "standalone" ? "STANDALONE · CONSOLE" : "ASTRBOT · PLUGIN"}
+      />
+    );
   }
 
   if (agentAvailable && view === "agent") {

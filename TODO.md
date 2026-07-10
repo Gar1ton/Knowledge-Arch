@@ -1,5 +1,33 @@
 # TODO
 
+## v0.1.1 独立版脱 AstrBot 界面残留排查 (in progress)
+
+### User constraints / 约束
+
+- 用户实测：`bash rebuild.sh` 后看不到新对话界面；控制台仍出现「AstrBot 配置」弹窗
+  （截图为 Embedding 运行时节）。核心目的：独立版要彻底脱离 AstrBot 的呈现与依赖。
+- 根因：① rebuild.sh 默认拉起内存后端（tests/run_webui.py，shell=plugin），对话入口按
+  「chat agent 已装配」门控而装配又要求主模型已配置——门槛叠加导致不可见；② TopBar 的
+  AstrBot 按钮/弹窗、登录页 ASTRBOT 副标题、页面 metadata 未按壳区分。
+
+### Technical implementation path
+
+- [x] 后端：ChatAgentService 支持 llm_factory 惰性解析（设置页保存 main_llm 后免重启生效），
+  未配置时自然语言通路回复配置指引、/ka 命令不受影响；组合根 standalone 壳恒装配 agent；
+  api 增 chat_agent_info（available + llm_ready）；`/api/auth` 增 shell 字段（登录页可感知壳）。
+- [x] 前端：TopBar 按 shell 隐藏 AstrBot 按钮；layout 按 shell 门控 agent 视图；LoginScreen
+  副标题按壳切换；AgentChatView 未配置主模型时显示引导横幅；app metadata 去 AstrBot 措辞。
+- [x] rebuild.sh：默认后端切换为真实独立应用（--memory 保留旧内存链路）。
+- [x] 全量 pytest + 前端 lint/tsc/build/sync + 冒烟。
+
+### Verification
+
+- `bash rebuild.sh` 默认即见独立版（登录副标题 STANDALONE、TopBar 无 AstrBot 按钮、
+  有「对话」按钮）；未配置主模型时对话页给出引导而非隐藏；`--memory` 仍还原旧链路。
+  - 2026-07-10 结果：pytest **635 passed**（新增 standalone 恒装配 + llm_factory 2 例，
+    caps 断言同步修正）；前端 eslint/tsc/build/sync 全绿；默认 `bash rebuild.sh` 实测
+    后端为 standalone v0.1.0，`GET /api/auth` 返回 `"shell": "standalone"`。
+
 ## v0.1.0 Monorepo 移植与独立应用双壳化 (completed)
 
 ### User constraints / 约束

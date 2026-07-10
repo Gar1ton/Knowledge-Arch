@@ -13,6 +13,8 @@ export function TopBar({ onOpenAgent }: { onOpenAgent?: () => void }) {
   const { setSettingOpen, setAstrBotOpen, setWorkflowOpen } = useConsole();
   const { t } = useI18n();
   const [wfStatus, setWfStatus] = useState<WorkflowStatus>("red");
+  // standalone 壳隐藏 AstrBot 专属入口（配置面板弹窗）。
+  const [shell, setShell] = useState<string>("plugin");
 
   useEffect(() => {
     let alive = true;
@@ -22,7 +24,11 @@ export function TopBar({ onOpenAgent }: { onOpenAgent?: () => void }) {
       inFlight = true;
       try {
         const caps = await getCapabilities();
-        if (alive) setWfStatus(deriveWorkflowStatus(caps));
+        if (alive) {
+          setWfStatus(deriveWorkflowStatus(caps));
+          const capShell = (caps as { shell?: string }).shell;
+          setShell(capShell === "standalone" ? "standalone" : "plugin");
+        }
       } catch {
         if (alive) setWfStatus("red");
       } finally {
@@ -94,14 +100,16 @@ export function TopBar({ onOpenAgent }: { onOpenAgent?: () => void }) {
       >
         <Icon name="settings" size={14} /> {t("topbar_settings")}
       </Button>
-      <Button
-        variant="tab"
-        size="sm"
-        style={{ height: 30, gap: 6 }}
-        onClick={() => setAstrBotOpen(true)}
-      >
-        <Icon name="spark2" size={14} /> AstrBot
-      </Button>
+      {shell !== "standalone" && (
+        <Button
+          variant="tab"
+          size="sm"
+          style={{ height: 30, gap: 6 }}
+          onClick={() => setAstrBotOpen(true)}
+        >
+          <Icon name="spark2" size={14} /> AstrBot
+        </Button>
+      )}
       <span className={`wf-pulse-${wfStatus}`}>
         <Button
           variant="tab"

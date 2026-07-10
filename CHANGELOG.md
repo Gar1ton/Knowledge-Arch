@@ -19,6 +19,19 @@
 
 ## [Unreleased]
 
+### 修复 (Fixed)
+
+- **独立版脱 AstrBot 界面残留排查**：用户实测 rebuild.sh 后看不到对话界面、控制台仍出现
+  「AstrBot 配置」弹窗。① rebuild.sh 默认后端由内存测试桩改为真实独立应用（`--memory`
+  保留旧插件开发链路）；② 对话 Agent 改为 standalone 壳**恒装配**——主 LLM 经组合根惰性工厂
+  `_resolve_standalone_main_llm` 按最新持久化配置解析，设置页保存 main_llm 后**免重启**生效，
+  未配置时自然语言通路回复配置指引、/ka 命令照常可用（ka_core/chat/agent_service.py,
+  ka_core/plugin_initializer.py）；③ `/api/auth` 增 `shell` 字段、`/api/chat/agent/info` 增
+  `llm_ready`（ka_web/server.py, ka_core/api.py）；④ 前端按壳去 AstrBot 呈现：TopBar 隐藏
+  AstrBot 配置入口、登录页副标题 standalone 显示 STANDALONE · CONSOLE、对话页未配置主模型时
+  显示引导横幅、metadata 描述去 AstrBot 措辞（TopBar.tsx, LoginScreen.tsx, layout.tsx,
+  AgentChatView.tsx, app/layout.tsx）。
+
 ## [v0.1.0] — 2026-07-10
 
 ### 新增功能 (Added)

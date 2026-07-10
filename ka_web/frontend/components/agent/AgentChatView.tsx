@@ -14,6 +14,7 @@ import {
   ApiError,
   ChatMessage,
   clearChatHistory,
+  getChatAgentInfo,
   getChatHistory,
   streamAgentChat,
 } from "@/lib/api";
@@ -158,6 +159,20 @@ export function AgentChatView({ onEnterConsole }: { onEnterConsole: () => void }
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // 主模型是否就绪：未配置时显示引导横幅（/ka 命令不受影响，仍可使用）。
+  const [llmReady, setLlmReady] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    getChatAgentInfo()
+      .then((info) => {
+        if (!cancelled) setLlmReady(info.llm_ready !== false);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -257,6 +272,22 @@ export function AgentChatView({ onEnterConsole }: { onEnterConsole: () => void }
 
         {/* Chat card */}
         <section style={S.card} aria-label="Knowledge Arch agent chat">
+          {!llmReady && (
+            <div
+              style={{
+                flexShrink: 0,
+                padding: "9px 14px",
+                fontSize: 12,
+                lineHeight: 1.6,
+                color: "#e8d9a0",
+                background: "rgba(120,95,20,.25)",
+                borderBottom: "1px solid rgba(195,192,186,.18)",
+              }}
+            >
+              ⚙ 主模型未配置：点击右上角「控制台 →」，在 设置 → 主模型（OpenAI 兼容）
+              填写端点与模型名，保存后即可对话（无需重启）。/ka 命令现在就可用。
+            </div>
+          )}
           <div ref={scrollRef} style={S.messages}>
             {messages.length === 0 && !streamingText && (
               <div

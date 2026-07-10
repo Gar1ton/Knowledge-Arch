@@ -27,7 +27,7 @@ const bitcount = localFont({
 
 export const metadata: Metadata = {
   title: "Knowledge Arch · 控制台",
-  description: "AstrBot 知识库管理控制台",
+  description: "Knowledge Arch 知识库控制台",
 };
 
 /*

@@ -108,7 +108,14 @@ async def handle_auth(request: web.Request) -> web.Response:
         not app[_AUTH_REQUIRED_KEY]
         or request.cookies.get(SESSION_COOKIE) in app[_SESSIONS_KEY]
     )
-    return web.json_response({"auth_required": app[_AUTH_REQUIRED_KEY], "logged_in": logged_in})
+    return web.json_response(
+        {
+            "auth_required": app[_AUTH_REQUIRED_KEY],
+            "logged_in": logged_in,
+            # 运行壳标识（非敏感）：登录页/布局据此切换 standalone 与插件的呈现。
+            "shell": getattr(_api(request), "shell", "plugin"),
+        }
+    )
 
 
 async def handle_login(request: web.Request) -> web.Response:
@@ -920,8 +927,8 @@ async def handle_ask_progress(request: web.Request) -> web.Response:
 
 
 async def handle_chat_agent_info(request: web.Request) -> web.Response:
-    """GET /api/chat/agent/info — 对话 Agent 可用性（独立壳 + 主 LLM 就绪时 true）。"""
-    return web.json_response({"available": _api(request).chat_agent_available()})
+    """GET /api/chat/agent/info — 对话 Agent 可用性（available=已装配，llm_ready=主模型就绪）。"""
+    return web.json_response(_api(request).chat_agent_info())
 
 
 async def handle_chat_agent_stream(request: web.Request) -> web.StreamResponse:

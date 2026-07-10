@@ -60,9 +60,11 @@ async def test_standalone_shell_panel_sections_writable(
         assert result["status"] == "success"
         with pytest.raises(ValueError):  # 真机密未登记 standalone_writable，直接不在放行集
             await api.update_config_value("r2_sync", "secret_access_key", "s3cret")
-        # capabilities 暴露壳标识。
+        # capabilities 暴露壳标识；standalone 恒装配对话 Agent（主模型未配置也装配，
+        # llm_ready 单独表达就绪度）。
         caps = await api.get_capabilities()
         assert caps["shell"] == "standalone"
-        assert caps["chat_agent_available"] is False
+        assert caps["chat_agent_available"] is True
+        assert api.chat_agent_info() == {"available": True, "llm_ready": False}
     finally:
         await initializer.teardown()

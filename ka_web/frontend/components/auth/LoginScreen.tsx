@@ -200,7 +200,13 @@ export function useHalftoneCanvas(canvasRef: RefObject<HTMLCanvasElement | null>
   }, [canvasRef]);
 }
 
-export function LoginScreen({ onLogin }: { onLogin: () => void }) {
+export function LoginScreen({
+  onLogin,
+  subtitle = "ASTRBOT · PLUGIN",
+}: {
+  onLogin: () => void;
+  subtitle?: string;
+}) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
@@ -233,7 +239,7 @@ export function LoginScreen({ onLogin }: { onLogin: () => void }) {
         <div className={styles.shell}>
           <header className={styles.masthead}>
             <h1 className={styles.title}>KNOWLEDGE ARCH</h1>
-            <p className={styles.subtitle}>ASTRBOT · PLUGIN</p>
+            <p className={styles.subtitle}>{subtitle}</p>
           </header>
 
           <div className={styles.rule} aria-hidden="true" />

@@ -103,6 +103,49 @@ async def test_chat_agent_plain_reply_streams_and_persists(
         await initializer.teardown()
 
 
+async def test_standalone_shell_attaches_agent_without_llm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """standalone 恒装配：主模型未配置时自然语言通路给指引，/ka 命令仍可用。"""
+    monkeypatch.setattr("ka_core.plugin_initializer._module_available", lambda name: False)
+    initializer = PluginInitializer(
+        None, {"web_console": {"enabled": False}}, tmp_path, shell="standalone"
+    )
+    await initializer.initialize()
+    try:
+        assert initializer.chat_agent is not None
+        assert initializer.api.chat_agent_info() == {"available": True, "llm_ready": False}
+        events = await _collect(initializer.chat_agent.stream("你好", "conv-s1"))
+        assistant = [e for e in events if e["type"] == "assistant"]
+        assert "主模型尚未配置" in assistant[0]["content"]
+        events = await _collect(initializer.chat_agent.stream("/ka help", "conv-s1"))
+        assistant = [e for e in events if e["type"] == "assistant"]
+        assert "/ka 指令一览" in assistant[0]["content"]
+    finally:
+        await initializer.teardown()
+
+
+async def test_standalone_llm_factory_reads_persisted_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """惰性工厂按最新配置解析：main_llm 配置完整时 llm_ready=True。"""
+    monkeypatch.setattr("ka_core.plugin_initializer._module_available", lambda name: False)
+    initializer = PluginInitializer(
+        None,
+        {
+            "web_console": {"enabled": False},
+            "main_llm": {"base_url": "http://localhost:1234/v1", "model": "qwen3"},
+        },
+        tmp_path,
+        shell="standalone",
+    )
+    await initializer.initialize()
+    try:
+        assert initializer.api.chat_agent_info() == {"available": True, "llm_ready": True}
+    finally:
+        await initializer.teardown()
+
+
 async def test_chat_agent_tool_loop_research_disabled_notice(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

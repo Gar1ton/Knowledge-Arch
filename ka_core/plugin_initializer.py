@@ -592,10 +592,19 @@ class PluginInitializer:
 
         self.research_service = ResearchService(api=self.api, flags=self)
 
-        # 5.7) 对话 Agent（独立壳）：主 LLM 支持 chat_stream 时装配；插件壳的对话
-        # 走 AstrBot 聊天（LLMAdapter 无 chat_stream，此处自然跳过，行为不变）。
+        # 5.7) 对话 Agent：standalone 壳恒装配（主 LLM 经惰性工厂按最新持久化配置解析，
+        # 设置页保存 main_llm 后无需重启即可对话；未配置时 /ka 命令通路仍可用）。
+        # 插件壳仅当注入适配器支持 chat_stream 时装配（生产插件为 AstrBot LLMAdapter，
+        # 无 chat_stream，自然跳过，行为不变）。
         self.chat_agent = None
-        if hasattr(llm_adapter, "chat_stream"):
+        if self._shell == "standalone":
+            from ka_core.chat import ChatAgentService
+
+            self.chat_agent = ChatAgentService(
+                self, llm_factory=self._resolve_standalone_main_llm
+            )
+            self.api.attach_chat_agent(self.chat_agent)
+        elif hasattr(llm_adapter, "chat_stream"):
             from ka_core.chat import ChatAgentService
 
             self.chat_agent = ChatAgentService(self, llm_adapter)
@@ -671,6 +680,26 @@ class PluginInitializer:
 
     def _persist_config_value(self, section: str, key: str, value: object) -> None:
         self._runtime_config.set_value(section, key, value)
+
+    def _resolve_standalone_main_llm(self) -> Any | None:
+        """按最新持久化配置解析主 LLM 适配器（对话 Agent 惰性工厂；未配置返回 None）。
+
+        刻意每次重读 runtime_config 合并结果：设置页保存 main_llm 后，对话通路立即
+        使用新端点，无需软重启（api 回答合成用的适配器仍在重启后切换）。
+        """
+        merged = self._runtime_config.merged_with(self._raw_config)
+        main_llm = Config(merged).get_main_llm_config()
+        if not main_llm.configured:
+            return None
+        from ka_core.adapters.llm import LMStudioLLMAdapter
+
+        return LMStudioLLMAdapter(
+            base_url=main_llm.base_url,
+            model=main_llm.model,
+            api_key=main_llm.api_key,
+            timeout_seconds=main_llm.timeout_seconds,
+            max_retries=main_llm.max_retries,
+        )
 
     # ── /ka 运行时开关 ────────────────────────────────────────────
     def set_toggle(self, name: str, value: bool) -> None:
