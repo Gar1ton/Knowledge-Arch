@@ -1,0 +1,39 @@
+# 旧仓（Astrbot_Knowledge_Repository）developer 分支同步树白名单。
+# 由 tools/publish_plugin.py 读取：从 monorepo 生成「插件仓库形态」源码树并推送到旧仓
+# developer；旧仓自身的 developer→main 发布机制保持不变。
+# 语法与 published-files.txt 相同：glob；!glob 排除；source => target 重命名复制。
+
+# ── 插件壳文件：回写到树根 ──────────────────────────────────
+apps/plugin/main.py => main.py
+apps/plugin/metadata.yaml => metadata.yaml
+apps/plugin/_conf_schema.json => _conf_schema.json
+apps/plugin/README.md => README.md
+apps/plugin/CHANGELOG.md => CHANGELOG.md
+apps/plugin/logo.png => logo.png
+apps/plugin/logo.svg => logo.svg
+
+# ── 发布机制自带文件（developer→main 构建所需）───────────────
+release/published-files.developer.txt => release/published-files.txt
+release/AGENTS.published.md
+tools/build_published_tree.py
+tools/sync_frontend.py
+tools/watch_frontend.sh
+tools/README.md
+
+# ── 运行时与工程配置 ────────────────────────────────────────
+requirements.txt
+requirements-additional.txt
+requirements-dev.txt
+LICENSE
+.gitattributes
+.gitignore
+pyproject.toml
+.github/workflows/tests.yml
+.github/workflows/published-verify.yml
+
+# ── 共享核心 / Web / 迁移 / 静态产物 / 测试 ─────────────────
+ka_core/**
+ka_web/**
+ka_migrations/**
+pages/**
+tests/**

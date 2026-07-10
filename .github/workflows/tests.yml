@@ -1,10 +1,12 @@
 name: Developer CI
 
+# 双仓共用：monorepo（Knowledge-Arch）开发分支为 main；旧仓（Astrbot_Knowledge_Repository）
+# 经 tools/publish_plugin.py 同步的开发分支为 developer。
 on:
   push:
-    branches: [developer]
+    branches: [main, developer]
   pull_request:
-    branches: [developer]
+    branches: [main, developer]
 
 jobs:
   backend:

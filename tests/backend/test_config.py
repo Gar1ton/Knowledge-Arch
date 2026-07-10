@@ -17,7 +17,11 @@ from ka_core.runtime_config import RuntimeConfigStore
 
 
 def test_astrbot_conf_schema_only_keeps_core_sections() -> None:
-    schema_path = Path(__file__).resolve().parents[2] / "apps" / "plugin" / "_conf_schema.json"
+    # 双布局兼容：monorepo 中位于 apps/plugin/，同步到旧仓 developer 树后位于根。
+    root = Path(__file__).resolve().parents[2]
+    schema_path = root / "apps" / "plugin" / "_conf_schema.json"
+    if not schema_path.exists():
+        schema_path = root / "_conf_schema.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
 
     # v0.28.0：移除 ask 段（原仅含已废弃的 conversation_enhancement_mode）。

@@ -21,6 +21,31 @@
 
 ### 新增功能 (Added)
 
+- **插件同步发布链（Phase 2）**：新增 `tools/publish_plugin.py` —— 按新 manifest
+  `release/developer-files.txt` 从 monorepo 生成「插件仓库形态」源码树（apps/plugin/* 回写树根、
+  剔除 monorepo 专属内容），支持 `--check-only`/`--diff-against`/`--push`（推送旧仓 developer，
+  须用户批准）；`release/published-files.developer.txt` 以 `release/published-files.txt` 之名
+  随树下发，保证旧仓 developer→main 现行发布机制不变。新增 `.github/workflows/plugin-parity.yml`
+  （workflow_dispatch 防漂移比对）。
+- **双版本线 bump**：`tools/bump_version.py` 重写为 `--target plugin|standalone`——插件线源 =
+  `apps/plugin/metadata.yaml`，独立线源 = 根 `pyproject.toml [project].version`（本轮新增，
+  version=0.1.0）；CHANGELOG 收口容忍无历史版本标题的新文件（tools/bump_version.py,
+  pyproject.toml）。
+
+### 架构健康 (Refactor)
+
+- **治理文档对齐 monorepo（Phase 2）**：CLAUDE.md §0 重写为 monorepo 定位（目录图 + 双版本线
+  规则）、§1.1 改为「本仓 main 唯一真相源 + publish_plugin 同步链」、§5 命令表更新（含
+  ka_web/frontend 正确路径）；ARCHITECTURE.md §2 增加「一核两壳」对照表（两壳差异只允许表现为
+  组合根注入参数）；docs/GIT_WORKFLOW.md 顶部增加 monorepo 迁移说明（CLAUDE.md, ARCHITECTURE.md,
+  docs/GIT_WORKFLOW.md）。
+
+### 构建与工程 (Build/CI)
+
+- `tests.yml` 触发分支改为 `[main, developer]` 双仓共用；`published-verify.yml` 加
+  `github.repository` 守卫防止在 monorepo 误跑发布树校验；`tests/backend/test_config.py`
+  的 `_conf_schema.json` 路径改为双布局兼容（monorepo apps/plugin/ 与旧仓根）。
+
 - **Monorepo 初始化（Phase 1）**：从 Astrbot_Knowledge_Repository `developer@65ec405`（v1.0.3）
   迁入全部跟踪源码（剔除 data/、deliverables/、dev/），确立「一核两壳」布局——插件壳文件
   （main.py/metadata.yaml/_conf_schema.json/README/CHANGELOG/logo）移入 `apps/plugin/`，

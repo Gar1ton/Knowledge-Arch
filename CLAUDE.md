@@ -8,12 +8,23 @@
 
 ## 0. 这是什么
 
-这是一个**通用项目框架模板**（不限于 astrbot 插件）。它的目标不是提供功能，而是：
+这是 **Knowledge Arch monorepo**——「一套核心，两个壳」的知识库系统唯一开发源头：
 
-> **规范并约束「vibe coding」的代码可视性**——让任何人/任何 agent 一眼就知道
-> 「代码该放在哪一层、依赖该指向哪个方向、文档该怎么写」。
+```
+ka_core/         共享业务核心（domain/repository/managers/pipelines/adapters/api/config）
+ka_web/          Web 控制台（server.py + frontend/ Next.js 源码）
+ka_migrations/   SQLite 编号迁移          pages/   前端构建产物（勿手改）
+apps/plugin/     AstrBot 插件薄壳（v1.0.x 版本线，发布到 Astrbot_Knowledge_Repository）
+ka_standalone/   独立跨平台应用薄壳（v0.1.x 版本线，Linux/Windows/macOS）
+tools/ release/  构建与发布脚本、发布 manifest      scripts/  一键安装/启动脚本
+```
 
-复制本模板后，请保留全部规范文件，删除/替换 `*.example.*` 占位与各目录 `README.md` 中的示例段落。
+- **双版本线**：插件版本源 = `apps/plugin/metadata.yaml`；独立版版本源 = 根 `pyproject.toml`
+  `[project].version`。经 `python tools/bump_version.py --target plugin|standalone` 统一推进，
+  分别对齐 `apps/plugin/CHANGELOG.md` 与根 `CHANGELOG.md`。
+- 业务逻辑只写在 `ka_core/`；两个壳只做注册与委派（见 `ARCHITECTURE.md` §2 薄壳原则）。
+- 本仓治理理念不变：**规范并约束「vibe coding」的代码可视性**——让任何人/任何 agent 一眼就知道
+  「代码该放在哪一层、依赖该指向哪个方向、文档该怎么写」。
 
 ---
 
@@ -28,7 +39,11 @@
 
 ### 1.1 Git 远端变更（绝对规则）
 
-- `developer` 是唯一开发真相源；正式 `main` 是由指定 developer commit 生成的发布分支，禁止手改。
+- 本仓（Knowledge-Arch）`main` 是**唯一开发真相源**。
+- 插件发布链：`tools/publish_plugin.py` 从本仓生成**插件仓库形态源码树**，推送到
+  `Astrbot_Knowledge_Repository` 的 `developer` 分支；该仓自身的 developer→main 发布机制
+  （`tools/build_published_tree.py` + `release/published-files.txt`）保持不变。
+  **禁止绕过 manifest 手工向旧仓提交。**
 - 任何 `git push`、tag push、远端分支创建/删除、force push、PR 创建或 GitHub Release 发布，
   **执行前必须单独向用户报告 remote、源分支、目标分支与提交范围，并取得本轮明确批准**。
 - 用户批准修改、测试或本地 commit，**不等于**批准任何远端操作。
@@ -67,8 +82,8 @@
 ## 5. Build & Test 命令
 
 ```bash
-# 安装依赖
-pip install -r requirements-additional.txt
+# 安装开发依赖
+pip install -r requirements-dev.txt
 
 # 运行测试（标 [x] 前必须绿）
 python -m pytest
@@ -76,9 +91,18 @@ python -m pytest
 # 代码检查 / 类型检查
 ruff check . && mypy
 
-# 前端（v0.10.0 起，Next.js App Router）
-cd web/frontend && npm run build      # FRONTEND_BUILD_CMD（产物输出到 out/）
+# 前端（Next.js App Router）
+cd ka_web/frontend && npm run build   # FRONTEND_BUILD_CMD（产物输出到 out/）
 python tools/sync_frontend.py         # FRONTEND_SYNC_CMD（out/ → pages/）
+
+# 插件发布树（AstrBot 市场 main 形态，本地校验用）
+python tools/build_published_tree.py --source HEAD
+
+# 插件仓库同步树（旧仓 developer 形态；--push 需用户批准）
+python tools/publish_plugin.py --check-only
+
+# 独立应用（Phase 3 起）
+python -m ka_standalone serve --data-dir ~/.knowledge-arch
 ```
 
 ## 6. 语言约定

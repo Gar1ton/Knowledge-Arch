@@ -8,6 +8,8 @@ on:
 
 jobs:
   verify:
+    # 仅在发布仓生效：monorepo（Knowledge-Arch）的 main 是开发分支，不是发布树。
+    if: github.repository == 'Gar1ton/Astrbot_Knowledge_Repository'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -1,4 +1,12 @@
 # 工具链配置。约定：测试绿是 TODO 标 [x] 的前提；domain 层启用严格类型检查。
+# [project] 为独立应用（standalone）版本线的版本源；完整打包配置（extras/entry
+# points/build-system）在 Phase 7 落地。
+
+[project]
+name = "knowledge-arch"
+version = "0.1.0"
+description = "原件中心的知识库系统：PDF 原件管理、五档检索/RAG、LightRAG 图谱、Zotero/R2/Notion 同步"
+requires-python = ">=3.10,<3.13"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"               # 异步测试免写事件循环样板

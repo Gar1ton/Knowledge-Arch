@@ -1,8 +1,14 @@
 # Git 分支与发布维护手册
 
-本仓库使用两个职责完全不同的长期分支：
+> **Monorepo 更新（v0.1.0 起）**：唯一开发真相源已迁移至本仓（Knowledge-Arch）的 `main` 分支。
+> 旧仓 Astrbot_Knowledge_Repository 的 `developer` 分支由 `tools/publish_plugin.py` 从本仓
+> 生成的「插件仓库形态源码树」同步覆盖，不再直接开发；其 developer→main 的发布机制
+> （下述 `build_published_tree.py` 流程）保持不变。以下第 1 节描述的是旧仓侧的历史流程，
+> 仅供发布链路维护参考。
 
-- `developer`：唯一开发真相源，保留 v1.0.0 之前的完整历史、测试、前端源码、设计资料与发布工具。
+旧仓使用两个职责完全不同的长期分支：
+
+- `developer`：插件形态源码树（由本仓同步生成），保留测试、前端源码与发布工具。
 - `main`：由 developer 的指定 commit **生成**，只保存正式插件文件；提交历史从 v1.0.0 开始。
 
 `main` 与 `developer` 没有共同祖先，禁止在两者之间执行 merge。发布同步只能通过

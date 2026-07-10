@@ -40,17 +40,25 @@
 
 ---
 
-## 2. 薄壳原则（Thin Shell）
+## 2. 薄壳原则（Thin Shell）——本仓的「一核两壳」
 
-框架入口（`ka_core/main.example.py` 所示）**只做两件事**：
+框架入口**只做两件事**：
 
 1. 向框架**注册** hooks / commands / tools / 路由；
 2. 把每个回调**委派**给 `event_handler` 或对应 manager。
 
-入口里**不写任何业务逻辑、不做条件判断之外的计算**。好处：
+入口里**不写任何业务逻辑、不做条件判断之外的计算**。
 
-- 换框架（astrbot → FastAPI → CLI）时，只重写薄壳，业务层一行不动 → 呼应「不限于 astrbot」。
-- 框架热重载时，业务状态集中在组合根，便于干净重建。
+本 monorepo 用**同一个 `ka_core/` 驱动两个真实薄壳**（`ka_core/main.py` 仅为模式示例）：
+
+| 壳 | 位置 | 注册面 | 差异注入（经组合根 keyword-only 参数） |
+|---|---|---|---|
+| AstrBot 插件 | `apps/plugin/main.py` | `/ka` 命令、`llm_tool`、`on_llm_request` | 默认：`LLMAdapter(context)`、`AstrBotKnowledgeBaseReader`、AstrBot MCP Notion 传输 |
+| 独立应用 | `ka_standalone/` | CLI 子命令 + 常驻 WebUI（含对话 Agent 页） | `LMStudioLLMAdapter`（OpenAI 兼容）、`MemoryKnowledgeBaseReader`、stdio MCP Notion 传输 |
+
+- 两个壳都经 `PluginInitializer`（组合根）装配同一套子系统；壳差异**只允许**表现为组合根的
+  可选注入参数（`llm_adapter` / `kb_reader` / `notion_tool_caller`）与 `context` 是否为 None。
+- 好处：换壳/加壳时业务层一行不动；插件行为零回归由发布树校验与全量测试守护。
 
 ---
 

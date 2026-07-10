@@ -21,16 +21,21 @@
 
 ### Technical implementation path
 
-- 🚧 **Phase 1 - 仓库引导与 ka_core 重命名**：git 跟踪树迁入（剔除 data//deliverables//dev/）；
+- [x] **Phase 1 - 仓库引导与 ka_core 重命名**：git 跟踪树迁入（剔除 data//deliverables//dev/）；
   根插件文件（main.py/metadata.yaml/_conf_schema.json/README/CHANGELOG/logo）→ `apps/plugin/`；
   `bump_version.py` → `tools/`；修既有 bug（`tools/build_published_tree.py` REQUIRED 陈旧项
   `web/server.py`/`core/main.py`、`.github/workflows/tests.yml` 的 `web/frontend` 旧路径）；
   重写 `release/published-files.txt`；发布树奇偶校验（重命名前基线）；全局重命名
-  `knowledge_arch/` → `ka_core/`；新建根 README/CHANGELOG；git init + 首次提交 + push（待批准）。
-  ——除远端 push（等待用户在 GitHub 创建空仓 Gar1ton/Knowledge-Arch 并批准）外全部完成。
-- [ ] **Phase 2 - 治理文档与 CI**：改写 CLAUDE/ARCHITECTURE/CONVENTIONS/AGENTS（双壳目录图、
-  双版本线规则、构建命令表）；新建 `release/developer-files.txt`（monorepo→插件仓形态树 manifest）；
-  tests.yml 改路径；新增 plugin-parity.yml 防漂移。
+  `knowledge_arch/` → `ka_core/`；新建根 README/CHANGELOG；git init + 首次提交 + push（已完成：
+  rebase 到远端 Initial commit 上，e77b785..05415b0 已推送）。
+- [x] **Phase 2 - 治理文档与 CI**：改写 CLAUDE.md（§0 monorepo 定位/双版本线、§1.1 同步链
+  规则、§5 命令表）与 ARCHITECTURE.md §2（一核两壳表）；docs/GIT_WORKFLOW.md 加 monorepo 说明；
+  新建 `release/developer-files.txt` + `release/published-files.developer.txt` 双 manifest 与
+  `tools/publish_plugin.py`（构建/校验/推送 developer 同步树，636 files）；tests.yml 触发分支
+  改 [main, developer] 双仓共用；published-verify.yml 加仓库守卫；新增 plugin-parity.yml
+  （workflow_dispatch，首次同步后可常态化）；`tools/bump_version.py` 重写为
+  `--target plugin|standalone` 双版本线；根 pyproject 加 `[project]`（standalone 版本源，
+  version=0.1.0）；test_config.py schema 路径双布局兼容。
 - [ ] **Phase 3 - 独立壳 ka_standalone**：新顶层包（cli.py serve 子命令 / bootstrap.py /
   paths.py 数据目录 `~/.knowledge-arch` / config_bootstrap.py）；`PluginInitializer.__init__` 加
   keyword-only 覆盖参数（llm_adapter/kb_reader/notion_tool_caller），默认行为不变；

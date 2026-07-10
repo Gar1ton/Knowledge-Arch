@@ -1,0 +1,26 @@
+# 插件同步树防漂移校验：从 monorepo HEAD 生成 developer 形态树，与旧仓 developer 分支比对。
+# 手动触发（workflow_dispatch）：首次 publish_plugin --push 之前，旧仓 developer 仍是历史布局，
+# 比对必然有差异；首次同步完成后可改为 push 触发常态化。
+name: Plugin Parity
+
+on:
+  workflow_dispatch:
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Build developer sync tree
+        run: python tools/publish_plugin.py --check-only --output dist/developer-tree
+      - name: Clone current developer branch
+        run: >-
+          git clone --depth 1 --branch developer
+          https://github.com/Gar1ton/Astrbot_Knowledge_Repository.git dist/old-developer
+      - name: Diff (fails on drift)
+        run: >-
+          diff -r --exclude=.git --exclude=.monorepo-source
+          dist/old-developer dist/developer-tree

@@ -1,6 +1,6 @@
 # Knowledge Arch（Monorepo）
 
-[![standalone](https://img.shields.io/badge/standalone-v0.1.0--dev-orange)](pyproject.toml)
+[![standalone](https://img.shields.io/badge/standalone-v0.1.0-orange)](pyproject.toml)
 [![plugin](https://img.shields.io/badge/plugin-v1.0.3-blueviolet)](apps/plugin/metadata.yaml)
 
 **一套核心，两个壳**：原件中心的知识库系统（PDF 原件管理、五档检索/RAG、LightRAG 知识图谱、
