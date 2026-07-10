@@ -54,6 +54,11 @@ class CapabilitiesApiMixin:
         await self._overlay_milvus_runtime_health(data)
         self._overlay_zotero_config_state(data)
         self._overlay_reranker_runtime_status(data)
+        # 运行壳标识：前端据此决定设置页哪些节可编辑（standalone 无 AstrBot 面板）。
+        data["shell"] = getattr(self, "shell", "plugin")
+        data["chat_agent_available"] = bool(
+            getattr(self, "chat_agent_available", lambda: False)()
+        )
         return data
 
     def list_dependencies(self) -> list[dict[str, Any]]:

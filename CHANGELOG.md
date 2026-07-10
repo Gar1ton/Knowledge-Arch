@@ -21,6 +21,23 @@
 
 ### 新增功能 (Added)
 
+- **设置页按新功能整体重组（Phase 6）**：ConfigTab 重组为 8 分组——服务与访问 / 主模型
+  （OpenAI 兼容，独立版专属）/ 对话与研究 Agent / Embedding 与检索 / 知识图谱 / Zotero 同步 /
+  备份与镜像（R2+Notion）/ 系统与数据，底部保留有效配置核对。独立壳可编辑原由 AstrBot 面板
+  管辖的节：`ConfigKeyPolicy` 新增 `standalone_writable`（web_console host/port/username、
+  r2_sync account_id/access_key_id/bucket/阈值/间隔、notion_sync 库参数），api 按
+  `attach_shell` 声明的运行壳放行（access_key_id 为 ID 类半机密仅独立壳可写；
+  secret_access_key/password/api_key 任何壳仍仅环境变量）；`/api/capabilities` 暴露 `shell`
+  与 `chat_agent_available`；前端半机密字段留空输入防掩码回写（ka_core/config.py,
+  ka_core/api.py, ka_core/api_capabilities.py, ka_web/frontend/components/modals/SettingModal.tsx）。
+- **uv 打包与一键部署（Phase 7）**：根 pyproject 定稿 `[project]` 打包——hatchling、必装依赖
+  补 `cryptography`（独立版无 AstrBot 供给）、`pymilvus[milvus_lite]` 加
+  `platform_system != "Windows"` 标记（Windows 装纯客户端 + 三条替代路）、extras
+  `graph/local-embedding/backup/notion/all`、`knowledge-arch` 命令入口；`.python-version`
+  钉 3.11；提交 `uv.lock`（144 包）；新增 `scripts/install.sh|.bat`（uv 引导、--cn 清华镜像、
+  --minimal、装后自动 doctor）与 `scripts/start.sh|.bat`；README 增三平台部署文档
+  （安装模型 = clone + uv sync editable，部署零 Node 依赖）（pyproject.toml, scripts/, README.md）。
+
 - **对话 Agent 界面（Phase 5）**：独立版内置 AstrBot 使用模式的对话入口——
   自然语言消息走「agent 上下文注入（与 on_llm_request 同口径）+ research_scope_probe/
   research_execute/notion_push_note 三工具循环」，research 结果由系统直接推送给用户

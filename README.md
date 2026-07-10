@@ -26,6 +26,39 @@ scripts/            一键安装/启动脚本（Phase 7 落地）
 tests/  docs/       测试与文档
 ```
 
+## 部署独立应用（Linux / Windows / macOS）
+
+安装模型：**clone 仓库 + uv 同步依赖**（不走 PyPI；`pages/` 前端产物与迁移文件随源码就位，
+部署全程无需 Node.js）。Python 版本由 `.python-version`（3.11）钉定，uv 会自动安装。
+
+```bash
+# Linux / macOS
+git clone https://github.com/Gar1ton/Knowledge-Arch.git && cd Knowledge-Arch
+bash scripts/install.sh          # 可加 --cn 用清华镜像；--minimal 跳过重型 extras
+bash scripts/start.sh            # = uv run knowledge-arch serve
+```
+
+```bat
+:: Windows（PowerShell 或 cmd）
+git clone https://github.com/Gar1ton/Knowledge-Arch.git && cd Knowledge-Arch
+scripts\install.bat
+scripts\start.bat
+```
+
+- **首次启动**：在 `~/.knowledge-arch`（Windows 为 `%USERPROFILE%\.knowledge-arch`）生成
+  `standalone_config.json` 与**随机登录密码**（打印在控制台，`knowledge-arch passwd` 可改）。
+  默认 WebUI 地址 `http://127.0.0.1:26618`。
+- **主模型**：登录后在「设置 → 主模型」配置任意 OpenAI 兼容端点（OpenAI/DeepSeek/Ollama/
+  LM Studio/vLLM…）；API Key 经环境变量 `KR_MAIN_LLM_API_KEY` 注入。配置后即可使用
+  **对话 Agent** 页（`/ka` 命令 + 自动检索问答）。
+- **Windows 向量检索**：Milvus Lite 无 Windows 原生 wheel，三选一——① 连接外部 Milvus 服务；
+  ② 在 WSL 内运行本应用；③ 什么都不做，自动回落 SQLite 词法检索（功能降级）。
+  `uv run knowledge-arch doctor` 可随时体检。
+- **可选能力 extras**：`graph`（LightRAG 图谱）/ `local-embedding`（本地嵌入，含 PyTorch）/
+  `backup`（R2）/ `notion`（stdio MCP，另需 Node.js 提供 npx）。默认脚本全装，
+  `--minimal` 后可按需 `uv sync --extra <name>` 补装。
+- 常用命令：`knowledge-arch serve|status|doctor|passwd`（经 `uv run` 前缀执行）。
+
 ## 开发快速上手
 
 ```bash

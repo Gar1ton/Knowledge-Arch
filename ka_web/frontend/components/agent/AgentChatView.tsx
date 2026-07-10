@@ -150,7 +150,9 @@ export function AgentChatView({ onEnterConsole }: { onEnterConsole: () => void }
   const scrollRef = useRef<HTMLDivElement | null>(null);
   useHalftoneCanvas(canvasRef);
 
-  const [conversationId, setConversationId] = useState<string>("");
+  // 惰性初始化会话 id（服务端预渲染时给临时值，客户端水合后取 localStorage 持久值；
+  // id 不参与 DOM 渲染，无水合差异）。避免在 effect 内同步 setState（react-hooks 新规则）。
+  const [conversationId, setConversationId] = useState<string>(() => getOrCreateAgentConvId());
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [streamingText, setStreamingText] = useState("");
   const [input, setInput] = useState("");
@@ -158,18 +160,21 @@ export function AgentChatView({ onEnterConsole }: { onEnterConsole: () => void }
   const [error, setError] = useState("");
 
   useEffect(() => {
-    const cid = getOrCreateAgentConvId();
-    setConversationId(cid);
-    getChatHistory(cid)
-      .then((rows: ChatMessage[]) =>
+    let cancelled = false;
+    getChatHistory(conversationId)
+      .then((rows: ChatMessage[]) => {
+        if (cancelled) return;
         setMessages(
           rows
             .filter((m) => m.role === "user" || m.role === "assistant")
             .map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
-        ),
-      )
+        );
+      })
       .catch(() => {});
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });

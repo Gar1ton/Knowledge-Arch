@@ -54,6 +54,7 @@ def build_initializer(
         llm_adapter=resolve_main_llm_adapter(data_dir, raw_config),
         kb_reader=InMemoryKnowledgeBaseReader(),
         notion_tool_caller=notion_tool_caller,
+        shell="standalone",
     )
 
 

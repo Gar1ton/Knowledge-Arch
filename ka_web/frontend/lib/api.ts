@@ -84,6 +84,7 @@ export interface QuotaItem {
 
 export interface EffectiveConfig {
   source_store?: Record<string, unknown>;
+  main_llm?: Record<string, unknown>;
   r2_sync?: Record<string, unknown>;
   notion_sync?: Record<string, unknown>;
   web_console?: Record<string, unknown>;

@@ -71,6 +71,7 @@ class PluginInitializer:
         llm_adapter: Any | None = None,
         kb_reader: KnowledgeBaseReader | None = None,
         notion_tool_caller: Any | None = None,
+        shell: str = "plugin",
     ) -> None:
         # 壳差异注入点（见 ARCHITECTURE.md §2 一核两壳）：全部可选，缺省时行为与
         # 插件壳完全一致（AstrBot context 提供 LLM/KB/Notion MCP）。独立壳传入
@@ -81,6 +82,7 @@ class PluginInitializer:
         self._llm_adapter_override = llm_adapter
         self._kb_reader_override = kb_reader
         self._notion_tool_caller = notion_tool_caller
+        self._shell = shell if shell in ("plugin", "standalone") else "plugin"
         self._runtime_config = RuntimeConfigStore(
             data_dir / "runtime_config.json",
             framework_persist_cb=self._astrbot_config_persist,
@@ -557,6 +559,7 @@ class PluginInitializer:
             reload_callback=self.reload,
             r2_backup_manager=self.r2_backup_manager,
         )
+        self.api.attach_shell(self._shell)
         await self.api.restore_paused_build_job()
 
         # 5.5) Zotero 单向 Pull 管线（api 构造后注入，回调引用 api 的索引/LRAG 助手）。

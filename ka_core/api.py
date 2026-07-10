@@ -26,6 +26,7 @@ from ka_core.config import (
     CONSEQUENCE_RESTART,
     api_writable_keys,
     change_consequence,
+    standalone_writable_keys,
     structural_keys,
 )
 from ka_core.domain.models import (
@@ -2401,16 +2402,36 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin):
 
     # 可写键与结构键从 config.py 的单一登记表派生（不再手抄，重启/重建后果亦由登记表决定）。
     _CONFIG_UPDATE_KEYS: dict[str, frozenset[str]] = api_writable_keys()
+    _STANDALONE_UPDATE_KEYS: dict[str, frozenset[str]] = standalone_writable_keys()
     _STRUCTURAL_KEYS: dict[str, frozenset[str]] = structural_keys()
+    # ID 类半机密：独立壳无 AstrBot 面板，须可在设置页写入；真正机密
+    # （secret_access_key/password/api_key）任何壳都仅经环境变量注入。
+    _STANDALONE_SECRET_ALLOWED: frozenset[str] = frozenset({"access_key_id"})
+
+    def attach_shell(self, shell: str) -> None:
+        """组合根声明运行壳（plugin/standalone），决定 standalone_writable 键是否放行。"""
+        self._shell = shell
+
+    @property
+    def shell(self) -> str:
+        return getattr(self, "_shell", "plugin")
 
     async def update_config_value(self, section: str, key: str, value: Any) -> dict[str, Any]:
         """Persist a safe config value without hot-swapping embedding-backed runtime state."""
         logger.info("update_config: %s.%s", section, key)
-        if section not in self._CONFIG_UPDATE_KEYS:
+        standalone = self.shell == "standalone"
+        allowed_keys = set(self._CONFIG_UPDATE_KEYS.get(section, frozenset()))
+        if standalone:
+            allowed_keys |= self._STANDALONE_UPDATE_KEYS.get(section, frozenset())
+        if not allowed_keys:
             raise ValueError(f"Section '{section}' is write-protected or read-only.")
-        if key not in self._CONFIG_UPDATE_KEYS.get(section, frozenset()):
+        if key not in allowed_keys:
             raise ValueError(f"runtime config key is not allowed: {section}.{key}")
-        if key in self._SECRET_KEYS and value:
+        if (
+            key in self._SECRET_KEYS
+            and value
+            and not (standalone and key in self._STANDALONE_SECRET_ALLOWED)
+        ):
             raise ValueError(f"'{key}' 为机密字段，必须通过环境变量注入，不可经此接口写入。")
         if key in self._STRUCTURAL_KEYS.get(section, frozenset()):
             raise ValueError(

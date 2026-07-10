@@ -878,12 +878,15 @@ class ConfigKeyPolicy:
     runtime_persistable 可写入 data_dir/runtime_config.json 持久化。
     structural          结构性参数：禁止运行时 API 写，改后须重建/重启（防静默破坏数据）。
     consequence         改动后果，用于计算 restart_required / rebuild_required 与前端提示。
+    standalone_writable 仅独立壳（shell=standalone）可经 API 写——插件模式下这些键由
+                        AstrBot 面板管辖保持只读；独立壳没有面板，须在设置页可编辑。
     """
 
     api_writable: bool = False
     runtime_persistable: bool = False
     structural: bool = False
     consequence: str = CONSEQUENCE_NONE
+    standalone_writable: bool = False
 
 
 # 注：r2_sync.enabled / notion_sync.enabled / source_store.ocr_enabled 为新纳入的非机密开关，
@@ -909,6 +912,16 @@ CONFIG_KEY_POLICY: dict[str, dict[str, ConfigKeyPolicy]] = {
     "web_console": {
         # /ka webui on|off 实时启停并持久化；不走 update_config（避免 RESTART 后果误判）。
         "enabled": ConfigKeyPolicy(False, True),
+        # 独立壳可在设置页改服务参数；插件模式由 AstrBot 面板管辖（只读）。
+        "host": ConfigKeyPolicy(
+            False, True, consequence=CONSEQUENCE_RESTART, standalone_writable=True
+        ),
+        "port": ConfigKeyPolicy(
+            False, True, consequence=CONSEQUENCE_RESTART, standalone_writable=True
+        ),
+        "username": ConfigKeyPolicy(
+            False, True, consequence=CONSEQUENCE_RESTART, standalone_writable=True
+        ),
     },
     "main_llm": {
         # 独立应用主 LLM（OpenAI-compatible）；插件模式不读取本节。api_key 为机密不可 API 写。
@@ -935,14 +948,31 @@ CONFIG_KEY_POLICY: dict[str, dict[str, ConfigKeyPolicy]] = {
     },
     "notion_sync": {
         "enabled": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "database_id": ConfigKeyPolicy(False, True),
-        "qa_database_id": ConfigKeyPolicy(False, True),
-        "parent_page_id": ConfigKeyPolicy(False, True),
-        "database_title": ConfigKeyPolicy(False, True),
+        "database_id": ConfigKeyPolicy(False, True, standalone_writable=True),
+        "qa_database_id": ConfigKeyPolicy(False, True, standalone_writable=True),
+        "parent_page_id": ConfigKeyPolicy(False, True, standalone_writable=True),
+        "database_title": ConfigKeyPolicy(False, True, standalone_writable=True),
         "auto_sync_interval_sec": ConfigKeyPolicy(True, True),
+        "mcp_server_name": ConfigKeyPolicy(
+            False, True, consequence=CONSEQUENCE_RESTART, standalone_writable=True
+        ),
     },
     "r2_sync": {
         "enabled": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
+        # 独立壳无 AstrBot 面板：R2 连接参数在设置页可编辑（secret_access_key 仍走环境变量）。
+        "account_id": ConfigKeyPolicy(
+            False, True, consequence=CONSEQUENCE_RESTART, standalone_writable=True
+        ),
+        "access_key_id": ConfigKeyPolicy(
+            False, True, consequence=CONSEQUENCE_RESTART, standalone_writable=True
+        ),
+        "bucket": ConfigKeyPolicy(
+            False, True, consequence=CONSEQUENCE_RESTART, standalone_writable=True
+        ),
+        "warn_threshold": ConfigKeyPolicy(False, True, standalone_writable=True),
+        "backup_interval_sec": ConfigKeyPolicy(
+            False, True, consequence=CONSEQUENCE_RESTART, standalone_writable=True
+        ),
     },
     "source_store": {
         "default_collection": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
@@ -1002,6 +1032,17 @@ def structural_keys() -> dict[str, frozenset[str]]:
     }
 
 
+def standalone_writable_keys() -> dict[str, frozenset[str]]:
+    """仅独立壳可经 API 写的键（排除结构键）。供 api 在 shell=standalone 时放行。"""
+    return {
+        section: frozenset(
+            k for k, p in keys.items() if p.standalone_writable and not p.structural
+        )
+        for section, keys in CONFIG_KEY_POLICY.items()
+        if any(p.standalone_writable and not p.structural for p in keys.values())
+    }
+
+
 def runtime_persistable_keys() -> dict[str, frozenset[str]]:
     """可写入 runtime_config.json 的键。供 runtime_config._ALLOWED_RUNTIME_KEYS 派生。"""
     return {
@@ -1057,6 +1098,7 @@ __all__ = [
     "ConfigKeyPolicy",
     "CONFIG_KEY_POLICY",
     "api_writable_keys",
+    "standalone_writable_keys",
     "structural_keys",
     "runtime_persistable_keys",
     "change_consequence",

@@ -15,6 +15,7 @@ import {
   getEffectiveConfig, getZoteroConfig, syncZoteroPull, backupNow, restoreBackup, logout,
   updateConfigValue, saveZoteroServerKey, deleteZoteroServerKey,
   resolveZoteroAccountChange, getR2Status, getR2Job, notionInit, syncDocuments,
+  getCapabilities,
   EffectiveConfig, ZoteroConfig, ZoteroAccountChangeRequired, R2Status, R2BackupJob,
 } from "@/lib/api";
 
@@ -777,10 +778,16 @@ function ConfigTab() {
   const { toast } = useToast();
   const [config, setConfig] = useState<EffectiveConfig | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
+  // 运行壳：standalone 时放开原由 AstrBot 面板管辖的节（服务/主模型/R2/Notion 连接参数）。
+  const [shell, setShell] = useState<string>("plugin");
 
   useEffect(() => {
     getEffectiveConfig().then(setConfig).catch(() => {});
+    getCapabilities()
+      .then((caps) => setShell(String((caps as { shell?: string }).shell ?? "plugin")))
+      .catch(() => {});
   }, []);
+  const standalone = shell === "standalone";
 
   const SENSITIVE_KEYS = ["password", "api_key", "secret", "token", "key"];
   const inputStyle: React.CSSProperties = {
@@ -940,6 +947,56 @@ function ConfigTab() {
     );
   }
 
+  // ID 类半机密（如 R2 access_key_id）：后端只回脱敏值，输入框留空、仅在输入新值时保存，
+  // 防止把 "ab****ef" 之类的掩码写回配置。
+  function secretIdField(
+    sectionName: keyof EffectiveConfig,
+    key: string,
+    label: string,
+    hint?: string,
+  ) {
+    const id = `${sectionName}.${key}`;
+    const current = valueOf(sectionName, key);
+    return (
+      <Field label={label} hint={hint}>
+        <input
+          style={{ ...inputStyle, width: 220 }}
+          placeholder={current || "未设置（输入以更新）"}
+          defaultValue=""
+          disabled={saving === id}
+          onBlur={(event) => {
+            const next = event.target.value.trim();
+            if (!next || next.includes("****")) return;
+            saveValue(sectionName, key, next);
+            event.target.value = "";
+          }}
+        />
+      </Field>
+    );
+  }
+
+  function selectConfigField(
+    sectionName: keyof EffectiveConfig,
+    key: string,
+    label: string,
+    options: { value: string; label: string }[],
+    hint?: string,
+    fallback = "",
+  ) {
+    return (
+      <Field label={label} hint={hint}>
+        <Select
+          value={valueOf(sectionName, key, fallback)}
+          onChange={(value) => {
+            setLocal(sectionName, key, value);
+            saveValue(sectionName, key, value);
+          }}
+          options={options}
+        />
+      </Field>
+    );
+  }
+
   function renderSection(name: string, data?: Record<string, unknown>) {
     if (!data) return null;
     const icon: Record<string, string> = {
@@ -981,24 +1038,136 @@ function ConfigTab() {
           lineHeight: 1.55,
         }}
       >
-        临时迁移入口用于承接已从 AstrBot 配置面板移出的高级项；下方仍保留后端有效配置核对（
+        {standalone
+          ? "独立版设置：服务、主模型与同步连接参数均可在此编辑；真机密（密码/API Key）仅经环境变量或命令行注入。"
+          : "插件版设置：服务/R2/Notion 连接参数由 AstrBot 配置面板管辖（此处只读）；其余高级项可在此编辑。"}
+        底部保留后端有效配置核对（
         <code style={{ fontFamily: "var(--font-mono)", color: "var(--accent)" }}>
           GET /api/config/effective
         </code>
         ），敏感字段已打码。
       </div>
 
-      <Card title="源文档库（迁移）" icon="db" badge={<Badge tone="neutral">WebUI</Badge>}>
-        {textConfigField(
-          "source_store",
-          "default_collection",
-          "默认集合",
-          "文档上传时未指定集合时归入的默认分组名",
+      {/* ── 1. 服务与访问 ─────────────────────────────────────── */}
+      <Card
+        title="服务与访问"
+        icon="globe"
+        badge={
+          standalone ? <Badge tone="warn">重启生效</Badge> : <Badge tone="neutral">AstrBot 面板</Badge>
+        }
+      >
+        {standalone ? (
+          <>
+            {textConfigField(
+              "web_console",
+              "host",
+              "监听地址",
+              "127.0.0.1 仅本机访问；0.0.0.0 允许局域网访问",
+              180,
+            )}
+            {numberConfigField("web_console", "port", "服务端口")}
+            {textConfigField("web_console", "username", "登录用户名", undefined, 160)}
+            {readonlyConfigField(
+              "登录密码",
+              "",
+              "经 knowledge-arch passwd 命令或环境变量 KR_WEB_PASSWORD 修改",
+            )}
+          </>
+        ) : (
+          <>
+            <ConfigKV k="host" v={valueOf("web_console", "host")} />
+            <ConfigKV k="port" v={valueOf("web_console", "port")} />
+            <ConfigKV k="username" v={valueOf("web_console", "username")} />
+            <ConfigKV k="password" v="********" masked />
+          </>
         )}
       </Card>
 
-      <Card title="图谱专用 LLM（迁移）" icon="graph" badge={<Badge tone="warn">重启生效</Badge>}>
-        <Field label="图谱构建使用的 LLM" hint="main 复用 AstrBot 主 LLM；local/api 使用单独 OpenAI 兼容端点">
+      {/* ── 2. 主模型（OpenAI 兼容；独立版专属）─────────────────── */}
+      {standalone && (
+        <Card title="主模型（OpenAI 兼容）" icon="sparkle" badge={<Badge tone="warn">重启生效</Badge>}>
+          {textConfigField(
+            "main_llm",
+            "base_url",
+            "端点 base_url",
+            "任意 OpenAI 兼容端点：OpenAI / DeepSeek / Ollama / LM Studio / vLLM 等",
+            260,
+          )}
+          {textConfigField("main_llm", "model", "模型名", "端点上对应的模型标识符", 220)}
+          {numberConfigField("main_llm", "timeout_seconds", "请求超时（秒）")}
+          {numberConfigField("main_llm", "max_retries", "失败重试次数")}
+          {readonlyConfigField(
+            "API Key",
+            valueOf("main_llm", "api_key"),
+            "机密字段。经环境变量 KR_MAIN_LLM_API_KEY 注入",
+          )}
+        </Card>
+      )}
+
+      {/* ── 3. 对话与研究 Agent ──────────────────────────────── */}
+      <Card title="对话与研究 Agent" icon="sparkle" badge={<Badge tone="accent">即时</Badge>}>
+        {selectConfigField(
+          "ask",
+          "answer_language",
+          "回答语言",
+          [
+            { value: "auto", label: "跟随提问 (auto)" },
+            { value: "zh", label: "中文" },
+            { value: "en", label: "英文" },
+          ],
+          "research/ask 的回答语言；召回恒英文",
+          "auto",
+        )}
+        {readonlyConfigField(
+          "agent / research / persona 开关",
+          undefined,
+          standalone
+            ? "在对话页发送 /ka agent on、/ka research on 等命令切换（持久化）"
+            : "在聊天端发送 /ka agent on、/ka research on 等命令切换（持久化）",
+        )}
+      </Card>
+
+      {/* ── 4. Embedding 与检索 ─────────────────────────────── */}
+      <Card title="Embedding 与检索" icon="layers" badge={<Badge tone="warn">改嵌入需重建索引</Badge>}>
+        {selectConfigField(
+          "embedding",
+          "provider",
+          "Embedding 提供方",
+          [
+            { value: "local", label: "local（本地 sentence-transformers）" },
+            { value: "external", label: "external（OpenAI 兼容端点）" },
+          ],
+          "改动后需重建向量索引",
+          "local",
+        )}
+        {textConfigField("embedding", "model", "Embedding 模型", "改动后需重建向量索引", 240)}
+        {textConfigField("embedding", "base_url", "外部 Embedding 端点", "仅 provider=external 生效", 260)}
+        {readonlyConfigField(
+          "Embedding API Key",
+          valueOf("embedding", "api_key"),
+          "机密字段。经环境变量 KR_EMBEDDING_API_KEY 注入",
+        )}
+        {selectConfigField(
+          "rerank",
+          "provider",
+          "重排器",
+          [
+            { value: "cross_encoder", label: "cross_encoder（本地重排模型）" },
+            { value: "noop", label: "noop（关闭重排）" },
+          ],
+          undefined,
+          "noop",
+        )}
+        {textConfigField("rerank", "model", "重排模型", "默认 Alibaba-NLP/gte-reranker-modernbert-base", 260)}
+      </Card>
+
+      {/* ── 5. 知识图谱（LightRAG）──────────────────────────── */}
+      <Card title="知识图谱（LightRAG）" icon="graph" badge={<Badge tone="warn">重启生效</Badge>}>
+        {toggleConfigField("graph", "enabled", "启用知识图谱", "需要安装 graph extras（lightrag-hku）")}
+        <Field
+          label="图谱构建使用的 LLM"
+          hint={standalone ? "main 复用主模型；local/api 使用单独 OpenAI 兼容端点" : "main 复用 AstrBot 主 LLM；local/api 使用单独 OpenAI 兼容端点"}
+        >
           <Select
             value={valueOf("graph", "lightrag_llm_provider", "main")}
             onChange={(value) => {
@@ -1021,7 +1190,7 @@ function ConfigTab() {
         )}
       </Card>
 
-      <Card title="Deep Thinking（迁移）" icon="sparkle" badge={<Badge tone="accent">即时 / 重启</Badge>}>
+      <Card title="Deep Thinking（研究内部 agent）" icon="sparkle" badge={<Badge tone="accent">即时 / 重启</Badge>}>
         {numberConfigField("deep_thinking", "max_rounds", "最大迭代轮数", "轮数越多越全也越慢越贵")}
         {numberConfigField("deep_thinking", "max_sub_queries", "每轮最大子查询数")}
         {numberConfigField("deep_thinking", "wide_top_k", "每个子查询的检索宽度")}
@@ -1055,6 +1224,101 @@ function ConfigTab() {
         )}
       </Card>
 
+      {/* ── 6. Zotero 同步（操作在「同步与备份」页）───────────── */}
+      <Card title="Zotero 同步" icon="book" badge={<Badge tone="neutral">操作入口在同步页</Badge>}>
+        <div style={{ fontSize: 12, color: "var(--fg-muted)", lineHeight: 1.55, padding: "6px 0" }}>
+          Zotero 账号连接、存储模式与拉取操作在「同步与备份」页配置；此处仅核对当前生效值。
+        </div>
+        <ConfigKV k="enabled" v={valueOf("zotero_sync", "enabled")} />
+        <ConfigKV k="access_mode" v={valueOf("zotero_sync", "access_mode")} />
+        <ConfigKV k="storage_mode" v={valueOf("zotero_sync", "storage_mode")} />
+        <ConfigKV k="sync_mode" v={valueOf("zotero_sync", "sync_mode")} />
+      </Card>
+
+      {/* ── 7. 备份与镜像（R2 / Notion）───────────────────────── */}
+      <Card
+        title="R2 备份"
+        icon="cloud"
+        badge={
+          standalone ? <Badge tone="warn">重启生效</Badge> : <Badge tone="neutral">AstrBot 面板</Badge>
+        }
+      >
+        {toggleConfigField("r2_sync", "enabled", "启用 R2 备份", "Cloudflare R2 内容寻址快照备份")}
+        {standalone ? (
+          <>
+            {textConfigField("r2_sync", "account_id", "Cloudflare 账户 ID", undefined, 220)}
+            {secretIdField("r2_sync", "access_key_id", "Access Key ID", "ID 类半机密：输入新值以更新")}
+            {textConfigField("r2_sync", "bucket", "Bucket 名称", undefined, 200)}
+            {numberConfigField("r2_sync", "warn_threshold", "容量预警阈值（0~1）", undefined, "float")}
+            {numberConfigField("r2_sync", "backup_interval_sec", "周期备份间隔（秒）", "0=关闭周期备份")}
+            {readonlyConfigField(
+              "Secret Access Key",
+              valueOf("r2_sync", "secret_access_key"),
+              "机密字段。经环境变量 KR_R2_SECRET_ACCESS_KEY 注入",
+            )}
+          </>
+        ) : (
+          <>
+            <ConfigKV k="account_id" v={valueOf("r2_sync", "account_id")} />
+            <ConfigKV k="access_key_id" v={valueOf("r2_sync", "access_key_id")} masked />
+            <ConfigKV k="bucket" v={valueOf("r2_sync", "bucket")} />
+            <ConfigKV k="backup_interval_sec" v={valueOf("r2_sync", "backup_interval_sec")} />
+          </>
+        )}
+      </Card>
+
+      <Card
+        title="Notion 镜像"
+        icon="layers"
+        badge={
+          standalone ? <Badge tone="warn">重启生效</Badge> : <Badge tone="neutral">AstrBot 面板</Badge>
+        }
+      >
+        {toggleConfigField("notion_sync", "enabled", "启用 Notion 推送", "文章两表 + QA 问答库单向镜像")}
+        {numberConfigField("notion_sync", "auto_sync_interval_sec", "定时推送间隔（秒）", "0=关闭定时推送")}
+        {standalone ? (
+          <>
+            {textConfigField("notion_sync", "parent_page_id", "父页面 ID", "自动建库的挂载页面", 240)}
+            {textConfigField("notion_sync", "database_title", "数据库标题", undefined, 200)}
+            {readonlyConfigField(
+              "Notion API Token",
+              "",
+              "机密字段。经环境变量 KR_NOTION_API_TOKEN 注入（stdio MCP 传输）",
+            )}
+          </>
+        ) : (
+          <>
+            <ConfigKV k="parent_page_id" v={valueOf("notion_sync", "parent_page_id")} />
+            <ConfigKV k="database_title" v={valueOf("notion_sync", "database_title")} />
+            <ConfigKV k="mcp_server_name" v={valueOf("notion_sync", "mcp_server_name")} />
+          </>
+        )}
+      </Card>
+
+      {/* ── 8. 系统与数据 ─────────────────────────────────────── */}
+      <Card title="系统与数据" icon="db" badge={<Badge tone="warn">重启生效</Badge>}>
+        {textConfigField(
+          "source_store",
+          "default_collection",
+          "默认集合",
+          "文档上传时未指定集合时归入的默认分组名",
+        )}
+        {toggleConfigField("source_store", "ocr_enabled", "启用 OCR", "扫描版 PDF 的文字识别")}
+      </Card>
+
+      {/* ── 有效配置核对（原始快照，敏感字段打码）──────────────── */}
+      <div
+        style={{
+          fontSize: 11,
+          fontWeight: 700,
+          letterSpacing: ".06em",
+          textTransform: "uppercase",
+          color: "var(--fg-subtle)",
+          margin: "18px 0 8px",
+        }}
+      >
+        有效配置核对
+      </div>
       {Object.entries(config)
         .filter(([k]) => k !== "diagnostics")
         .map(([k, v]) => renderSection(k, v as Record<string, unknown>))}

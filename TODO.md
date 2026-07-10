@@ -60,12 +60,21 @@
   验证：test_chat_agent.py 4 例（脚本化 LLM 驱动真实组合根）；全量 630 passed；前端
   npm build + sync_frontend 成功；冒烟 info/available、/ka help SSE 回复与持久化、
   dummy LLM 显式报错均符合预期。
-- [ ] **Phase 6 - 设置页整体重组**：SettingModal 重组为 8 分组（服务与访问/主模型/对话与研究
-  Agent/Embedding 与检索/知识图谱/Zotero/备份与镜像/系统与数据）；`ConfigKeyPolicy` 增
-  `standalone_writable`；`/api/capabilities` 暴露 shell；插件模式 4 面板节保持只读。
-- [ ] **Phase 7 - 打包与一键脚本**：根 pyproject `[project]` 定稿（extras: graph/local-embedding/
-  backup/notion/all；Windows 平台标记规避 milvus-lite 缺 wheel）；`.python-version`；uv.lock；
-  `scripts/install.sh|.bat`、`start.sh|.bat`；README 三平台部署文档。
+- [x] **Phase 6 - 设置页整体重组**：ConfigTab 重组为 8 分组（服务与访问/主模型/对话与研究
+  Agent/Embedding 与检索/知识图谱/Zotero/备份与镜像/系统与数据）+ 底部有效配置核对；
+  `ConfigKeyPolicy` 增 `standalone_writable`（web_console host/port/username、r2_sync 连接
+  参数、notion_sync 库参数）；api 增 `attach_shell`/`shell`，update_config 按壳放行
+  （access_key_id 为 ID 类半机密仅独立壳可写，真机密仍环境变量 only）；capabilities 暴露
+  `shell` 与 `chat_agent_available`；前端按 shell 条件渲染可编辑/只读，半机密字段防掩码回写。
+  验证：test_standalone_config_policy.py 3 例（插件只读回归 + 独立壳可写）；全量 633 passed；
+  前端 lint/tsc/build/sync 全绿。
+- [x] **Phase 7 - 打包与一键脚本**：根 pyproject `[project]` 定稿（hatchling、deps 补
+  cryptography、extras graph/local-embedding/backup/notion/all、Windows 平台标记规避
+  milvus-lite 缺 wheel、`[project.scripts]` knowledge-arch）；`.python-version`=3.11；
+  uv.lock（144 包）；`scripts/install.sh|.bat`（uv 引导 + --cn 镜像 + --minimal + doctor）与
+  `start.sh|.bat`；README 三平台部署文档（安装模型 = clone + uv sync editable，零 Node 部署）。
+  验证：`uv lock` 解析成功；`uv sync`（最小安装）+ `uv run knowledge-arch --version/doctor`
+  entry point 冒烟通过（独立 CPython 3.11.15 环境）。
 - [ ] **Phase 8 - v0.1.0 发布与双仓推送**：bump --target standalone 收口 CHANGELOG/TODO；
   tag v0.1.0；`tools/publish_plugin.py` 推插件形态树到旧仓 developer（经批准）；
   旧仓 README 加迁移指引。
