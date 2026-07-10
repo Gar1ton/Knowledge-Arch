@@ -1,0 +1,75 @@
+"""本地开发测试配置模板。
+
+使用方法：
+    复制本文件为同目录下的 config.py，填入真实值。
+    config.py 已被 .gitignore，不会被提交。
+
+配置说明：
+    主 LLM（答案生成，必填）：
+        LLM_PROVIDER = "api"   → 使用云端 OpenAI-compatible API。
+        LLM_PROVIDER = "local" → 使用本地 LM Studio/Ollama OpenAI-compatible endpoint。
+
+    图谱构建 LLM（可选）：
+        LIGHTRAG_LLM_PROVIDER = "main"  → 复用主 LLM。
+        LIGHTRAG_LLM_PROVIDER = "local" → 使用本地 LM Studio/Ollama。
+        LIGHTRAG_LLM_PROVIDER = "api"   → 使用独立云端 OpenAI-compatible API。
+
+    Embedding 有两种选择：
+        EMBEDDING_PROVIDER = "local"    → sentence_transformers 本地运行，无需 key
+        EMBEDDING_PROVIDER = "external" → 云端 API（OpenAI 兼容），需填入 API 配置
+
+    Rerank（Deep Thinking 专用）：
+        默认不写 RERANK_PROVIDER；安装 sentence-transformers 后自动使用
+        Alibaba-NLP/gte-reranker-modernbert-base。AB test 关闭可设置
+        RERANK_PROVIDER = "noop"。
+"""
+
+# ── 主 LLM（答案生成，必填）────────────────────────────────────────
+# "api" 使用下方 LLM_API_URL / LLM_MODEL / DEEPSEEK_API_KEY。
+# "local" 使用 LOCAL_LLM_API_URL / LOCAL_LLM_MODEL / LOCAL_LLM_API_KEY。
+LLM_PROVIDER = "api"
+
+# Ask 页的最终答案由此 API LLM 生成。
+DEEPSEEK_API_KEY = "sk-your-key-here"
+LLM_MODEL = "deepseek-chat"
+LLM_API_URL = "https://api.deepseek.com/v1"
+
+# ── 图谱构建专用 LLM（可选）────────────────────────────────────────
+# "main" 复用主 LLM；"local" / "api" 使用下方 LIGHTRAG_LLM_* endpoint。
+# 旧配置未设置 LIGHTRAG_LLM_PROVIDER 但填写了 BASE_URL/MODEL 时，会按 "local" 兼容处理。
+LIGHTRAG_LLM_PROVIDER = "main"
+
+# LightRAG build 阶段的实体/关系抽取调用此 endpoint。
+# 典型值：LM Studio 本地服务（启动后在 LM Studio → Local Server 查看端口）
+LIGHTRAG_LLM_BASE_URL = ""          # 本机直接运行: "http://localhost:1234/v1"
+                                    # devcontainer/Docker 内访问 Windows: "http://host.docker.internal:1234/v1"
+LIGHTRAG_LLM_MODEL = ""             # 例："Qwen2.5-7B-Instruct-GGUF" / "phi4"
+LIGHTRAG_LLM_API_KEY = ""           # 本地服务通常留空；远程 OpenAI-compatible 服务填入 key
+LIGHTRAG_LLM_TIMEOUT_SECONDS = 900   # 本地 phi4 慢推理建议显著高于 180s
+LIGHTRAG_LLM_MAX_RETRIES = 2
+LIGHTRAG_LLM_RETRY_BACKOFF_SECONDS = 2.0
+LIGHTRAG_SECONDS_PER_CHUNK_LOCAL = 90.0
+LIGHTRAG_SECONDS_PER_CHUNK_REMOTE = 20.0
+
+# ── Embedding 模式选择 ──────────────────────────────────────────────
+# "local"    → sentence_transformers 本地运行，无需 API key（推荐本地测试）
+# "external" → 云端 API，需填写下方配置
+EMBEDDING_PROVIDER = "local"
+
+# ── 本地 Embedding 配置（EMBEDDING_PROVIDER = "local" 时生效）──────
+# 模型首次使用时自动从 HuggingFace 下载（约 200-400 MB）
+EMBEDDING_LOCAL_MODEL = "intfloat/multilingual-e5-small"  # dim=384
+
+# ── 云端 Embedding 配置（EMBEDDING_PROVIDER = "external" 时生效）──
+EMBEDDING_API_KEY = "sk-your-key-here"
+EMBEDDING_MODEL = "text-embedding-v3"
+EMBEDDING_API_URL = "https://api.openai.com/v1"
+
+# ── Deep Thinking Rerank（可选，AB test 用）───────────────────────
+# 不设置 RERANK_PROVIDER 时：安装 sentence-transformers 后默认启用本地 cross-encoder；
+# 未安装时自动 noop，不影响启动。显式 "noop" 会保持关闭。
+# RERANK_PROVIDER = "noop"
+# RERANK_PROVIDER = "cross_encoder"
+RERANK_MODEL = "Alibaba-NLP/gte-reranker-modernbert-base"
+# 也可切换：RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
+DEEP_THINKING_RERANK_WEIGHT = 0.2

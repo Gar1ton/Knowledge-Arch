@@ -1,0 +1,27 @@
+# 正式 main 文件树白名单。语法：glob；!glob 表示排除；source => target 表示重命名复制。
+# monorepo 布局：插件壳文件位于 apps/plugin/，经 => 规则回写到发布树根。
+apps/plugin/main.py => main.py
+apps/plugin/metadata.yaml => metadata.yaml
+apps/plugin/_conf_schema.json => _conf_schema.json
+requirements.txt
+requirements-additional.txt
+apps/plugin/README.md => README.md
+apps/plugin/CHANGELOG.md => CHANGELOG.md
+LICENSE
+apps/plugin/logo.png => logo.png
+apps/plugin/logo.svg => logo.svg
+.gitattributes
+.github/workflows/published-verify.yml
+release/AGENTS.published.md => AGENTS.md
+
+knowledge_arch/*.py
+knowledge_arch/**/*.py
+!knowledge_arch/main.py
+
+ka_web/server.py
+
+ka_migrations/*.py
+ka_migrations/*.sql
+
+pages/**
+!pages/README.md
