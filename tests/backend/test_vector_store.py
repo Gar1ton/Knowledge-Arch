@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from knowledge_arch.domain.models import DocumentChunk
-from knowledge_arch.repository.vector_store.memory import InMemoryVectorStore
-from knowledge_arch.repository.vector_store.milvus_lite import MilvusLiteVectorStore
+from ka_core.domain.models import DocumentChunk
+from ka_core.repository.vector_store.memory import InMemoryVectorStore
+from ka_core.repository.vector_store.milvus_lite import MilvusLiteVectorStore
 
 
 @pytest.fixture

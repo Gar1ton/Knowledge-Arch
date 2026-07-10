@@ -14,9 +14,9 @@ apps/plugin/logo.svg => logo.svg
 .github/workflows/published-verify.yml
 release/AGENTS.published.md => AGENTS.md
 
-knowledge_arch/*.py
-knowledge_arch/**/*.py
-!knowledge_arch/main.py
+ka_core/*.py
+ka_core/**/*.py
+!ka_core/main.py
 
 ka_web/server.py
 

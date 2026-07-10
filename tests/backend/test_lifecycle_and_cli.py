@@ -11,9 +11,9 @@ from unittest.mock import MagicMock, patch
 import fitz  # type: ignore[import-untyped]
 import pytest
 
-from knowledge_arch.main import KnowledgeRepositoryPlugin
-from knowledge_arch.migration_runner import run_migrations
-from knowledge_arch.plugin_initializer import PluginInitializer, _load_plugin_web_build_app
+from ka_core.main import KnowledgeRepositoryPlugin
+from ka_core.migration_runner import run_migrations
+from ka_core.plugin_initializer import PluginInitializer, _load_plugin_web_build_app
 
 
 @pytest.fixture
@@ -81,7 +81,7 @@ async def test_plugin_initializer_lifecycle(
 
 
 def test_initializer_uses_plugin_owned_migration_runner() -> None:
-    assert run_migrations.__module__ == "knowledge_arch.migration_runner"
+    assert run_migrations.__module__ == "ka_core.migration_runner"
 
 
 def test_web_server_loader_ignores_conflicting_top_level_web_module(
@@ -115,7 +115,7 @@ async def test_plugin_initializer_lifecycle_periodic_disabled(
 async def test_initializer_creates_default_collection_without_overwriting_it(
     temp_dir: Path, mock_context: object
 ) -> None:
-    from knowledge_arch.domain.models import Collection
+    from ka_core.domain.models import Collection
 
     config = {"vector_db": {"backend": "astr"}}
     first = PluginInitializer(mock_context, config, temp_dir)
@@ -175,12 +175,12 @@ async def test_initializer_passes_probed_dimension_to_milvus_and_lightrag(
     }
     with (
         patch(
-            "knowledge_arch.repository.embedding.factory.EmbeddingProviderFactory.create_provider",
+            "ka_core.repository.embedding.factory.EmbeddingProviderFactory.create_provider",
             return_value=Provider(),
         ),
-        patch("knowledge_arch.repository.vector_store.milvus_lite.MilvusLiteVectorStore", Milvus),
-        patch("knowledge_arch.lightrag_core.LightRAGCoreRegistry", Registry),
-        patch("knowledge_arch.plugin_initializer._module_available", return_value=True),
+        patch("ka_core.repository.vector_store.milvus_lite.MilvusLiteVectorStore", Milvus),
+        patch("ka_core.lightrag_core.LightRAGCoreRegistry", Registry),
+        patch("ka_core.plugin_initializer._module_available", return_value=True),
     ):
         initializer = PluginInitializer(mock_context, config, temp_dir)
         await initializer.initialize()
@@ -233,10 +233,10 @@ async def test_initializer_probe_failure_disables_embedding_indexes(
     }
     with (
         patch(
-            "knowledge_arch.repository.embedding.factory.EmbeddingProviderFactory.create_provider",
+            "ka_core.repository.embedding.factory.EmbeddingProviderFactory.create_provider",
             return_value=Provider(),
         ),
-        patch("knowledge_arch.plugin_initializer._module_available", return_value=True),
+        patch("ka_core.plugin_initializer._module_available", return_value=True),
     ):
         initializer = PluginInitializer(mock_context, config, temp_dir)
         await initializer.initialize()
@@ -269,10 +269,10 @@ async def test_fresh_install_uploads_and_lexically_retrieves_when_embedding_prob
 
     with (
         patch(
-            "knowledge_arch.repository.embedding.factory.EmbeddingProviderFactory.create_provider",
+            "ka_core.repository.embedding.factory.EmbeddingProviderFactory.create_provider",
             return_value=Provider(),
         ),
-        patch("knowledge_arch.plugin_initializer._module_available", return_value=True),
+        patch("ka_core.plugin_initializer._module_available", return_value=True),
     ):
         initializer = PluginInitializer(mock_context, {}, temp_dir)
         await initializer.initialize()
@@ -309,7 +309,7 @@ async def test_fresh_install_uploads_and_lexically_retrieves_when_embedding_prob
 async def test_initializer_keeps_mismatched_milvus_available_for_manual_rebuild(
     temp_dir: Path, mock_context: object, raw_config: dict[str, Any]
 ) -> None:
-    from knowledge_arch.repository.vector_store.milvus_lite import MilvusSchemaMismatchError
+    from ka_core.repository.vector_store.milvus_lite import MilvusSchemaMismatchError
 
     class Provider:
         async def embed_query(self, text: str) -> list[float]:
@@ -332,11 +332,11 @@ async def test_initializer_keeps_mismatched_milvus_available_for_manual_rebuild(
     }
     with (
         patch(
-            "knowledge_arch.repository.embedding.factory.EmbeddingProviderFactory.create_provider",
+            "ka_core.repository.embedding.factory.EmbeddingProviderFactory.create_provider",
             return_value=Provider(),
         ),
-        patch("knowledge_arch.repository.vector_store.milvus_lite.MilvusLiteVectorStore", Milvus),
-        patch("knowledge_arch.plugin_initializer._module_available", return_value=True),
+        patch("ka_core.repository.vector_store.milvus_lite.MilvusLiteVectorStore", Milvus),
+        patch("ka_core.plugin_initializer._module_available", return_value=True),
     ):
         initializer = PluginInitializer(mock_context, config, temp_dir)
         await initializer.initialize()
@@ -354,7 +354,7 @@ async def test_initializer_keeps_mismatched_milvus_available_for_manual_rebuild(
 async def test_initializer_marks_recreated_empty_milvus_incompatible_when_docs_exist(
     temp_dir: Path, mock_context: object, raw_config: dict[str, Any]
 ) -> None:
-    from knowledge_arch.domain.models import Collection, SourceDocument
+    from ka_core.domain.models import Collection, SourceDocument
 
     seed_config = {
         **raw_config,
@@ -393,11 +393,11 @@ async def test_initializer_marks_recreated_empty_milvus_incompatible_when_docs_e
     }
     with (
         patch(
-            "knowledge_arch.repository.embedding.factory.EmbeddingProviderFactory.create_provider",
+            "ka_core.repository.embedding.factory.EmbeddingProviderFactory.create_provider",
             return_value=Provider(),
         ),
-        patch("knowledge_arch.repository.vector_store.milvus_lite.MilvusLiteVectorStore", Milvus),
-        patch("knowledge_arch.plugin_initializer._module_available", return_value=True),
+        patch("ka_core.repository.vector_store.milvus_lite.MilvusLiteVectorStore", Milvus),
+        patch("ka_core.plugin_initializer._module_available", return_value=True),
     ):
         initializer = PluginInitializer(mock_context, config, temp_dir)
         await initializer.initialize()
@@ -457,7 +457,7 @@ async def test_plugin_shell_lifecycle(
     assert plugin._initializer.agent_enabled is True
     assert (temp_dir / "runtime_config.json").exists()
 
-    from knowledge_arch.domain.models import DocumentChunk
+    from ka_core.domain.models import DocumentChunk
 
     mock_chunk = DocumentChunk(
         chunk_id="test-chunk-1",

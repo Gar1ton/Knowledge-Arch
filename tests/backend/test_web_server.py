@@ -1,6 +1,6 @@
 """ka_web/server.py 路由 smoke 测试（aiohttp TestServer + 内存 api）。
 
-验证 HTTP↔knowledge_arch/api 的翻译与认证中间件，不连真实后端。
+验证 HTTP↔ka_core/api 的翻译与认证中间件，不连真实后端。
 """
 from __future__ import annotations
 
@@ -14,21 +14,21 @@ from aiohttp.test_utils import TestClient, TestServer
 from yarl import URL
 
 from ka_web.server import SESSION_COOKIE, build_app
-from knowledge_arch.api import KnowledgeRepositoryApi
-from knowledge_arch.config import Config
-from knowledge_arch.domain.models import (
+from ka_core.api import KnowledgeRepositoryApi
+from ka_core.config import Config
+from ka_core.domain.models import (
     Collection,
     DocumentChunk,
     DocumentOrigin,
     SourceDocument,
     SyncTargetKind,
 )
-from knowledge_arch.index_compatibility import IndexCompatibilityStore
-from knowledge_arch.plugin_initializer import PluginInitializer
-from knowledge_arch.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
-from knowledge_arch.repository.source_store.memory import InMemorySourceDocumentStore
-from knowledge_arch.repository.sync_targets.memory import InMemorySyncTarget
-from knowledge_arch.secret_store import EncryptedSecretStore
+from ka_core.index_compatibility import IndexCompatibilityStore
+from ka_core.plugin_initializer import PluginInitializer
+from ka_core.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
+from ka_core.repository.source_store.memory import InMemorySourceDocumentStore
+from ka_core.repository.sync_targets.memory import InMemorySyncTarget
+from ka_core.secret_store import EncryptedSecretStore
 
 _GB = 1024 * 1024 * 1024
 
@@ -892,7 +892,7 @@ async def test_document_annotations_route_uses_zotero_readonly_client(
                 },
             ]
 
-    from knowledge_arch.adapters.zotero import local_api
+    from ka_core.adapters.zotero import local_api
 
     monkeypatch.setattr(local_api, "ZoteroLocalApiClient", FakeZoteroClient)
 
@@ -1163,7 +1163,7 @@ async def test_zotero_server_key_routes_encrypt_and_mask(
                 "access": {"user": {"library": True, "files": True}},
             }
 
-    monkeypatch.setattr("knowledge_arch.adapters.zotero.web_api.ZoteroWebApiClient", Client)
+    monkeypatch.setattr("ka_core.adapters.zotero.web_api.ZoteroWebApiClient", Client)
     api = await _make_api()
     api._secret_store = EncryptedSecretStore(tmp_path / "secrets")
     app = build_app(
@@ -1210,7 +1210,7 @@ async def test_zotero_account_change_requires_confirmation_and_preserves_old_key
                 "access": {"user": {"library": True, "files": True}},
             }
 
-    monkeypatch.setattr("knowledge_arch.adapters.zotero.web_api.ZoteroWebApiClient", Client)
+    monkeypatch.setattr("ka_core.adapters.zotero.web_api.ZoteroWebApiClient", Client)
     api = await _make_api()
     api._secret_store = EncryptedSecretStore(tmp_path / "secrets")
     app = build_app(
@@ -1470,8 +1470,8 @@ async def test_graph_mixed_ask_returns_structured_not_ready(tmp_path: Path) -> N
 
 async def test_graph_mixed_ask_returns_renamed_failure_status(tmp_path: Path) -> None:
     """图谱 workspace 已就绪但查询失败时，HTTP 契约使用 graph_mixed_failed。"""
-    from knowledge_arch.index_compatibility import IndexCompatibilityStore
-    from knowledge_arch.pipelines.retrieval_orchestrator import RetrievalOutcome
+    from ka_core.index_compatibility import IndexCompatibilityStore
+    from ka_core.pipelines.retrieval_orchestrator import RetrievalOutcome
 
     class Registry:
         def has_workspace(self, collection: str) -> bool:
@@ -1530,8 +1530,8 @@ async def test_graph_mixed_ask_returns_renamed_failure_status(tmp_path: Path) ->
 
 async def test_metrics_route(tmp_path: Path) -> None:
     """GET /api/metrics 应返回 ops + total_records 结构。"""
-    from knowledge_arch.ask_progress import ProgressStore
-    from knowledge_arch.metrics import PerformanceTracker
+    from ka_core.ask_progress import ProgressStore
+    from ka_core.metrics import PerformanceTracker
 
     tracker = PerformanceTracker()
     tracker.record("embed_query", 100.0)
@@ -1566,8 +1566,8 @@ async def test_metrics_route(tmp_path: Path) -> None:
 
 async def test_ask_progress_route_not_found(tmp_path: Path) -> None:
     """GET /api/ask/progress/{cid} — 不存在的 cid 应返回 404。"""
-    from knowledge_arch.ask_progress import ProgressStore
-    from knowledge_arch.metrics import PerformanceTracker
+    from ka_core.ask_progress import ProgressStore
+    from ka_core.metrics import PerformanceTracker
 
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
@@ -1592,8 +1592,8 @@ async def test_ask_progress_route_not_found(tmp_path: Path) -> None:
 
 async def test_ask_progress_route_found(tmp_path: Path) -> None:
     """GET /api/ask/progress/{cid} — 已设置进度时应返回 stage + pct。"""
-    from knowledge_arch.ask_progress import ProgressStore
-    from knowledge_arch.metrics import PerformanceTracker
+    from ka_core.ask_progress import ProgressStore
+    from ka_core.metrics import PerformanceTracker
 
     progress_store = ProgressStore()
     progress_store.set("test-cid-123", "vector_search", 20)

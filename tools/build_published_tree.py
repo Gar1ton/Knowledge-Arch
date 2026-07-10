@@ -57,7 +57,7 @@ FORBIDDEN_FILES = {
     "pyproject.toml",
     "rebuild.sh",
     "requirements-dev.txt",
-    "knowledge_arch/main.py",
+    "ka_core/main.py",
 }
 
 

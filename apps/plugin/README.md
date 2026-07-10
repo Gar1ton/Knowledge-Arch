@@ -231,7 +231,7 @@ AstrBot / Web / CLI
 main.py / ka_web/server.py
         |
         v
-knowledge_arch/event_handler.py -> knowledge_arch/api.py
+ka_core/event_handler.py -> ka_core/api.py
         |
         v
 managers / pipelines -> repository -> domain
@@ -240,9 +240,9 @@ managers / pipelines -> repository -> domain
 关键约束：
 
 - 框架入口只注册和委派，不写业务逻辑。
-- 业务编排集中在 `knowledge_arch/api.py`、`knowledge_arch/managers/` 和 `knowledge_arch/pipelines/`。
-- 持久化通过 `knowledge_arch/repository/*/base.py` 的接口契约隔离。
-- `knowledge_arch/domain/` 保持零依赖。
+- 业务编排集中在 `ka_core/api.py`、`ka_core/managers/` 和 `ka_core/pipelines/`。
+- 持久化通过 `ka_core/repository/*/base.py` 的接口契约隔离。
+- `ka_core/domain/` 保持零依赖。
 - 前端源码在 `ka_web/frontend/`，静态产物在 `pages/`，只能通过构建和 `tools/sync_frontend.py` 同步。
 
 开发与目录指引：

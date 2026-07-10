@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import pytest
 
-from knowledge_arch.config import Config
-from knowledge_arch.domain.deep_thinking import Checklist, ChecklistItem, EvidenceItem
-from knowledge_arch.domain.models import DocumentChunk, SourceDocument
-from knowledge_arch.pipelines.answer_synthesis import source_tag, synthesize_answer
-from knowledge_arch.pipelines.deep_thinking_prompts import build_sea_prompt, build_verify_prompt
-from knowledge_arch.pipelines.retrieval_orchestrator import RetrievalOrchestrator
-from knowledge_arch.repository.kb_reader.base import KnowledgeBaseReader
-from knowledge_arch.repository.source_store.memory import InMemorySourceDocumentStore
+from ka_core.config import Config
+from ka_core.domain.deep_thinking import Checklist, ChecklistItem, EvidenceItem
+from ka_core.domain.models import DocumentChunk, SourceDocument
+from ka_core.pipelines.answer_synthesis import source_tag, synthesize_answer
+from ka_core.pipelines.deep_thinking_prompts import build_sea_prompt, build_verify_prompt
+from ka_core.pipelines.retrieval_orchestrator import RetrievalOrchestrator
+from ka_core.repository.kb_reader.base import KnowledgeBaseReader
+from ka_core.repository.source_store.memory import InMemorySourceDocumentStore
 
 # 两篇相似论文的证据，doc_id 即来源标签的解析键。
 _CHUNK_A = DocumentChunk("a_c0", "Lean4Agent", 0, "LLMExec 局部正确性假设", "ha")

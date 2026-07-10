@@ -20,8 +20,8 @@ from typing import TYPE_CHECKING, cast
 from aiohttp import web
 
 if TYPE_CHECKING:
-    from knowledge_arch.api import KnowledgeRepositoryApi
-    from knowledge_arch.log_capture import MemoryLogHandler
+    from ka_core.api import KnowledgeRepositoryApi
+    from ka_core.log_capture import MemoryLogHandler
 
 # ── 常量 ────────────────────────────────────────────────────────
 
@@ -147,7 +147,7 @@ async def handle_list_collections(request: web.Request) -> web.Response:
 
 
 async def handle_create_collection(request: web.Request) -> web.Response:
-    from knowledge_arch.api import ReadOnlyError
+    from ka_core.api import ReadOnlyError
 
     body = await request.json()
     name = (body.get("name") or "").strip()
@@ -169,7 +169,7 @@ async def handle_create_collection(request: web.Request) -> web.Response:
 
 
 async def handle_delete_collection(request: web.Request) -> web.Response:
-    from knowledge_arch.api import ReadOnlyError
+    from ka_core.api import ReadOnlyError
 
     try:
         ok = await _api(request).delete_collection(request.match_info["name"])
@@ -182,7 +182,7 @@ async def handle_delete_collection(request: web.Request) -> web.Response:
 
 async def handle_patch_collection(request: web.Request) -> web.Response:
     """按 coll_key 重命名 / 移动本地集合。body: {name?, parent_key?}。"""
-    from knowledge_arch.api import ReadOnlyError
+    from ka_core.api import ReadOnlyError
 
     coll_key = request.match_info["coll_key"]
     body = await request.json()
@@ -200,7 +200,7 @@ async def handle_patch_collection(request: web.Request) -> web.Response:
 
 
 async def handle_delete_collection_by_key(request: web.Request) -> web.Response:
-    from knowledge_arch.api import ReadOnlyError
+    from ka_core.api import ReadOnlyError
 
     try:
         ok = await _api(request).delete_collection_by_key(request.match_info["coll_key"])
@@ -298,7 +298,7 @@ async def handle_upload_document(request: web.Request) -> web.Response:
 
 
 async def handle_classify_document(request: web.Request) -> web.Response:
-    from knowledge_arch.api import ReadOnlyError
+    from ka_core.api import ReadOnlyError
 
     body = await request.json()
     tags = body.get("tags")
@@ -328,7 +328,7 @@ async def handle_document_meta_patch(request: web.Request) -> web.Response:
 
 
 async def handle_delete_document(request: web.Request) -> web.Response:
-    from knowledge_arch.api import ReadOnlyError
+    from ka_core.api import ReadOnlyError
 
     doc_id = request.match_info["doc_id"]
     _mw_logger.info("Delete document: doc_id=%s", doc_id)
@@ -1162,7 +1162,7 @@ async def handle_ask(request: web.Request) -> web.Response:
     retrieval_mode = body.get("retrieval_mode") or "default"
     use_english_retrieval = bool(body.get("use_english_retrieval") or False)
     answer_language = str(body.get("answer_language") or "auto")
-    from knowledge_arch.api import GraphMixedQueryError, LightRAGNotReadyError
+    from ka_core.api import GraphMixedQueryError, LightRAGNotReadyError
 
     try:
         result = await _api(request).ask(
@@ -1206,7 +1206,7 @@ async def handle_ask(request: web.Request) -> web.Response:
 
 
 def _collection_dict(c: object) -> dict:
-    from knowledge_arch.api import SYSTEM_COLLECTION_UNCATEGORIZED
+    from ka_core.api import SYSTEM_COLLECTION_UNCATEGORIZED
 
     origin = getattr(c, "origin", None)
     origin_val = origin.value if origin is not None else "local"
@@ -1453,7 +1453,7 @@ def build_app(
     )
 
     # 安装内存日志 handler（幂等，重复调用安全）
-    from knowledge_arch.log_capture import install as _install_log_handler
+    from ka_core.log_capture import install as _install_log_handler
 
     app[_LOG_HANDLER_KEY] = _install_log_handler(maxlen=500)
 

@@ -48,4 +48,4 @@ jobs:
           print(f"published tree ok: {len(files)} files, archive={size / 1024 / 1024:.2f} MiB")
           PY
       - name: Compile Python sources
-        run: python -m compileall -q main.py knowledge_arch ka_web ka_migrations
+        run: python -m compileall -q main.py ka_core ka_web ka_migrations

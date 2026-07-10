@@ -20,9 +20,9 @@ bump_version.py export-ignore
 pyproject.toml  export-ignore
 rebuild.sh      export-ignore
 requirements-dev.txt export-ignore
-knowledge_arch/main.py    export-ignore
-knowledge_arch/*.README.md export-ignore
-knowledge_arch/**/README.md export-ignore
+ka_core/main.py    export-ignore
+ka_core/*.README.md export-ignore
+ka_core/**/README.md export-ignore
 ka_migrations/README.md export-ignore
 pages/README.md export-ignore
 .gitignore      export-ignore

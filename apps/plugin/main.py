@@ -14,7 +14,7 @@ if str(_ROOT_DIR) not in sys.path:
 
 
 def _purge_stale_local_modules() -> None:
-    """Evict ALL cached knowledge_arch/ka_web/ka_migrations modules on every load.
+    """Evict ALL cached ka_core/ka_web/ka_migrations modules on every load.
 
     Two reasons:
     1. Defense in depth against another plugin claiming the same top-level
@@ -28,7 +28,7 @@ def _purge_stale_local_modules() -> None:
        installs are invisible.  Unconditional eviction forces a fresh import
        every time, fixing AttributeError on hot-reload.
     """
-    _OWNED_TOPS = frozenset(("knowledge_arch", "ka_web", "ka_migrations"))
+    _OWNED_TOPS = frozenset(("ka_core", "ka_web", "ka_migrations"))
 
     for name in list(sys.modules.keys()):
         if name == __name__:
@@ -44,15 +44,15 @@ from typing import TYPE_CHECKING, Any
 from astrbot.api.event import filter
 from astrbot.api.star import Context, Star, StarTools, register
 
-from knowledge_arch.event_handler import EventHandler
-from knowledge_arch.plugin_initializer import PluginInitializer
-from knowledge_arch.retrieval_modes import (
+from ka_core.event_handler import EventHandler
+from ka_core.plugin_initializer import PluginInitializer
+from ka_core.retrieval_modes import (
     MODE_GRAPH_MIXED,
     MODE_GRAPH_ONLY,
     STRICT_COLLECTION_MODES,
     normalize_retrieval_mode,
 )
-from knowledge_arch.utils import text_chunks
+from ka_core.utils import text_chunks
 
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
