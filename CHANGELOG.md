@@ -21,6 +21,16 @@
 
 ### 新增功能 (Added)
 
+- **独立版 Notion stdio 传输（Phase 4）**：`ka_standalone/notion_transport.py` 的
+  `StdioNotionToolCaller` 用 mcp SDK 经 `npx -y @suekou/mcp-notion-server@1.2.x` 实现
+  `NotionMCPAdapter` 的 ToolCaller 注入协议——工具契约与插件模式逐字对齐（`_unwrap` 直接解包
+  mcp CallToolResult）；惰性建会话、调用失败重建会话重试一次（对齐宿主 call_tool_with_reconnect
+  语义）；token 经 `KR_NOTION_API_TOKEN` 注入子进程。组合根 teardown 统一释放注入传输
+  （ka_core/plugin_initializer.py）。
+- **CLI 补齐 status/doctor/passwd**：`knowledge-arch status`（数据目录/存储文件/主 LLM 概览）、
+  `doctor`（Python 版本、依赖 extras、npx、Windows 无 milvus-lite 原生 wheel 的三条替代路提示）、
+  `passwd`（交互或 --set 更新 WebUI 登录密码，保持 0600）（ka_standalone/cli.py）。
+
 - **独立应用薄壳 `ka_standalone/`（Phase 3）**：`python -m ka_standalone serve` 脱离 AstrBot
   启动全栈（WebUI + SQLite + Milvus + 嵌入索引）。组成：`cli.py`（serve 子命令，
   --data-dir/--host/--port，SIGINT/SIGTERM 优雅退出，Windows 事件循环兼容）、`paths.py`

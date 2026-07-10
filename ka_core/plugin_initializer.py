@@ -869,6 +869,15 @@ class PluginInitializer:
                 logger.error(f"Failed to close vector store on teardown: {e}")
             self.vector_store = None
 
+        # 注入的 Notion 传输（如 stdio MCP 会话）由组合根统一释放，保持生命周期对称。
+        if self._notion_tool_caller is not None:
+            aclose = getattr(self._notion_tool_caller, "aclose", None)
+            if callable(aclose):
+                try:
+                    await aclose()
+                except Exception as e:
+                    logger.warning(f"Notion 传输关闭异常：{e}")
+
         if self._exit_stack is not None:
             await self._exit_stack.aclose()
             self._exit_stack = None

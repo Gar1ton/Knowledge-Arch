@@ -4,7 +4,8 @@
 - 主 LLM：``main_llm`` 配置完整（base_url+model）时注入 ``LMStudioLLMAdapter``
   （任意 OpenAI-compatible endpoint）；未配置则回退 ``LLMAdapter(None)`` 的离线降级行为。
 - KB 回落读取：注入 ``InMemoryKnowledgeBaseReader``（无 AstrBot 内置 KB 可读）。
-- Notion 传输：Phase 4 起注入 stdio MCP tool_caller；当前为 None（走禁用/无宿主降级）。
+- Notion 传输：注入 ``StdioNotionToolCaller``（惰性建会话，未启用 Notion 则永不 spawn；
+  会话由组合根 teardown 统一释放）。
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from ka_core.config import Config
 from ka_core.plugin_initializer import PluginInitializer
 from ka_core.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
 from ka_core.runtime_config import RuntimeConfigStore
+from ka_standalone.notion_transport import StdioNotionToolCaller
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -42,7 +44,9 @@ def build_initializer(
     *,
     notion_tool_caller: Any | None = None,
 ) -> PluginInitializer:
-    """构造独立壳组合根（未 initialize；生命周期由调用方托管）。"""
+    """构造独立壳组合根（未 initialize；生命周期由组合根托管）。"""
+    if notion_tool_caller is None:
+        notion_tool_caller = StdioNotionToolCaller()
     return PluginInitializer(
         None,
         raw_config,

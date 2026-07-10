@@ -44,8 +44,12 @@
   验证：新增 test_standalone_bootstrap.py 10 例；全量 618 passed；无 AstrBot 冒烟
   `python -m ka_standalone serve` → embedding(dim=384)+Milvus 激活、登录/status/collections
   API 均 200。
-- [ ] **Phase 4 - Notion stdio 传输与 CLI 补齐**：`notion_transport.py`（mcp SDK 经
-  npx @suekou/mcp-notion-server@1.2.x，实现既有 ToolCaller 注入协议）；cli 补 status/doctor/passwd。
+- [x] **Phase 4 - Notion stdio 传输与 CLI 补齐**：`ka_standalone/notion_transport.py`
+  （mcp SDK stdio 经 npx @suekou/mcp-notion-server@1.2.x；惰性建会话、失败重连一次、
+  CallToolResult 原样透传给适配器 _unwrap；aclose 由组合根 teardown 统一释放）；bootstrap
+  默认注入；cli 补 status/doctor/passwd（doctor 含 Windows Milvus 三条路提示）。
+  验证：新增 test_notion_transport.py 8 例（fake session 注入，含重连语义）；全量 626 passed；
+  ruff/mypy 全绿。
 - [ ] **Phase 5 - 对话 Agent 界面**：`LMStudioLLMAdapter` 增 tool-calling + 流式；
   `ka_core/chat/` agent 服务（/ka 命令分发 + on_llm_request 式 RAG 注入 + 3 工具循环）；
   `ka_web/server.py` chat 路由（SSE）；前端 chat 视图（美术同 login，可切换控制台），
