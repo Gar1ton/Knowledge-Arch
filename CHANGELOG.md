@@ -19,7 +19,15 @@
 
 ## [Unreleased]
 
+## [v0.1.0] — 2026-07-10
+
 ### 新增功能 (Added)
+
+- **rebuild.sh 双壳化增强（Phase 8）**：保留原有开发链路（内存后端 tests/run_webui.py +
+  next dev 热重载）不变，新增 `--standalone`（后端改为真实独立应用 `ka_standalone serve`，
+  配 `--data-dir` 指定数据目录）、`--tests`（构建前先跑 `pytest tests/backend`，红了不拉起
+  服务）、`--build-only`（只编译前端并同步 pages/，不杀不起任何服务，供 CI/发布前刷新产物）；
+  进程清理清单纳入 `ka_standalone serve`（rebuild.sh）。
 
 - **设置页按新功能整体重组（Phase 6）**：ConfigTab 重组为 8 分组——服务与访问 / 主模型
   （OpenAI 兼容，独立版专属）/ 对话与研究 Agent / Embedding 与检索 / 知识图谱 / Zotero 同步 /

@@ -1,6 +1,6 @@
 # TODO
 
-## v0.1.0 Monorepo 移植与独立应用双壳化 (in progress)
+## v0.1.0 Monorepo 移植与独立应用双壳化 (completed)
 
 ### User constraints / 约束
 
@@ -75,9 +75,11 @@
   `start.sh|.bat`；README 三平台部署文档（安装模型 = clone + uv sync editable，零 Node 部署）。
   验证：`uv lock` 解析成功；`uv sync`（最小安装）+ `uv run knowledge-arch --version/doctor`
   entry point 冒烟通过（独立 CPython 3.11.15 环境）。
-- [ ] **Phase 8 - v0.1.0 发布与双仓推送**：bump --target standalone 收口 CHANGELOG/TODO；
-  tag v0.1.0；`tools/publish_plugin.py` 推插件形态树到旧仓 developer（经批准）；
-  旧仓 README 加迁移指引。
+- [x] **Phase 8 - v0.1.0 发布**（范围经用户修订：**不推送旧仓 developer**，同步机制
+  `tools/publish_plugin.py` 保留待日后启用）：rebuild.sh 双壳化增强
+  （--standalone/--data-dir/--tests/--build-only，原开发链路行为不变）并全链路验证
+  （--tests --build-only 全绿；--standalone 模式后端=真实独立应用 + next dev 双就绪）；
+  bump --target standalone 收口 CHANGELOG → [v0.1.0]；tag v0.1.0 推送 monorepo。
 
 ### Verification
 

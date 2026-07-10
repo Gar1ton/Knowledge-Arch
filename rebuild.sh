@@ -1,5 +1,12 @@
 #!/bin/bash
-# 一键停止、清理缓存、重新编译、同步并后台启动前后端的开发调试脚本
+# 一键停止、清理缓存、重新编译、同步并后台启动前后端的开发调试脚本。
+#
+# 用法：bash rebuild.sh [--standalone] [--data-dir DIR] [--tests] [--build-only]
+#   （默认）      内存后端 tests/run_webui.py + next dev 热重载（与插件时代行为一致）
+#   --standalone  后端改为真实独立应用（python3 -m ka_standalone serve），前端仍 next dev
+#   --data-dir    --standalone 模式的数据目录（默认 ~/.knowledge-arch）
+#   --tests       构建前先跑 python -m pytest tests/backend（红了就不拉起服务）
+#   --build-only  只做 编译前端 → 同步 pages/，不启动任何服务（CI/发布前刷新产物用）
 
 info()    { echo -e "\033[1;34m[INFO] $1\033[0m"; }
 success() { echo -e "\033[1;32m[SUCCESS] $1\033[0m"; }
@@ -16,6 +23,21 @@ LOCAL_BACKEND_URL="http://127.0.0.1:${BACKEND_PORT}"
 LOCAL_FRONTEND_URL="http://127.0.0.1:${FRONTEND_PORT}"
 PYTHON_REQUIREMENTS="requirements.txt"
 PYTHON_DEPS_STAMP="/tmp/kr-python-deps.stamp"
+
+STANDALONE=0
+BUILD_ONLY=0
+RUN_TESTS=0
+STANDALONE_DATA_DIR=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --standalone) STANDALONE=1 ;;
+    --data-dir) shift; STANDALONE_DATA_DIR="${1:-}" ;;
+    --tests) RUN_TESTS=1 ;;
+    --build-only) BUILD_ONLY=1 ;;
+    *) error "未知参数：$1（支持 --standalone / --data-dir DIR / --tests / --build-only）"; exit 1 ;;
+  esac
+  shift
+done
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
@@ -45,6 +67,7 @@ _version_at_least() {
 _kill_matching_processes() {
   if command -v pkill >/dev/null 2>&1; then
     pkill -f "tests/run_webui.py" 2>/dev/null || true
+    pkill -f "ka_standalone serve" 2>/dev/null || true
     pkill -f "next-server" 2>/dev/null || true
     pkill -f "next/dist/bin/next" 2>/dev/null || true
     pkill -f "npm run dev" 2>/dev/null || true
@@ -58,6 +81,7 @@ import signal
 
 needles = (
     "tests/run_webui.py",
+    "ka_standalone serve",
     "next-server",
     "next/dist/bin/next",
     "npm run dev",
@@ -215,12 +239,20 @@ else
 fi
 touch "$PYTHON_DEPS_STAMP"
 
-# ── 1. 停止旧进程 ────────────────────────────────────────────────────────────
-info "1. 停止旧的开发服务器进程..."
-# `next dev` 启动后进程名会变为 `next-server`；同时兼容 slim 镜像缺少 pkill 的情况。
-_kill_matching_processes
-_kill_port_listeners "$BACKEND_PORT" "$FRONTEND_PORT"
-sleep 1
+# ── 0c. 后端测试（--tests：红了就不拉起服务）────────────────────────────────
+if [ "$RUN_TESTS" -eq 1 ]; then
+  info "0c. 运行后端测试（--tests）..."
+  python3 -m pytest tests/backend -q
+fi
+
+# ── 1. 停止旧进程（--build-only 时跳过，不打扰运行中的服务）──────────────────
+if [ "$BUILD_ONLY" -eq 0 ]; then
+  info "1. 停止旧的开发服务器进程..."
+  # `next dev` 启动后进程名会变为 `next-server`；同时兼容 slim 镜像缺少 pkill 的情况。
+  _kill_matching_processes
+  _kill_port_listeners "$BACKEND_PORT" "$FRONTEND_PORT"
+  sleep 1
+fi
 
 # ── 2. 检查依赖是否需要更新 ──────────────────────────────────────────────────
 info "2. 检查前端依赖..."
@@ -269,9 +301,23 @@ info "4. 同步前端静态文件..."
 cd "$ROOT_DIR"
 python3 tools/sync_frontend.py
 
+if [ "$BUILD_ONLY" -eq 1 ]; then
+  success "前端已重新编译并同步到 pages/（--build-only，未启动服务）。"
+  exit 0
+fi
+
 # ── 5. 后台启动后端 ──────────────────────────────────────────────────────────
-info "5. 后台拉起后端开发服务 (tests/run_webui.py on ${BACKEND_HOST}:${BACKEND_PORT})..."
-PYTHONUNBUFFERED=1 nohup python3 tests/run_webui.py --host "$BACKEND_HOST" --port "$BACKEND_PORT" > "$ROOT_DIR/dev_backend.log" 2>&1 &
+if [ "$STANDALONE" -eq 1 ]; then
+  STANDALONE_ARGS=(--host "$BACKEND_HOST" --port "$BACKEND_PORT")
+  if [ -n "$STANDALONE_DATA_DIR" ]; then
+    STANDALONE_ARGS+=(--data-dir "$STANDALONE_DATA_DIR")
+  fi
+  info "5. 后台拉起独立应用 (ka_standalone serve on ${BACKEND_HOST}:${BACKEND_PORT})..."
+  PYTHONUNBUFFERED=1 nohup python3 -m ka_standalone serve "${STANDALONE_ARGS[@]}" > "$ROOT_DIR/dev_backend.log" 2>&1 &
+else
+  info "5. 后台拉起后端开发服务 (tests/run_webui.py on ${BACKEND_HOST}:${BACKEND_PORT})..."
+  PYTHONUNBUFFERED=1 nohup python3 tests/run_webui.py --host "$BACKEND_HOST" --port "$BACKEND_PORT" > "$ROOT_DIR/dev_backend.log" 2>&1 &
+fi
 BACKEND_PID=$!
 info "   后端日志: dev_backend.log"
 
