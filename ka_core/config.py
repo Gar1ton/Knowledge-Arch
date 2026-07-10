@@ -28,6 +28,7 @@ ENV_EMBEDDING_API_KEY = "KR_EMBEDDING_API_KEY"
 ENV_LIGHTRAG_LLM_API_KEY = "KR_LIGHTRAG_LLM_API_KEY"
 ENV_DEEP_THINKING_LLM_API_KEY = "KR_DEEP_THINKING_LLM_API_KEY"
 ENV_ZOTERO_API_KEY = "KR_ZOTERO_API_KEY"
+ENV_MAIN_LLM_API_KEY = "KR_MAIN_LLM_API_KEY"
 DEFAULT_RERANK_MODEL = "Alibaba-NLP/gte-reranker-modernbert-base"
 
 
@@ -125,6 +126,27 @@ class WebConsoleConfig:
     port: int = 26618
     username: str = "admin"
     password: str = ""
+
+
+@dataclass
+class MainLLMConfig:
+    """独立应用主 LLM（OpenAI-compatible endpoint）配置。
+
+    插件模式不读取本节——主 LLM 走 AstrBot context；独立壳（ka_standalone）在
+    base_url 与 model 均非空时构造 LMStudioLLMAdapter 注入组合根，承担回答合成等
+    主 LLM 职责。API key 优先读环境变量 KR_MAIN_LLM_API_KEY，其次读本节字段。
+    """
+
+    base_url: str = ""
+    model: str = ""
+    api_key: str = ""
+    timeout_seconds: int = 300
+    max_retries: int = 2
+
+    @property
+    def configured(self) -> bool:
+        """endpoint 与 model 均已配置时视为可用。"""
+        return bool(self.base_url.strip() and self.model.strip())
 
 
 # LightRAG 图谱构建内部固定参数（不暴露给用户）。
@@ -350,6 +372,7 @@ class Config:
         enhanced = self.get_enhanced_recall_config()
         zotero = self.get_zotero_sync_config()
         ask = self.get_ask_agent_config()
+        main_llm = self.get_main_llm_config()
         return {
             "ask": {
                 # 与前端 askAI 的 answer_language 同一参数；召回恒英文，仅决定回答语言。
@@ -385,6 +408,13 @@ class Config:
                 "port": web.port,
                 "username": web.username,
                 "password": _mask(web.password),
+            },
+            "main_llm": {
+                "base_url": main_llm.base_url,
+                "model": main_llm.model,
+                "api_key": _mask(main_llm.api_key),
+                "timeout_seconds": main_llm.timeout_seconds,
+                "max_retries": main_llm.max_retries,
             },
             "graph": {
                 "enabled": graph.enabled,
@@ -576,6 +606,18 @@ class Config:
             port=int(s.get("port", WebConsoleConfig.port)),
             username=s.get("username", WebConsoleConfig.username),
             password=_secret(s.get("password"), ENV_WEB_PASSWORD),
+        )
+
+    def get_main_llm_config(self) -> MainLLMConfig:
+        s = _section(self.raw, "main_llm")
+        return MainLLMConfig(
+            base_url=str(s.get("base_url", MainLLMConfig.base_url)),
+            model=str(s.get("model", MainLLMConfig.model)),
+            api_key=_secret(s.get("api_key"), ENV_MAIN_LLM_API_KEY),
+            timeout_seconds=max(
+                1, int(s.get("timeout_seconds", MainLLMConfig.timeout_seconds))
+            ),
+            max_retries=max(0, int(s.get("max_retries", MainLLMConfig.max_retries))),
         )
 
     def get_graph_config(self) -> GraphConfig:
@@ -868,6 +910,13 @@ CONFIG_KEY_POLICY: dict[str, dict[str, ConfigKeyPolicy]] = {
         # /ka webui on|off 实时启停并持久化；不走 update_config（避免 RESTART 后果误判）。
         "enabled": ConfigKeyPolicy(False, True),
     },
+    "main_llm": {
+        # 独立应用主 LLM（OpenAI-compatible）；插件模式不读取本节。api_key 为机密不可 API 写。
+        "base_url": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
+        "model": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
+        "timeout_seconds": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
+        "max_retries": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
+    },
     "graph": {
         "enabled": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
         "query_mode": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
@@ -994,6 +1043,7 @@ __all__ = [
     "ENV_EMBEDDING_API_KEY",
     "ENV_LIGHTRAG_LLM_API_KEY",
     "ENV_ZOTERO_API_KEY",
+    "ENV_MAIN_LLM_API_KEY",
     "ZOTERO_STORAGE_MANAGED",
     "ZOTERO_STORAGE_LINKED",
     "ZOTERO_SYNC_STRICT",
@@ -1014,6 +1064,7 @@ __all__ = [
     "SourceStoreConfig",
     "R2SyncConfig",
     "NotionSyncConfig",
+    "MainLLMConfig",
     "WebConsoleConfig",
     "GraphConfig",
     "VectorDbConfig",

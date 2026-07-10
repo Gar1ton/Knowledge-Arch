@@ -21,6 +21,21 @@
 
 ### 新增功能 (Added)
 
+- **独立应用薄壳 `ka_standalone/`（Phase 3）**：`python -m ka_standalone serve` 脱离 AstrBot
+  启动全栈（WebUI + SQLite + Milvus + 嵌入索引）。组成：`cli.py`（serve 子命令，
+  --data-dir/--host/--port，SIGINT/SIGTERM 优雅退出，Windows 事件循环兼容）、`paths.py`
+  （数据目录解析：--data-dir > KR_DATA_DIR > ~/.knowledge-arch）、`config_bootstrap.py`
+  （standalone_config.json 首启生成 + 随机登录密码 + 0600 权限）、`bootstrap.py`（构造壳差异
+  注入件交给组合根，不建第二组合根）。
+- **组合根壳差异注入点**：`PluginInitializer.__init__` 新增 keyword-only 可选参数
+  `llm_adapter`/`kb_reader`/`notion_tool_caller`——缺省行为与插件壳完全一致（回归约束），
+  独立壳注入 `LMStudioLLMAdapter`/`InMemoryKnowledgeBaseReader`/stdio tool_caller（Phase 4）
+  （ka_core/plugin_initializer.py）。
+- **主 LLM 配置节 `main_llm`**：新增 `MainLLMConfig`（base_url/model/api_key/timeout_seconds/
+  max_retries；api_key 优先读环境变量 KR_MAIN_LLM_API_KEY），public dict 脱敏输出，
+  CONFIG_KEY_POLICY 登记（api_key 机密不可 API 写）；独立壳在配置完整时以任意
+  OpenAI-compatible 端点承担主 LLM（ka_core/config.py, ka_standalone/bootstrap.py）。
+
 - **插件同步发布链（Phase 2）**：新增 `tools/publish_plugin.py` —— 按新 manifest
   `release/developer-files.txt` 从 monorepo 生成「插件仓库形态」源码树（apps/plugin/* 回写树根、
   剔除 monorepo 专属内容），支持 `--check-only`/`--diff-against`/`--push`（推送旧仓 developer，

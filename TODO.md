@@ -36,10 +36,14 @@
   （workflow_dispatch，首次同步后可常态化）；`tools/bump_version.py` 重写为
   `--target plugin|standalone` 双版本线；根 pyproject 加 `[project]`（standalone 版本源，
   version=0.1.0）；test_config.py schema 路径双布局兼容。
-- [ ] **Phase 3 - 独立壳 ka_standalone**：新顶层包（cli.py serve 子命令 / bootstrap.py /
-  paths.py 数据目录 `~/.knowledge-arch` / config_bootstrap.py）；`PluginInitializer.__init__` 加
-  keyword-only 覆盖参数（llm_adapter/kb_reader/notion_tool_caller），默认行为不变；
-  `ka_core/config.py` 新增 `MainLLMConfig`。
+- [x] **Phase 3 - 独立壳 ka_standalone**：新顶层包（cli.py serve 子命令 / bootstrap.py /
+  paths.py 数据目录 `~/.knowledge-arch` / config_bootstrap.py 首启生成随机登录密码 0600）；
+  `PluginInitializer.__init__` 加 keyword-only 覆盖参数（llm_adapter/kb_reader/
+  notion_tool_caller），默认行为不变；`ka_core/config.py` 新增 `MainLLMConfig`
+  （env KR_MAIN_LLM_API_KEY 优先、public dict 脱敏、CONFIG_KEY_POLICY main_llm 节）。
+  验证：新增 test_standalone_bootstrap.py 10 例；全量 618 passed；无 AstrBot 冒烟
+  `python -m ka_standalone serve` → embedding(dim=384)+Milvus 激活、登录/status/collections
+  API 均 200。
 - [ ] **Phase 4 - Notion stdio 传输与 CLI 补齐**：`notion_transport.py`（mcp SDK 经
   npx @suekou/mcp-notion-server@1.2.x，实现既有 ToolCaller 注入协议）；cli 补 status/doctor/passwd。
 - [ ] **Phase 5 - 对话 Agent 界面**：`LMStudioLLMAdapter` 增 tool-calling + 流式；

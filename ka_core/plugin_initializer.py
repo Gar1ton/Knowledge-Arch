@@ -62,10 +62,25 @@ def _load_plugin_web_build_app() -> Any:
 class PluginInitializer:
     """装配全部子系统并拥有其生命周期。"""
 
-    def __init__(self, context: Any, raw_config: dict[str, Any], data_dir: Path) -> None:
+    def __init__(
+        self,
+        context: Any,
+        raw_config: dict[str, Any],
+        data_dir: Path,
+        *,
+        llm_adapter: Any | None = None,
+        kb_reader: KnowledgeBaseReader | None = None,
+        notion_tool_caller: Any | None = None,
+    ) -> None:
+        # 壳差异注入点（见 ARCHITECTURE.md §2 一核两壳）：全部可选，缺省时行为与
+        # 插件壳完全一致（AstrBot context 提供 LLM/KB/Notion MCP）。独立壳传入
+        # OpenAI-compatible 适配器、内存 KB 读取器与 stdio MCP tool_caller。
         self._context = context
         self._data_dir = data_dir
         self._raw_config = raw_config
+        self._llm_adapter_override = llm_adapter
+        self._kb_reader_override = kb_reader
+        self._notion_tool_caller = notion_tool_caller
         self._runtime_config = RuntimeConfigStore(
             data_dir / "runtime_config.json",
             framework_persist_cb=self._astrbot_config_persist,
@@ -169,9 +184,12 @@ class PluginInitializer:
                     description="Default collection",
                 )
             )
-        from ka_core.repository.kb_reader.astrbot import AstrBotKnowledgeBaseReader
+        if self._kb_reader_override is not None:
+            self.kb_reader = self._kb_reader_override
+        else:
+            from ka_core.repository.kb_reader.astrbot import AstrBotKnowledgeBaseReader
 
-        self.kb_reader = AstrBotKnowledgeBaseReader(self._context)
+            self.kb_reader = AstrBotKnowledgeBaseReader(self._context)
 
         # 3) 构造同步目标
         from ka_core.repository.sync_targets.base import SyncTarget
@@ -183,10 +201,21 @@ class PluginInitializer:
 
         from ka_core.repository.sync_targets.notion import NotionSyncTarget
 
+        notion_adapter = None
+        if self._notion_tool_caller is not None:
+            from ka_core.adapters.notion_mcp import NotionMCPAdapter
+
+            notion_adapter = NotionMCPAdapter(
+                None,
+                server_name=notion_cfg.mcp_server_name,
+                rate_limit_rps=notion_cfg.rate_limit_rps,
+                tool_caller=self._notion_tool_caller,
+            )
         notion_target = NotionSyncTarget(
             config=notion_cfg,
             source_store=self.source_store,
             context=self._context,
+            adapter=notion_adapter,
         )
         sync_targets[SyncTargetKind.NOTION] = notion_target
 
@@ -208,9 +237,12 @@ class PluginInitializer:
         )
 
         # 4.5) 官方 LightRAG Core 是唯一图谱实现。
-        from ka_core.adapters.llm import LLMAdapter
+        if self._llm_adapter_override is not None:
+            llm_adapter = self._llm_adapter_override
+        else:
+            from ka_core.adapters.llm import LLMAdapter
 
-        llm_adapter = LLMAdapter(self._context)
+            llm_adapter = LLMAdapter(self._context)
 
         # 4.6) 构造共享 Embedding，并用真实探针维度装配 Milvus/LightRAG。
         vdb_cfg = self._config.get_vector_db_config()
