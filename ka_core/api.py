@@ -474,6 +474,21 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin):
         """组合根注入 NotionSyncPipeline（Notion 单向增量推送编排）。"""
         self._notion_sync_pipeline = pipeline
 
+    def attach_chat_agent(self, agent: Any) -> None:
+        """组合根注入对话 Agent 服务（独立壳；插件壳不装配）。"""
+        self._chat_agent = agent
+
+    def chat_agent_available(self) -> bool:
+        """对话 Agent 是否可用（独立壳 + 主 LLM 支持 chat_stream 时为 True）。"""
+        return getattr(self, "_chat_agent", None) is not None
+
+    def chat_agent_stream(self, message: str, conversation_id: str) -> Any:
+        """委派对话 Agent 事件流（SSE 载荷由 ka_web 原样转发）。"""
+        agent = getattr(self, "_chat_agent", None)
+        if agent is None:
+            raise NotImplementedError("chat agent is not attached")
+        return agent.stream(message, conversation_id)
+
     # ── 集合（分类）────────────────────────────────────────────
 
     async def list_collections(self) -> list[Collection]:

@@ -1161,6 +1161,68 @@ export async function clearChatHistory(
   );
 }
 
+// ─── 对话 Agent（独立版）────────────────────────────────────────
+
+export interface AgentChatEvent {
+  type: "stage" | "delta" | "assistant" | "error" | "done";
+  text?: string;
+  content?: string;
+  message?: string;
+  retrieval_mode?: string;
+  sources?: AskSource[];
+}
+
+export async function getChatAgentInfo(): Promise<{ available: boolean }> {
+  if (isMock()) return { available: false };
+  return apiFetch<{ available: boolean }>("/api/chat/agent/info");
+}
+
+/** POST /api/chat/agent 的 SSE 流；每个事件回调 onEvent，连接结束时返回。 */
+export async function streamAgentChat(
+  message: string,
+  conversationId: string,
+  onEvent: (event: AgentChatEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch("/api/chat/agent", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, conversation_id: conversationId }),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    let msg = res.statusText;
+    try {
+      const body = (await res.json()) as Record<string, unknown>;
+      msg = String(body.error || body.message || msg);
+    } catch {
+      /* ignore */
+    }
+    throw new ApiError(res.status, msg);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buffer.indexOf("\n\n")) >= 0) {
+      const frame = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      const line = frame.trim();
+      if (!line.startsWith("data:")) continue;
+      try {
+        onEvent(JSON.parse(line.slice(5).trim()) as AgentChatEvent);
+      } catch {
+        /* 忽略坏帧 */
+      }
+    }
+  }
+}
+
 export interface EmbeddingTestResult {
   status: "ok" | "error";
   dimension?: number;

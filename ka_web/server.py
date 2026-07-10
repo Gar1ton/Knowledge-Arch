@@ -919,6 +919,45 @@ async def handle_ask_progress(request: web.Request) -> web.Response:
     return web.json_response(progress)
 
 
+async def handle_chat_agent_info(request: web.Request) -> web.Response:
+    """GET /api/chat/agent/info — 对话 Agent 可用性（独立壳 + 主 LLM 就绪时 true）。"""
+    return web.json_response({"available": _api(request).chat_agent_available()})
+
+
+async def handle_chat_agent_stream(request: web.Request) -> web.StreamResponse:
+    """POST /api/chat/agent — 对话 Agent 事件流（SSE：stage/delta/assistant/error/done）。"""
+    api = _api(request)
+    if not api.chat_agent_available():
+        return web.json_response(
+            {"error": "对话 Agent 不可用：请在设置页配置主模型（OpenAI 兼容端点）。"},
+            status=409,
+        )
+    body = await request.json()
+    message = str(body.get("message") or "").strip()
+    conversation_id = str(body.get("conversation_id") or "").strip()
+    if not message or not conversation_id:
+        return web.json_response(
+            {"error": "message 与 conversation_id 均为必填"}, status=400
+        )
+
+    response = web.StreamResponse(
+        headers={
+            "Content-Type": "text/event-stream; charset=utf-8",
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        }
+    )
+    await response.prepare(request)
+    try:
+        async for event in api.chat_agent_stream(message, conversation_id):
+            payload = json.dumps(event, ensure_ascii=False)
+            await response.write(f"data: {payload}\n\n".encode())
+    except ConnectionResetError:
+        pass  # 客户端断开，静默结束
+    await response.write_eof()
+    return response
+
+
 async def handle_chat_history_get(request: web.Request) -> web.Response:
     """GET /api/chat/history?conversation_id=<id> — 返回某会话的聊天记录。"""
     cid = request.query.get("conversation_id", "").strip()
@@ -1446,6 +1485,8 @@ def build_app(
     app.router.add_get("/api/console/scope-state", handle_console_scope_state_get)
     app.router.add_put("/api/console/scope-state", handle_console_scope_state_upsert)
     app.router.add_patch("/api/console/scope-state", handle_console_scope_state_upsert)
+    app.router.add_get("/api/chat/agent/info", handle_chat_agent_info)
+    app.router.add_post("/api/chat/agent", handle_chat_agent_stream)
     app.router.add_get("/api/chat/history", handle_chat_history_get)
     app.router.add_delete("/api/chat/history", handle_chat_history_clear)
     app.router.add_patch(

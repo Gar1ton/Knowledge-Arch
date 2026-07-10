@@ -9,7 +9,7 @@ import { getCapabilities } from "@/lib/api";
 import { deriveWorkflowStatus, type WorkflowStatus } from "@/lib/flowHealth";
 import { Z } from "@/lib/zLayers";
 
-export function TopBar() {
+export function TopBar({ onOpenAgent }: { onOpenAgent?: () => void }) {
   const { setSettingOpen, setAstrBotOpen, setWorkflowOpen } = useConsole();
   const { t } = useI18n();
   const [wfStatus, setWfStatus] = useState<WorkflowStatus>("red");
@@ -72,6 +72,18 @@ export function TopBar() {
       </span>
 
       <span style={{ flex: 1 }} />
+
+      {/* 对话 Agent（独立版可用时显示）*/}
+      {onOpenAgent && (
+        <Button
+          variant="tab"
+          size="sm"
+          style={{ height: 30, gap: 6 }}
+          onClick={onOpenAgent}
+        >
+          <Icon name="sparkle" size={14} /> 对话
+        </Button>
+      )}
 
       {/* Modal trigger buttons */}
       <Button

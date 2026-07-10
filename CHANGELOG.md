@@ -21,6 +21,18 @@
 
 ### 新增功能 (Added)
 
+- **对话 Agent 界面（Phase 5）**：独立版内置 AstrBot 使用模式的对话入口——
+  自然语言消息走「agent 上下文注入（与 on_llm_request 同口径）+ research_scope_probe/
+  research_execute/notion_push_note 三工具循环」，research 结果由系统直接推送给用户
+  （工具回执告知模型勿复述，对齐插件后台回发模型）；`/ka` 命令与插件同一套 EventHandler
+  命令体（webui 命令在独立壳被守卫）。组成：`ka_core/adapters/llm.py` 新增
+  `LMStudioLLMAdapter.chat_stream`（OpenAI 流式 + tool-calls 增量聚合）、
+  `ka_core/chat/agent_service.py`（事件流协议 stage/delta/assistant/error/done）、
+  `ka_web/server.py` 新增 `/api/chat/agent/info` 与 `/api/chat/agent`（SSE）、前端
+  `components/agent/AgentChatView.tsx`（复用登录页半调背景与报头美术）+
+  layout/TopBar 的 agent ⇄ 控制台双视图切换；会话持久化复用 chat_history 表
+  （ka_core/plugin_initializer.py 5.7 装配，主 LLM 支持 chat_stream 时启用，插件壳行为不变）。
+
 - **独立版 Notion stdio 传输（Phase 4）**：`ka_standalone/notion_transport.py` 的
   `StdioNotionToolCaller` 用 mcp SDK 经 `npx -y @suekou/mcp-notion-server@1.2.x` 实现
   `NotionMCPAdapter` 的 ToolCaller 注入协议——工具契约与插件模式逐字对齐（`_unwrap` 直接解包

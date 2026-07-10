@@ -50,10 +50,16 @@
   默认注入；cli 补 status/doctor/passwd（doctor 含 Windows Milvus 三条路提示）。
   验证：新增 test_notion_transport.py 8 例（fake session 注入，含重连语义）；全量 626 passed；
   ruff/mypy 全绿。
-- [ ] **Phase 5 - 对话 Agent 界面**：`LMStudioLLMAdapter` 增 tool-calling + 流式；
-  `ka_core/chat/` agent 服务（/ka 命令分发 + on_llm_request 式 RAG 注入 + 3 工具循环）；
-  `ka_web/server.py` chat 路由（SSE）；前端 chat 视图（美术同 login，可切换控制台），
-  chat_history 表持久化；capabilities.shell 门控。
+- [x] **Phase 5 - 对话 Agent 界面**：`LMStudioLLMAdapter.chat_stream`（OpenAI 流式 +
+  tool-calling 增量聚合）；`ka_core/chat/ChatAgentService`（/ka 命令分发复用 EventHandler、
+  agent_enabled 注入与 on_llm_request 同口径、research/notion 三工具循环——research 结果
+  直接推送给用户并告知模型勿复述，对齐插件后台回发模型）；`ka_web/server.py` 新增
+  `/api/chat/agent/info` + `/api/chat/agent`（SSE）；前端 `AgentChatView`（复用登录页半调
+  背景与报头美术，agent ⇄ 控制台双视图切换，TopBar「对话」按钮按可用性显隐）；
+  chat_history 表持久化（agent- 前缀会话）。
+  验证：test_chat_agent.py 4 例（脚本化 LLM 驱动真实组合根）；全量 630 passed；前端
+  npm build + sync_frontend 成功；冒烟 info/available、/ka help SSE 回复与持久化、
+  dummy LLM 显式报错均符合预期。
 - [ ] **Phase 6 - 设置页整体重组**：SettingModal 重组为 8 分组（服务与访问/主模型/对话与研究
   Agent/Embedding 与检索/知识图谱/Zotero/备份与镜像/系统与数据）；`ConfigKeyPolicy` 增
   `standalone_writable`；`/api/capabilities` 暴露 shell；插件模式 4 面板节保持只读。

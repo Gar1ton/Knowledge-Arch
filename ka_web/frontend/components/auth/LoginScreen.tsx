@@ -159,7 +159,7 @@ function buildHalftone(width: number, height: number, dpr: number): HTMLCanvasEl
   return output;
 }
 
-function useHalftoneCanvas(canvasRef: RefObject<HTMLCanvasElement | null>) {
+export function useHalftoneCanvas(canvasRef: RefObject<HTMLCanvasElement | null>) {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return undefined;

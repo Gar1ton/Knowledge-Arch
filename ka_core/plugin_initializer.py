@@ -106,6 +106,7 @@ class PluginInitializer:
         self.index_compatibility: IndexCompatibilityStore | None = None
         self.retrieval_orchestrator: RetrievalOrchestrator | None = None
         self.research_service: Any | None = None
+        self.chat_agent: Any | None = None
         # /ka 运行时开关：初值取自持久化配置（runtime_config.json 已合并进 self._config），
         # 由命令切换并经 set_toggle 落盘，reload 时在 initialize() 重新刷新。
         _ask_cfg = self._config.get_ask_agent_config()
@@ -587,6 +588,15 @@ class PluginInitializer:
         from ka_core.research_skill import ResearchService
 
         self.research_service = ResearchService(api=self.api, flags=self)
+
+        # 5.7) 对话 Agent（独立壳）：主 LLM 支持 chat_stream 时装配；插件壳的对话
+        # 走 AstrBot 聊天（LLMAdapter 无 chat_stream，此处自然跳过，行为不变）。
+        self.chat_agent = None
+        if hasattr(llm_adapter, "chat_stream"):
+            from ka_core.chat import ChatAgentService
+
+            self.chat_agent = ChatAgentService(self, llm_adapter)
+            self.api.attach_chat_agent(self.chat_agent)
 
         # 6) 周期任务（如 R2 周期备份，v0.3.0 起注册）。
         if r2_cfg.enabled and r2_cfg.backup_interval_sec > 0:

@@ -4,9 +4,10 @@ import React, { useEffect, useState, useCallback, useRef } from "react";
 import { ToastProvider } from "@/components/ui/Toast";
 import { I18nContext, Lang, makeT } from "@/lib/i18n";
 import { initColorTheme } from "@/lib/theme";
-import { getAuth } from "@/lib/api";
+import { getAuth, getChatAgentInfo } from "@/lib/api";
 import { ConsoleProvider, useConsole } from "@/lib/ConsoleContext";
 import { LoginScreen } from "@/components/auth/LoginScreen";
+import { AgentChatView } from "@/components/agent/AgentChatView";
 import { ProgressDock } from "@/components/progress/ProgressDock";
 import { TopBar } from "@/components/layout/TopBar";
 import { FilePanel } from "@/components/panels/FilePanel";
@@ -53,7 +54,13 @@ const MAX_FILE_W = 528;
 
 type DragTarget = "file" | "chat" | null;
 
-function ConsoleCanvas({ onLogout }: { onLogout: () => void }) {
+function ConsoleCanvas({
+  onLogout,
+  onOpenAgent,
+}: {
+  onLogout: () => void;
+  onOpenAgent?: () => void;
+}) {
   const { noteDocId, selectedDocId, selectedCollection, settingOpen, setSettingOpen, astrBotOpen, setAstrBotOpen, workflowOpen, setWorkflowOpen } = useConsole();
 
   const [chatWidth, setChatWidth] = useState(DEFAULT_CHAT_W);
@@ -113,7 +120,7 @@ function ConsoleCanvas({ onLogout }: { onLogout: () => void }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }}>
-      <TopBar />
+      <TopBar onOpenAgent={onOpenAgent} />
 
       {/* Three-panel stage */}
       <div
@@ -215,6 +222,17 @@ function ConsoleCanvas({ onLogout }: { onLogout: () => void }) {
 function ConsoleShell() {
   const [authChecked, setAuthChecked] = useState(false);
   const [loggedIn, setLoggedIn] = useState(false);
+  // 对话 Agent（独立版）：可用时提供「agent ⇄ console」双视图切换。
+  const [agentAvailable, setAgentAvailable] = useState(false);
+  const [view, setView] = useState<"agent" | "console">(() => {
+    if (typeof localStorage === "undefined") return "console";
+    return localStorage.getItem("kr-view") === "agent" ? "agent" : "console";
+  });
+
+  const switchView = useCallback((next: "agent" | "console") => {
+    setView(next);
+    if (typeof localStorage !== "undefined") localStorage.setItem("kr-view", next);
+  }, []);
 
   useEffect(() => {
     getAuth()
@@ -227,6 +245,13 @@ function ConsoleShell() {
         setAuthChecked(true);
       });
   }, []);
+
+  useEffect(() => {
+    if (!loggedIn) return;
+    getChatAgentInfo()
+      .then(({ available }) => setAgentAvailable(available))
+      .catch(() => setAgentAvailable(false));
+  }, [loggedIn]);
 
   const handleLogout = useCallback(() => {
     setLoggedIn(false);
@@ -255,9 +280,16 @@ function ConsoleShell() {
     return <LoginScreen onLogin={() => setLoggedIn(true)} />;
   }
 
+  if (agentAvailable && view === "agent") {
+    return <AgentChatView onEnterConsole={() => switchView("console")} />;
+  }
+
   return (
     <ConsoleProvider>
-      <ConsoleCanvas onLogout={handleLogout} />
+      <ConsoleCanvas
+        onLogout={handleLogout}
+        onOpenAgent={agentAvailable ? () => switchView("agent") : undefined}
+      />
       <ProgressDock />
     </ConsoleProvider>
   );

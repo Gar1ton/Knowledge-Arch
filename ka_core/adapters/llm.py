@@ -109,6 +109,88 @@ class LMStudioLLMAdapter:
         logger.error("LMStudioLLMAdapter.generate failed after retries: %s", last_exc)
         return ""
 
+    async def chat_stream(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.3,
+    ):
+        """OpenAI-compatible 流式对话（支持 tool-calling），供对话 Agent 使用。
+
+        逐段 yield 事件：``{"type": "delta", "text": str}``（正文增量）；
+        流结束后 yield ``{"type": "final", "content": str, "tool_calls": [
+        {"id", "name", "arguments"}], "finish_reason": str}``。HTTP/解析失败抛
+        RuntimeError（调用方负责向用户显式报错，不静默降级）。
+        """
+        import aiohttp
+
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": True,
+        }
+        if tools:
+            payload["tools"] = tools
+        url = f"{self._base_url}/chat/completions"
+
+        content_parts: list[str] = []
+        tool_calls: dict[int, dict[str, Any]] = {}
+        finish_reason = ""
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=self._timeout_seconds),
+                ) as resp:
+                    resp.raise_for_status()
+                    async for raw_line in resp.content:
+                        line = raw_line.decode("utf-8", errors="replace").strip()
+                        if not line.startswith("data:"):
+                            continue
+                        data_str = line[len("data:"):].strip()
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+                        choice = (chunk.get("choices") or [{}])[0]
+                        finish_reason = str(choice.get("finish_reason") or finish_reason)
+                        delta = choice.get("delta") or {}
+                        text = delta.get("content")
+                        if text:
+                            content_parts.append(text)
+                            yield {"type": "delta", "text": text}
+                        for tc in delta.get("tool_calls") or []:
+                            index = int(tc.get("index") or 0)
+                            slot = tool_calls.setdefault(
+                                index, {"id": "", "name": "", "arguments": ""}
+                            )
+                            if tc.get("id"):
+                                slot["id"] = str(tc["id"])
+                            fn = tc.get("function") or {}
+                            if fn.get("name"):
+                                slot["name"] = str(fn["name"])
+                            if fn.get("arguments"):
+                                slot["arguments"] += str(fn["arguments"])
+        except Exception as exc:
+            raise RuntimeError(f"LLM chat stream to {url} failed: {exc}") from exc
+
+        yield {
+            "type": "final",
+            "content": "".join(content_parts),
+            "tool_calls": [tool_calls[i] for i in sorted(tool_calls)],
+            "finish_reason": finish_reason,
+        }
+
     def _log_success(
         self,
         data: dict[str, Any],
