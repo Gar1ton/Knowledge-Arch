@@ -8,7 +8,7 @@
   AstrBot 插件壳（延续 v1.0.x 版本线）与独立跨平台应用壳（v0.1.x 版本线，Linux/Windows/macOS）。
   全新 git 历史，v0.1.0 起步；旧仓 Astrbot_Knowledge_Repository 保留 developer→main 现行发布机制，
   由新工具 `tools/publish_plugin.py` 从本仓生成插件形态源码树推送到旧仓 **developer** 分支。
-- 用户明确决策：核心包 `ka_core/` 改名 **`ka_core/`**；独立版 LLM 仅接 OpenAI 兼容 API
+- 用户明确决策：核心包 `knowledge_arch/` 改名 **`ka_core/`**；独立版 LLM 仅接 OpenAI 兼容 API
   （复用扩展 `LMStudioLLMAdapter`）；部署形态 = 一键安装/启动脚本（底层 uv，参考 index-tts 的
   pyproject + extras + `.python-version` 方案，不走 PyPI wheel）；独立版需内置**对话 Agent 界面**
   （美术与 login 页一致，复现 AstrBot 使用模式：/ka 命令 + RAG 注入 + research 工具调用，
@@ -21,12 +21,13 @@
 
 ### Technical implementation path
 
-- [ ] **Phase 1 - 仓库引导与 ka_core 重命名**：git 跟踪树迁入（剔除 data//deliverables//dev/）；
+- 🚧 **Phase 1 - 仓库引导与 ka_core 重命名**：git 跟踪树迁入（剔除 data//deliverables//dev/）；
   根插件文件（main.py/metadata.yaml/_conf_schema.json/README/CHANGELOG/logo）→ `apps/plugin/`；
   `bump_version.py` → `tools/`；修既有 bug（`tools/build_published_tree.py` REQUIRED 陈旧项
   `web/server.py`/`core/main.py`、`.github/workflows/tests.yml` 的 `web/frontend` 旧路径）；
   重写 `release/published-files.txt`；发布树奇偶校验（重命名前基线）；全局重命名
-  `ka_core/` → `ka_core/`；新建根 README/CHANGELOG；git init + 首次提交 + push（待批准）。
+  `knowledge_arch/` → `ka_core/`；新建根 README/CHANGELOG；git init + 首次提交 + push（待批准）。
+  ——除远端 push（等待用户在 GitHub 创建空仓 Gar1ton/Knowledge-Arch 并批准）外全部完成。
 - [ ] **Phase 2 - 治理文档与 CI**：改写 CLAUDE/ARCHITECTURE/CONVENTIONS/AGENTS（双壳目录图、
   双版本线规则、构建命令表）；新建 `release/developer-files.txt`（monorepo→插件仓形态树 manifest）；
   tests.yml 改路径；新增 plugin-parity.yml 防漂移。
@@ -54,7 +55,11 @@
 
 - 每 Phase 结束：`python -m pytest` 全绿（608 passed / 1 skipped 基线）→ 结果登记于此。
 - Phase 1 专项：新旧两布局各构建发布树 `diff -r` 零差异（重命名前）；重命名后 grep 无残留
-  `ka_core` 引用（历史文档除外）。
+  `knowledge_arch` 引用（历史文档除外）。
+  - 2026-07-10 结果：重命名前奇偶校验 → 482 文件 `diff -r` 零差异（sentinel 除外）；重命名后
+    感知校验 → missing=0/extra=0，64 处差异全部为纯包名替换（NON_RENAME_DIFFS=0）；
+    `python -m pytest tests/backend` → **608 passed**；`ruff check .`（2 处 I001 已修）与 `mypy`
+    全绿；功能引用零残留（TODO.md 与 apps/plugin/CHANGELOG.md 历史段保留原名）。
 - Phase 3/5 专项：`python -m ka_standalone serve` 冒烟（登录→上传→/ask→chat）。
 - Phase 7 专项：干净目录 `git clone && bash scripts/install.sh && bash scripts/start.sh` 全链
   冒烟且全程无 Node 调用。
@@ -64,7 +69,7 @@
 ### User constraints / 约束
 
 - 用户实测发现 Web 控制台的 Zotero 同步进度条有误导性：增量同步（断点续连）时大部分文档因未变化
-  被跳过，后端 `ZoteroSyncJob.progress_percent()`（`ka_core/zotero_sync_job.py`）把这些
+  被跳过，后端 `ZoteroSyncJob.progress_percent()`（`knowledge_arch/zotero_sync_job.py`）把这些
   跳过的文档计入完成度推进百分比，但前端 `ProgressDock.tsx` 的 "X/Y docs" 计数只读了
   `docs_processed`，没有把 `skipped_unchanged` 算进去，导致界面长期停在 "0/464 docs" 却显示 54%
   的矛盾状态，看起来像卡死，实际上后台在正常跳过大量未变化文档。
@@ -81,7 +86,7 @@
   `detail` 展示串追加 skipped 计数。不改动后端（数据本就是对的，只是没展示）。
 - [x] **Part B - 展示名残留清理**：`README.md`、`docs/PROJECT_STRUCTURE.md`、
   `ka_web/frontend/lib/i18n.ts`（`login_title` zh/en）、`ka_web/frontend/public/logo-tile.svg`、
-  `ka_core/config.py`（`database_title` 默认值）、`_conf_schema.json`（同一默认值）中的
+  `knowledge_arch/config.py`（`database_title` 默认值）、`_conf_schema.json`（同一默认值）中的
   "Knowledge Repository" 替换为 "Knowledge Arch"。
 - [x] **Part C - 版本号**：`CHANGELOG.md` 追加 `[Unreleased]` 条目，`python bump_version.py
   --version v1.0.3` 统一推进版本号。
@@ -103,16 +108,16 @@
   `sys.modules`，但清不掉 `sys.path` 顺序——谁的目录先被插到 `sys.path` 前面，`import core`
   就稳定解析成谁的包。moirai 的 `core` 恰好也有 `event_handler.py`/`plugin_initializer.py`
   （撞名到能"部分工作"，直到唯本插件独有的 `retrieval_modes` 才报错）。
-- 已拍板：顶层包改用插件专属名（`core`→`ka_core`、`web`→`ka_web`、
+- 已拍板：顶层包改用插件专属名（`core`→`knowledge_arch`、`web`→`ka_web`、
   `migrations`→`ka_migrations`），从根源消除撞名可能，而非继续依赖清缓存这种脆弱手段；
   `sys.modules` 清缓存逻辑保留作兜底防御。版本 patch → v1.0.2。
 
 ### Technical implementation path
 
-- [x] **Phase 1 - 目录改名**：`git mv core ka_core`、`git mv web ka_web`、
+- [x] **Phase 1 - 目录改名**：`git mv core knowledge_arch`、`git mv web ka_web`、
   `git mv migrations ka_migrations`。
 - [x] **Phase 2 - Python import 改写**：全仓 103+ 个文件的 `from core...`/`core.xxx` 字符串
-  引用改为 `ka_core`（保护 `astrbot.core` 不被误伤）；`web`/`migrations` 因是常见英文
+  引用改为 `knowledge_arch`（保护 `astrbot.core` 不被误伤）；`web`/`migrations` 因是常见英文
   词与 aiohttp 的 `web` 模块同名，逐处人工核对后只改真正指向本插件包的引用（`main.py`
   `_OWNED_TOPS`、`plugin_initializer.py` 的 `_load_plugin_web_build_app`、
   `migration_runner.py` 的 `MIGRATIONS_DIR`、相关测试与 `tools/sync_frontend.py`）。
@@ -121,7 +126,7 @@
   `.gitignore`、`rebuild.sh`、`dev/README.md`。
 - [x] **Phase 4 - 文档同步**：`README.md`、`ARCHITECTURE.md`、`docs/PROJECT_STRUCTURE.md`、
   `tests/README.md`、`tests/mocks/README.md`、`tools/README.md`；各层 `*.README.md`（如
-  `ka_core/api.README.md`）按 `CLAUDE.md` §0 约定属于框架模板示例段落，保持通用命名不改。
+  `knowledge_arch/api.README.md`）按 `CLAUDE.md` §0 约定属于框架模板示例段落，保持通用命名不改。
 - [x] **Phase 5 - 验证**：`python -m pytest` 608 passed / 1 skipped；`ruff check .`、`mypy`
   全绿；grep 确认无残留 `from core`/`import core`/裸 `core.` 引用（`astrbot.core` 除外）。
 - [x] **Phase 6 - 收尾**：CHANGELOG 追加；`python bump_version.py patch` → v1.0.2。
