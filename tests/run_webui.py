@@ -26,7 +26,6 @@ if str(_ROOT) not in sys.path:
 
 from aiohttp import web  # noqa: E402
 
-from ka_web.server import build_app  # noqa: E402
 from ka_core.api import KnowledgeRepositoryApi  # noqa: E402
 from ka_core.ask_progress import ProgressStore  # noqa: E402
 from ka_core.config import Config  # noqa: E402
@@ -40,6 +39,7 @@ from ka_core.metrics import PerformanceTracker  # noqa: E402
 from ka_core.repository.kb_reader.memory import InMemoryKnowledgeBaseReader  # noqa: E402
 from ka_core.repository.source_store.memory import InMemorySourceDocumentStore  # noqa: E402
 from ka_core.repository.sync_targets.memory import InMemorySyncTarget  # noqa: E402
+from ka_web.server import build_app  # noqa: E402
 
 _DEFAULT_PASSWORD = "111111"
 _GB = 1024 * 1024 * 1024

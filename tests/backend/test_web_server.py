@@ -13,7 +13,6 @@ from aiohttp import FormData
 from aiohttp.test_utils import TestClient, TestServer
 from yarl import URL
 
-from ka_web.server import SESSION_COOKIE, build_app
 from ka_core.api import KnowledgeRepositoryApi
 from ka_core.config import Config
 from ka_core.domain.models import (
@@ -29,6 +28,7 @@ from ka_core.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
 from ka_core.repository.source_store.memory import InMemorySourceDocumentStore
 from ka_core.repository.sync_targets.memory import InMemorySyncTarget
 from ka_core.secret_store import EncryptedSecretStore
+from ka_web.server import SESSION_COOKIE, build_app
 
 _GB = 1024 * 1024 * 1024
 
