@@ -1,5 +1,201 @@
 # TODO
 
+## 旧插件仓 2026-07-17 更新同步 (completed)
+
+### User constraints / 约束
+
+- 将 `Astrbot_Knowledge_Repository` `developer@3f7d89e` 的近期有效更新同步到本 monorepo；
+  不回退当前独立版与双壳架构的未提交改动。
+- 旧仓的 Notion Strict 主体已在本仓工作区落地；仅补齐其后续归档账本迁移，并解决本仓
+  `021_chat_sessions.sql` 的编号占用。
+- 插件版本线对齐旧仓 `v1.0.5`；独立版版本保持 `v0.2.2`。不 commit、不 push、不改旧仓。
+
+### Technical implementation path
+
+- [x] **Phase 1 - 迁移与版本同步**：将旧仓 `021_notion_archived_status.sql` 以本仓下一编号
+  `022_notion_archived_status.sql` 移植，保留 `021_chat_sessions.sql`；补回归测试，更新插件版本与 CHANGELOG。
+- [x] **Phase 2 - 验证与收尾**：运行迁移、Notion Strict、壳边界与发布树校验；通过后标完成并追加根 CHANGELOG。
+
+### Verification
+
+- 2026-07-18：`python -m pytest tests/backend/test_migration_021.py tests/backend/test_migration_022.py -q` → `2 passed`。
+- 2026-07-18：Notion/配置回归（含 Strict 归档、防恢复与 HTTP 配置写入）→ `148 passed`；
+  `tests/backend/test_shell_boundaries.py` → `3 passed`；新增迁移测试 `ruff check` 通过。
+- 2026-07-18：WORKTREE 正式发布树 `501 files`、developer 同步预览树 `661 files` 均校验通过；
+  未执行 commit、push 或旧仓写入。
+
+## Codex Knowledge Arch 双壳 Skill 与发布同步 (completed)
+
+### User constraints / 约束
+
+- 将旧插件仓已验证的 `operate-knowledge-arch` 项目级 Skill 移植到 monorepo，供 Codex 在
+  `Knowledge-Arch`、standalone 与正式插件安装目录中低 Token 检索本地知识、回答研究问题并安全调整配置。
+- 适配 `plugin` / `standalone` 两种壳的实际可写配置白名单；不调用 `/api/ask`，不自动重建索引。
+- 纳入正式插件发布树与旧仓 developer 同步树；保留当前工作区全部未提交修改，不 commit、不 push。
+
+### Technical implementation path
+
+- [x] **Phase 1 - Skill 与双壳客户端**：创建 `.agents/skills/operate-knowledge-arch/`，复用标准库客户端并按
+  `/api/auth.shell` 自动选择 plugin / standalone 配置策略。
+- [x] **Phase 2 - Git 与发布链路**：仅放行本 Skill，更新正式发布、developer 同步与发布树必需文件校验。
+- [x] **Phase 3 - 契约测试**：覆盖鉴权、检索融合/截断、分页、故障、双壳白名单、确认门与敏感信息保护。
+- [x] **Phase 4 - 验证与收尾**：运行 Skill 校验、定向测试、发布树校验、完整 pytest、Ruff 与 mypy；通过后追加 CHANGELOG 并标完成。
+
+### Verification
+
+- 2026-07-17：`quick_validate.py` 通过；新增 Skill 契约测试 `14 passed`，客户端定向 Ruff 与严格 mypy 通过。
+- 2026-07-17：WORKTREE 正式插件树（500 文件）与旧仓 developer 同步树（659 文件）均完成校验，
+  两棵树分别包含 5 个必需 Skill 文件；Git 仅放行 `operate-knowledge-arch`，其余 `.agents` 状态仍被忽略。
+- 2026-07-17：完整 pytest 为 `659 passed, 1 failed`，唯一失败是当前环境缺少可选依赖 `milvus_lite` 的
+  既有生命周期测试；排除该已知项后 `659 passed, 1 deselected`。全仓 Ruff 与项目级 mypy 均通过。
+
+## 顶层目录与 Python 包统一更名 (completed)
+
+### User constraints / 约束
+
+- 将 `ka_web/` 更名为 `web/`、`ka_standalone/` 更名为 `standalone/`、`ka_core/` 更名为 `kacore/`。
+- Python 导入名一次性硬切换，不保留旧包名兼容层。
+- 保留已完成 TODO 与旧版 CHANGELOG 中的历史路径，不提交、不推送。
+- 工作区已有未提交修改必须原样保留，不回退或覆盖。
+
+### Technical implementation path
+
+- [x] **Phase 1 - 目录与包入口**：整体移动三个目录，更新生产代码、插件壳、独立壳、测试、动态导入与命令入口。
+- [x] **Phase 2 - 工具链与发布树**：更新构建脚本、CI、打包配置、发布白名单与前端同步路径。
+- [x] **Phase 3 - 当前文档**：更新行为契约、架构、README 与项目结构等当前说明，历史记录保持原貌。
+- [x] **Phase 4 - 验证与收尾**：运行后端、前端和 WORKTREE 发布树验证，通过后追加 CHANGELOG 并标完成。
+
+### Verification
+
+- 2026-07-13：活动代码与当前文档的旧名称扫描无残留；`compileall`、导入/CLI smoke、`ruff`、`mypy` 通过。
+- 2026-07-13：壳边界与生命周期定向测试 `17 passed`；完整后端测试在当前环境为 `644 passed`，
+  唯一未运行项是缺少可选依赖 `milvus-lite` 的集成生命周期测试（原始全量结果为 `644 passed, 1 failed`）。
+- 2026-07-13：前端 ESLint、TypeScript、Next.js 静态构建通过；同步 359 个文件后
+  `python tools/sync_frontend.py --check` 通过。
+- 2026-07-13：WORKTREE 正式发布树（495 文件、ZIP 3.90 MiB）与 developer 同步树（653 文件）校验通过；
+  `git diff --check` 通过。
+
+## 前端产物同步 Agent 契约 (completed)
+
+### User constraints / 约束
+
+- 防止 GitHub Actions `Verify exported pages` 因前端构建产物未同步而失败。
+- 将约束只写入唯一行为契约 `CLAUDE.md`；不修改 `rebuild.sh`、不提交、不推送。
+
+### Technical implementation path
+
+- [x] **Phase 1 - 契约**：明确 Agent 修改 `ka_web/frontend/` 后的必经构建、同步、校验与提交范围检查；
+  明确 Docker 中 `bash rebuild.sh --build-only` 与普通 `bash rebuild.sh` 的适用边界。
+
+### Verification
+
+- 2026-07-13：`python tools/sync_frontend.py --check` 通过；`rebuild.sh` 经 Git Bash 静态语法校验。
+
+
+## v0.2.2 前端导出产物 CI 校验修复 (completed)
+
+### User constraints / 约束
+
+- 修复 GitHub Actions `frontend` 作业的 `Verify exported pages` 失败；不修改 CI 工作流、不提交、不推送。
+- `pages/` 为构建产物，只能通过 `tools/sync_frontend.py` 从 `ka_web/frontend/out/` 同步生成。
+
+### Technical implementation path
+
+- [x] **Phase 1 - 同步生成物**：从当前 `ka_web/frontend/out/` 同步至 `pages/`，消除导出产物漂移。
+- [x] **Phase 2 - CI 同款核验**：运行 `python tools/sync_frontend.py --check`，确认 `pages/` 与 `out/` 一致。
+
+### Verification
+
+- 2026-07-13：`python tools/sync_frontend.py` 同步 357 个文件；
+  `python tools/sync_frontend.py --check` 通过。
+
+
+## 两壳分离：ka_core 框架中立化 (completed)
+
+### User constraints / 约束
+
+- 更清晰区分两个壳、文件结构更易读；**优先保证独立版运行**。
+- 插件本轮只做到「不破坏、测试保绿」的最小程度，不做发布树深度验证。
+- 插件依赖清理（discord.py 移除、pymilvus 可选化）**本轮延后**。
+
+### Technical implementation path
+
+- [x] **Phase 1 - 中立 LLM 接口**：`ka_core/adapters/llm.py` 的 `LLMAdapter` 由 AstrBot 具体类改为中立
+  Protocol；新增 `OfflineStubLLMAdapter` 承接离线占位；`LMStudioLLMAdapter` 留核心。
+- [x] **Phase 2 - AstrBot 适配器归位**：`AstrBotLLMAdapter`/`AstrBotKnowledgeBaseReader`/`to_document_chunk`
+  搬入插件自有包 `apps/plugin/ka_plugin/adapters/`，从 ka_core 删除。
+- [x] **Phase 3 - 组合根中立化**：删组合根 `else: <AstrBot 默认>` 分支改中立默认；插件壳显式注入
+  AstrBot 适配器；`published-files.txt` 纳入 ka_plugin 包。
+- [x] **Phase 4 - 独立版验证与测试保绿**：独立版实跑冒烟；测试跟随搬迁；新增「ka_core 零 astrbot import」守卫。
+- [x] **Phase 5 - 文档**：ARCHITECTURE 依赖方向、结构说明、CHANGELOG（不 bump 版本）。
+
+### Verification
+
+- 2026-07-11 结果：`pytest tests/backend` **645 passed**（新增 3 条壳边界守卫）；`ruff check .` 全绿；
+  `mypy` domain 门禁 Success。
+- **核心中立性达成**：`grep -rn "import astrbot" ka_core/` → **0 命中**；
+  `tests/backend/test_shell_boundaries.py` 以 AST 扫描守卫 ①核心不 import astrbot ②核心不 import 任何壳
+  ③两壳互不相识。
+- **独立版实跑验证（首要验收线）**：组合根装配成功 → `shell=standalone`、
+  `kb_reader=InMemoryKnowledgeBaseReader`、`main llm=OfflineStubLLMAdapter`、
+  `ConversationService` + `DiscordChannel` 就位（未配置 token 时为诊断态，不阻断启动）；
+  离线占位可读、`allow_mock=False` 显式抛错（占位永不混入证据）；配置 main_llm 后正确切到
+  `LMStudioLLMAdapter`（带 `chat_stream`）；teardown 干净退出。
+- 插件壳保持编译与注入对称（`ka_plugin.adapters` 可独立导入）；按约束未做插件发布树深度验证。
+- 按约束未执行 commit / push / PR；未 bump 任何版本线。
+
+### 后续（本轮按用户意见延后）
+
+- [ ] 插件依赖清理：`requirements-additional.txt` 移除独立版专属的 `discord.py`；`pymilvus` 可选化 +
+  缺失时降级 SQLite 检索（避免 Windows 上 AstrBot 装插件失败）。
+- [ ] 核心内残留的 AstrBot **字符串标签**（`capabilities.py` 的 `"astrbot_kb"` 引擎名、
+  `log_capture.py` 的日志路由串）——不影响「零 astrbot import」验收线，属 cosmetic 清理。
+
+## v0.2.0 主问答统一、上下文 Research 与 Discord 渠道 (completed)
+
+### User constraints / 约束
+
+- 独立版删除全屏对话 Agent，主控制台右侧问答框成为普通 Ask、Research、Persona、历史与外部渠道共用的唯一对话入口。
+- Research / 上下文 / Persona 按会话持久化；上下文只用于改写召回意图与判断范围，不作为事实证据。
+- 问答历史在清除前持续显示，每条回答持久化并展示本次实际 collection 召回范围。
+- 独立版直连 Discord，首版只响应私信、提及与回复；先定义平台无关渠道接口，保留未来扩展能力。
+- Standalone 版本提升至 v0.2.0；不改插件版本，不 commit、不 push、不创建 PR。
+
+### Technical implementation path
+
+- [x] **Phase 1 - 会话与消息契约**：新增 chat_sessions、chat_history metadata 迁移，扩展 SourceDocumentStore ABC/SQLite/memory 与契约测试。
+- [x] **Phase 2 - 统一对话编排**：实现 ConversationService、上下文改写、Research 自动范围/模式、单一全局 Persona、统一 SSE 与去重持久化。
+- [x] **Phase 3 - 主问答面板整合**：Research 图标、会话设置、范围底标、历史完整回放；删除 AgentChatView 与视图切换入口。
+- [x] **Phase 4 - Discord 渠道**：渠道 ABC、Discord adapter、allowlist、加密 token、生命周期、设置 UI 与 adapter 测试。
+- [x] **Phase 5 - 回归与发布闭环**：全量质量门禁、README/ARCHITECTURE/CHANGELOG、Standalone v0.2.0、前端构建与 pages 同步。
+
+### Verification
+
+- 2026-07-11 结果：后端 `pytest tests/backend` **642 passed**（新增迁移 021、会话 CRUD /
+  消息 metadata、统一 SSE 与会话/Discord 设置接口、Discord 触发与用户×频道隔离等契约测试；
+  能力依赖清单加入 discord 断言）；`ruff check .` 全绿；`mypy`（domain 门禁 + 新增
+  conversation/channels 五模块严格）无错。
+- 前端 `tsc --noEmit` / `eslint` 全绿；`npm run build` 成功（79s 编译 + 13 静态页），
+  `tools/sync_frontend.py` 同步 357 文件、`--check` 一致。
+- 架构收尾：旧 `ka_core/chat/agent_service.py`（`ChatAgentService`）已被 `ka_core/conversation/`
+  与 `ka_core/channels/` 完全取代，删除该孤立包（全仓零引用，删除后全量测试仍 642 passed）。
+- 按约束未执行 commit / push / PR；未改插件版本线。
+
+## 技术债 - 主问答面板拆分 (pending)
+
+### Background / 背景
+
+- v0.2.0 主问答统一后，`ka_web/frontend/components/panels/ChatPanel.tsx` 净增至 **1400 行**
+  （1334→1400），已抽出 `components/chat/ChatScopeFooter.tsx`（消息底标），但消息列表、
+  Composer/设置浮层与 Research 状态仍内联，超出 `CONVENTIONS.md` §4 的 **600 行硬红线**。
+- 发布尾声做大颗粒 React 拆分无前端单测护栏、回归风险高，按红线规则「必须拆分或登记计划」先登记，
+  留待独立一轮完成（不阻断 v0.2.0 发布）。
+
+### Technical implementation path
+
+- [ ] 将 ChatPanel 拆为 `MessageList`、`MessageComposer`（含设置浮层）、`ResearchStatus`
+  与消息渲染子组件，状态经 props/hook 下沉；拆分后 `tsc`/`eslint`/`build` 全绿、行为零回归。
+
 ## v0.1.1 独立版脱 AstrBot 界面残留排查 (in progress)
 
 ### User constraints / 约束

@@ -23,6 +23,47 @@
 
 ## [Unreleased]
 
+## [v1.0.5] — 2026-07-18
+
+### 新增功能 (Added)
+
+- **随插件分发 Codex Knowledge Arch Skill**：新增项目级 `.agents/skills/operate-knowledge-arch/`，允许 Codex
+  直接调用本地 WebUI API 做低 Token 证据检索、文档读取与引用回答，并按运行壳白名单预览/确认配置变更；
+  客户端不调用插件 LLM、不接收命令行密码、不提供自动重建入口。
+
+- **Notion Strict 清理模式**：`notion_sync.sync_mode` 新增 `preserve`（默认）与 `strict`；Strict 同步仅
+  推送 active 文档，归档 detached 文档的账本页及同 DocID 重复页，并阻止普通/强制同步或 QA 引用补推将其
+  恢复（`kacore/config.py`、`kacore/pipelines/notion_sync_pipeline.py`、
+  `kacore/repository/sync_targets/notion.py`）。
+
+### 修复 (Fixed)
+
+- **Strict 归档账本升级**：新增 `022_notion_archived_status.sql`，将 `notion_entity_map.status` 的 SQLite
+  约束扩展为接受 `archived` tombstone，且保留既有账本记录；避开本仓已有的
+  `021_chat_sessions.sql`（`ka_migrations/022_notion_archived_status.sql`、
+  `tests/backend/test_migration_022.py`）。
+
+### 架构健康 (Refactor)
+
+- **插件运行时包统一更名**：将共享核心 `ka_core/` 改为 `kacore/`、Web 后端 `ka_web/` 改为
+  `web/`，同步调整 `apps/plugin/main.py`、`kacore/plugin_initializer.py`、内部导入和发布树路径；
+  旧包名不保留兼容层。插件壳仅驱逐唯一归属的 `kacore`/`ka_migrations`/`ka_plugin` 模块，
+  通用名 `web` 继续通过唯一模块别名按文件加载，避免误清理宿主进程中的同名模块。
+
+### 测试 (Tests)
+
+- **Skill 双壳与安全契约**：覆盖 plugin / standalone 配置策略、鉴权、RRF 检索融合、分页、脱敏、配置和
+  重启确认门，以及正式插件树和 developer 同步树的 Skill 完整性校验。
+
+### 构建与工程 (Build/CI)
+
+- **发布链路适配新目录**：`release/published-files.txt`、`release/developer-files.txt`、CI、
+  前端同步与 WORKTREE 发布校验统一使用 `kacore/`、`web/`；发布 glob 从仓库根匹配，
+  防止 `web/**` 误收录 `docs/` 内的同名设计目录。
+
+- **发布树纳入 Codex Skill**：三份发布清单与两级构建校验器均要求完整包含
+  `.agents/skills/operate-knowledge-arch/`，确保下一次正式插件发布和 GitHub 安装树携带该能力。
+
 ## [v1.0.3] — 2026-07-10
 
 ### 修复 (Fixed)

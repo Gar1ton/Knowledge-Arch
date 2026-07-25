@@ -3,6 +3,14 @@
 apps/plugin/main.py => main.py
 apps/plugin/metadata.yaml => metadata.yaml
 apps/plugin/_conf_schema.json => _conf_schema.json
+
+# 插件壳自有包（AstrBot 专属适配器；kacore 不认识它们，由 main.py 显式注入）。
+# 注：=> 映射规则必须恰好命中一个文件，故逐个列出；新增文件需同步登记。
+apps/plugin/ka_plugin/__init__.py => ka_plugin/__init__.py
+apps/plugin/ka_plugin/adapters/__init__.py => ka_plugin/adapters/__init__.py
+apps/plugin/ka_plugin/adapters/llm.py => ka_plugin/adapters/llm.py
+apps/plugin/ka_plugin/adapters/kb_reader.py => ka_plugin/adapters/kb_reader.py
+apps/plugin/ka_plugin/adapters/kb_chunk.py => ka_plugin/adapters/kb_chunk.py
 requirements.txt
 requirements-additional.txt
 apps/plugin/README.md => README.md
@@ -14,11 +22,14 @@ apps/plugin/logo.svg => logo.svg
 .github/workflows/published-verify.yml
 release/AGENTS.published.md => AGENTS.md
 
-ka_core/*.py
-ka_core/**/*.py
-!ka_core/main.py
+# Codex project Skill: local evidence retrieval and safe settings operations.
+.agents/skills/operate-knowledge-arch/**
 
-ka_web/server.py
+kacore/*.py
+kacore/**/*.py
+!kacore/main.py
+
+web/server.py
 
 ka_migrations/*.py
 ka_migrations/*.sql

@@ -17,20 +17,164 @@
 
 ---
 
-## [Unreleased]
+## [v0.2.3] - 2026-07-25
 
 ### 修复 (Fixed)
 
-- **独立版脱 AstrBot 界面残留排查**：用户实测 rebuild.sh 后看不到对话界面、控制台仍出现
-  「AstrBot 配置」弹窗。① rebuild.sh 默认后端由内存测试桩改为真实独立应用（`--memory`
-  保留旧插件开发链路）；② 对话 Agent 改为 standalone 壳**恒装配**——主 LLM 经组合根惰性工厂
-  `_resolve_standalone_main_llm` 按最新持久化配置解析，设置页保存 main_llm 后**免重启**生效，
-  未配置时自然语言通路回复配置指引、/ka 命令照常可用（ka_core/chat/agent_service.py,
-  ka_core/plugin_initializer.py）；③ `/api/auth` 增 `shell` 字段、`/api/chat/agent/info` 增
-  `llm_ready`（ka_web/server.py, ka_core/api.py）；④ 前端按壳去 AstrBot 呈现：TopBar 隐藏
-  AstrBot 配置入口、登录页副标题 standalone 显示 STANDALONE · CONSOLE、对话页未配置主模型时
-  显示引导横幅、metadata 描述去 AstrBot 措辞（TopBar.tsx, LoginScreen.tsx, layout.tsx,
-  AgentChatView.tsx, app/layout.tsx）。
+- **同步 Notion Strict 归档账本迁移**：从旧插件仓移植归档状态约束升级为
+  `ka_migrations/022_notion_archived_status.sql`，避免与本仓 `021_chat_sessions.sql` 编号冲突；
+  迁移保留现有 `notion_entity_map` 记录并允许 Strict 模式写入 `archived` tombstone
+  （`ka_migrations/022_notion_archived_status.sql`、`tests/backend/test_migration_022.py`）。
+
+### 新增功能 (Added)
+
+- **Codex 项目级 Knowledge Arch Skill**：新增 `.agents/skills/operate-knowledge-arch/`，由仅依赖 Python
+  标准库的客户端通过 WebUI API 执行目录发现、紧凑检索、RRF 融合、去重、分页全文读取与就近引用，
+  最终研究回答仍由 Codex 生成且绝不调用 `/api/ask`；配置操作按 `/api/auth.shell` 自动区分
+  `plugin` / `standalone` 可写白名单，保留预览、显式应用、独立重启确认与禁止自动重建约束。
+
+### 架构健康 (Refactor)
+
+- **统一顶层目录与 Python 包命名**：一次性将 `ka_core/`、`ka_web/`、`ka_standalone/`
+  硬切换为 `kacore/`、`web/`、`standalone/`，同步更新生产代码、测试、动态加载、CLI 入口、
+  `pyproject.toml`、当前架构文档与工程说明；不保留旧导入兼容层。
+
+### 测试 (Tests)
+
+- **Skill 与发布契约覆盖**：新增 `tests/backend/test_knowledge_arch_skill_client.py`，覆盖 WebUI 鉴权、连接与
+  401 故障、检索融合/截断、文档分页、双壳配置策略快照、敏感信息脱敏、应用/重启确认门、隔离进程
+  端到端命令链，以及三份发布清单和两级发布校验器的完整 Skill 文件契约。
+
+### 构建与工程 (Build/CI)
+
+- **适配新目录的构建与发布链路**：更新 CI、发布清单、容器/重建脚本和前端同步路径；
+  `tools/build_published_tree.py` 的 glob 改为从仓库根匹配，避免通用目录名 `web/` 误纳入嵌套设计资料；
+  `tools/sync_frontend.py` 在 Windows 目录被占用、无法原子改名时支持安全的原地镜像回退。
+
+- **Skill 纳入两级发布链路**：收窄 `.agents/` 忽略规则，仅追踪 `operate-knowledge-arch`；同步更新
+  `release/published-files.txt`、`release/developer-files.txt`、`release/published-files.developer.txt`
+  及 `tools/build_published_tree.py` / `tools/publish_plugin.py` 的必需文件校验，使 monorepo、旧仓
+  developer 同步树与正式 AstrBot 插件安装树都包含该 Skill。
+
+- **固化前端导出产物契约**：`CLAUDE.md` 要求 Agent 修改 `web/frontend/` 后，必须完成构建、
+  `tools/sync_frontend.py` 同步与 CI 同款 `--check` 校验，并确认生成的 `pages/` 纳入本地提交范围；
+  同时明确 Docker 中 `bash rebuild.sh --build-only` 与普通 `bash rebuild.sh` 的适用边界。
+
+## [v0.2.2] — 2026-07-13
+
+### 构建与工程 (Build/CI)
+
+- **修复前端导出产物校验**：通过 `tools/sync_frontend.py` 将
+  `ka_web/frontend/out/` 的 357 个构建产物同步至 `pages/`，使 Developer CI 的
+  `Verify exported pages` 步骤重新通过（`pages/`、`tools/sync_frontend.py`）。
+
+- **独立版版本线**：将 `pyproject.toml`、`README.md` 与
+  `ka_standalone/__init__.py` 对齐为 `v0.2.2`。
+
+## [v0.2.1] — 2026-07-13
+
+### 架构健康 (Refactor)
+
+- **两壳分离：`ka_core` 框架中立化**。此前核心里既住着 AstrBot 专属适配器、又住着独立版适配器，
+  组合根还用 `else: <AstrBot 默认>` 把 AstrBot 当成核心的隐藏默认值——「哪块代码归哪个壳」无法一眼判断。
+  本次改为：
+  - **中立契约**：`ka_core/adapters/llm.py` 的 `LLMAdapter` 由 AstrBot 具体类改为
+    **Protocol**（核心唯一依赖 `generate`；`chat_stream` 仍是 `hasattr` 探测的可选能力）；
+    新增 `OfflineStubLLMAdapter` 承接「未配置主 LLM」的中立离线占位（`allow_mock=False` 显式抛错，
+    占位内容永不混入证据）。`LMStudioLLMAdapter` 留在核心（LightRAG / Deep Thinking / 独立版主模型共用）。
+  - **AstrBot 代码归位插件壳**：新建插件自有包 `apps/plugin/ka_plugin/adapters/`，
+    收纳 `AstrBotLLMAdapter`（原 `LLMAdapter` 的 provider 实现，含**核心里最后一行 `import astrbot`**）、
+    `AstrBotKnowledgeBaseReader`、`to_document_chunk`；从 `ka_core` 删除
+    `repository/kb_reader/astrbot.py` 与 `adapters/astrbot_kb.py`。
+  - **组合根中立、两壳对称**：删掉 `else: LLMAdapter(context)` / `else: AstrBotKnowledgeBaseReader(context)`
+    两处 AstrBot 隐藏默认，改为中立默认（`OfflineStubLLMAdapter` / `InMemoryKnowledgeBaseReader`）；
+    插件壳改为**显式注入**自己的适配器（`apps/plugin/main.py`），与独立壳
+    （`ka_standalone/bootstrap.py`）完全对称——谁都不再是「默认壳」
+    （`ka_core/plugin_initializer.py`）。
+  - **结果**：`ka_core` 现在 **零 `import astrbot`、零壳 import**；独立版运行链路完全不再触碰任何
+    AstrBot 代码（实跑验证：`kb_reader=InMemoryKnowledgeBaseReader`、
+    `main llm=OfflineStubLLMAdapter`、配置后切 `LMStudioLLMAdapter`）。
+
+### 测试 (Tests)
+
+- 新增壳边界守卫 `tests/backend/test_shell_boundaries.py`：用 AST 扫描断言
+  ①`ka_core` 不 import `astrbot`；②`ka_core` 不 import 任何壳；③两壳互不相识。
+  架构一旦腐坏立刻红。原 `test_llm_adapter.py` / `test_notion_target.py` 随适配器改指
+  `ka_plugin.adapters`；`test_standalone_bootstrap.py` 的「默认即 AstrBot」断言按新契约改为
+  「默认即中立」（`pyproject.toml` 的 pytest `pythonpath` 增 `apps/plugin`）。
+
+### 构建与工程 (Build/CI)
+
+- `release/published-files.txt` 纳入 `apps/plugin/ka_plugin/` 各文件（`=>` 映射规则要求恰好命中
+  一个文件，故逐个登记）；`apps/plugin/main.py` 的模块驱逐白名单 `_OWNED_TOPS` 增 `ka_plugin`。
+
+## [v0.2.0] — 2026-07-11
+
+### 新增功能 (Added)
+
+- **统一问答入口（Phase 1–3）**：右侧「向知识库提问」成为普通 Ask、Research、引用、历史、
+  Persona 与外部渠道共用的唯一对话入口。新增渠道无关的 `ConversationService`
+  （`ka_core/conversation/service.py`、`prompts.py`）与领域模型 `ConversationTurn` /
+  `ConversationSession`（`ka_core/domain/conversation.py`）；统一 SSE 事件流
+  `stage|delta|assistant|error|done`，`assistant` 携带正文、引用、请求/实际模式、结构化召回
+  范围、Research 标记、验证告警与思考摘要。新增 `POST /api/chat/turn` 与会话设置接口
+  `GET|PATCH /api/chat/session/{conversation_id}`（仅允许改
+  `research_enabled`/`context_enabled`/`persona_enabled`），保留 `/api/ask` 兼容
+  （`ka_web/server.py`、`ka_core/api.py`）。前端主问答面板拆为消息列表、消息底标、Composer/
+  设置浮层与 Research 状态组件（`ka_web/frontend/components/chat/`、`components/panels/ChatPanel.tsx`、
+  `lib/api.ts`）；每条助手消息底标展示本轮实际 collection 召回范围（指定集合/全局/未召回/
+  旧记录降级）。
+- **上下文参与召回**：会话默认开启，用最近 12 条、最多 12,000 字符的有界历史改写出自包含检索
+  意图；历史只用于改写与范围判断，**不作为事实证据**，改写失败显式降级到本轮原问题
+  （`ka_core/conversation/service.py`）。
+- **Research 自动编排**：输入框齿轮右侧新增 Research 开关；开启后由 Agent 自动探查范围、处理
+  歧义并在现有五档中自动选择召回模式（低歧义直达、中高歧义跨轮澄清），Web 已选 collection 为
+  服务器强制范围，probe/execute 均不越界；关闭时回落用户选择的 collection 与手动模式。统一服务
+  保证同一会话严格串行、每轮恰好一次历史持久化，消除 Research 产生孤立/重复历史的隐患。
+- **单一全局 Persona**：新增可按会话启用的全局 Persona 文本（最长 4,000 字符），仅作为 Agent
+  澄清与最终合成的「风格层」注入，RAG 证据/范围/引用硬约束始终更高优先级；接入普通、Enhanced 与
+  Deep 合成链（`ka_core/pipelines/answer_synthesis.py`、`enhanced_recall_orchestrator.py`、
+  `deep_thinking_orchestrator.py`）。大设置页新增 Persona 编辑器（`SettingModal.tsx`）。
+- **Discord 直连渠道（Phase 4）**：先定义平台无关的渠道接口 `ConversationChannel` /
+  `IncomingMessage` / `ChannelStatus`（`ka_core/channels/base.py`），再实现 Discord adapter
+  （`ka_core/channels/discord.py`）——仅响应私信、明确提及或回复 Bot；会话键按 guild/thread/DM
+  隔离到用户×频道；`allowed_user_ids` 必填，guild/channel 白名单非空时进一步收窄；发送时显示
+  typing、长 Research 用单条可更新进度消息、最终答案按句切分 ≤1,900 字符并禁用所有意外 mentions。
+  Bot token 优先读 `KR_DISCORD_BOT_TOKEN`，否则读加密 secret store，API 只回 `token_present`，
+  永不回显（`GET|PUT /api/channels/discord`、`PUT|DELETE /api/channels/discord/token`、
+  `DiscordConfigCard.tsx`）。可选依赖 `discord.py>=2.7,<3` 登记到 extras、安装白名单与能力检测，
+  缺依赖/凭据时独立版仍可启动并给出诊断（`ka_core/capabilities.py`、`pyproject.toml`）。
+- **会话与消息持久化契约**：新增迁移 `021_chat_sessions.sql`（`chat_sessions` 会话开关表 +
+  `chat_history.metadata` JSON 快照）；`SourceDocumentStore` ABC/SQLite/memory 同步增加会话 CRUD
+  与消息 metadata，旧消息缺 metadata 时返回空对象并在底标显示「范围未知（旧记录）」
+  （`ka_core/repository/source_store/{base,memory,sqlite}.py`）。
+
+### 修复 (Fixed)
+
+- **独立版脱 AstrBot 界面残留**（并入统一问答）：rebuild.sh 默认后端由内存测试桩改为真实独立
+  应用（`--memory` 保留旧插件开发链路）；standalone 壳**恒装配**对话服务——主 LLM 经组合根惰性
+  工厂 `_resolve_standalone_main_llm` 按最新持久化配置解析，设置页保存 main_llm 后**免重启**
+  生效，未配置时自然语言通路回复配置指引、`/ka` 命令照常可用；`/api/auth` 增 `shell` 字段；前端
+  按壳去 AstrBot 呈现（TopBar 隐藏 AstrBot 入口、登录副标题 STANDALONE、metadata 去 AstrBot
+  措辞）（`ka_core/plugin_initializer.py`、`ka_web/server.py`、`TopBar.tsx`、`LoginScreen.tsx`、
+  `app/layout.tsx`）。
+
+### 架构健康 (Refactor)
+
+- **移除独立全屏对话视图与专用接口**：删除 `AgentChatView.tsx` 全屏 Agent 视图、TopBar「对话」
+  入口、独立会话 ID/视图切换状态与对应 localStorage/文案，改由统一主问答面板承载
+  （`app/(console)/layout.tsx`、`TopBar.tsx`、`lib/api.ts`）；移除面板专用的
+  `/api/chat/agent` 与 `/api/chat/agent/info`（能力由 `/api/chat/turn` 承接）。
+- **完成 Agent 服务解耦**：旧 `ka_core/chat/agent_service.py`（`ChatAgentService`）已被
+  `ka_core/conversation/` 与 `ka_core/channels/` 完全取代，删除该孤立包；`PluginInitializer` 统一
+  装配 `ConversationService` 并管理 Discord 后台启动/诊断/teardown（`ka_core/plugin_initializer.py`）。
+
+### 测试 (Tests)
+
+- 新增迁移 021 幂等/旧库升级、会话 CRUD 与消息 metadata 回放、统一 SSE 与会话/Discord 设置接口、
+  Discord 触发与用户×频道隔离、能力依赖清单等契约测试（`tests/backend/test_migration_021.py`、
+  `test_source_store.py`、`test_sqlite_source_store.py`、`test_web_server.py`、
+  `test_discord_channel.py`、`test_chat_agent.py`、`test_capabilities.py`）。
 
 ## [v0.1.0] — 2026-07-10
 

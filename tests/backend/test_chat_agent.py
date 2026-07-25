@@ -1,40 +1,41 @@
-"""对话 Agent 服务契约测试：命令分发、事件流、工具循环与持久化。
-
-用脚本化 fake LLM（chat_stream 事件序列注入）驱动真实组合根（module_available=False
-跳过重依赖），验证与 apps/plugin/main.py 对齐的行为语义。
-"""
+"""统一 ConversationService 契约测试。"""
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
 import pytest
 
-from ka_core.plugin_initializer import PluginInitializer
+from kacore.domain.conversation import ConversationTurn
+from kacore.plugin_initializer import PluginInitializer
 
 
 class _ScriptedLLM:
-    """chat_stream 按预置脚本逐轮回放；记录收到的 messages 供断言。"""
-
-    def __init__(self, rounds: list[list[dict]]) -> None:
-        self._rounds = rounds
+    def __init__(self, rounds: list[list[dict]] | None = None, rewritten: str = "") -> None:
+        self.rounds = rounds or []
+        self.rewritten = rewritten
         self.calls: list[list[dict]] = []
 
     async def generate(self, prompt: str, system_prompt: str = "", **kwargs: object) -> str:
-        return ""
+        return self.rewritten
 
     async def chat_stream(self, messages: list[dict], *, tools=None, temperature=0.3):
-        self.calls.append([dict(m) for m in messages])
-        for event in self._rounds[len(self.calls) - 1]:
+        self.calls.append([dict(item) for item in messages])
+        for event in self.rounds[len(self.calls) - 1]:
             yield event
 
 
-async def _build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, llm) -> PluginInitializer:
-    monkeypatch.setattr("ka_core.plugin_initializer._module_available", lambda name: False)
+async def _build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, llm=None) -> PluginInitializer:
+    monkeypatch.setattr("kacore.plugin_initializer._module_available", lambda name: False)
     initializer = PluginInitializer(
-        None, {"web_console": {"enabled": False}}, tmp_path, llm_adapter=llm
+        None,
+        {"web_console": {"enabled": False}},
+        tmp_path,
+        llm_adapter=llm,
+        shell="standalone",
     )
-    await initializer.initialize()
+    await asyncio.wait_for(initializer.initialize(), timeout=10)
     return initializer
 
 
@@ -42,149 +43,104 @@ async def _collect(stream) -> list[dict]:
     return [event async for event in stream]
 
 
-async def test_chat_agent_attached_when_llm_supports_stream(
+async def test_conversation_service_attached_and_session_defaults(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    llm = _ScriptedLLM([])
+    initializer = await _build(tmp_path, monkeypatch, _ScriptedLLM())
+    try:
+        assert initializer.conversation_service is not None
+        assert initializer.api.conversation_available()
+        session = await initializer.conversation_service.get_or_create_session("conv-1")
+        assert session.research_enabled is False
+        assert session.context_enabled is True
+        assert session.persona_enabled is False
+    finally:
+        await asyncio.wait_for(initializer.teardown(), timeout=10)
+
+
+async def test_session_settings_persist_and_clear_resets_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initializer = await _build(tmp_path, monkeypatch, _ScriptedLLM())
+    try:
+        service = initializer.conversation_service
+        await service.update_session("conv-2", {"research_enabled": True, "persona_enabled": True})
+        assert (await service.get_or_create_session("conv-2")).research_enabled is True
+        await initializer.api.clear_chat_history("conv-2")
+        reset = await service.get_or_create_session("conv-2")
+        assert reset.research_enabled is False and reset.persona_enabled is False
+    finally:
+        await asyncio.wait_for(initializer.teardown(), timeout=10)
+
+
+async def test_normal_turn_persists_once_with_scope_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initializer = await _build(tmp_path, monkeypatch, _ScriptedLLM())
+    try:
+        events = await _collect(
+            initializer.conversation_service.stream(
+                ConversationTurn("conv-3", "没有命中的问题", collection="default")
+            )
+        )
+        assert [event["type"] for event in events][-1] == "done"
+        history = await initializer.api.get_chat_history("conv-3")
+        assert [item["role"] for item in history] == ["user", "assistant"]
+        scope = history[-1]["metadata"]["retrieval_scope"]
+        assert scope["kind"] == "collection" and scope["requested_collection"] == "default"
+    finally:
+        await asyncio.wait_for(initializer.teardown(), timeout=10)
+
+
+async def test_context_rewrite_is_used_but_not_persisted_as_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    llm = _ScriptedLLM(rewritten="self-contained retrieval question")
     initializer = await _build(tmp_path, monkeypatch, llm)
     try:
-        assert initializer.chat_agent is not None
-        assert initializer.api is not None and initializer.api.chat_agent_available()
+        await initializer.source_store.add_chat_message("conv-4", "user", "earlier subject")
+        await initializer.source_store.add_chat_message("conv-4", "assistant", "earlier answer")
+        await _collect(
+            initializer.conversation_service.stream(ConversationTurn("conv-4", "它有什么限制？"))
+        )
+        history = await initializer.api.get_chat_history("conv-4")
+        assert history[-1]["metadata"]["context_applied"] is True
+        assert all(
+            "self-contained retrieval question" not in str(item.get("sources"))
+            for item in history
+        )
     finally:
-        await initializer.teardown()
+        await asyncio.wait_for(initializer.teardown(), timeout=10)
 
 
-async def test_chat_agent_ka_command_roundtrip(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    initializer = await _build(tmp_path, monkeypatch, _ScriptedLLM([]))
-    try:
-        events = await _collect(initializer.chat_agent.stream("/ka help", "conv-1"))
-        assistant = [e for e in events if e["type"] == "assistant"]
-        assert assistant and "/ka 指令一览" in assistant[0]["content"]
-        assert events[-1]["type"] == "done"
-        history = await initializer.api.get_chat_history("conv-1")
-        assert [m["role"] for m in history] == ["user", "assistant"]
-        # webui 命令在独立壳被守卫，不真正启停控制台。
-        events = await _collect(initializer.chat_agent.stream("/ka webui off", "conv-1"))
-        assistant = [e for e in events if e["type"] == "assistant"]
-        assert "独立版本体即 WebUI" in assistant[0]["content"]
-    finally:
-        await initializer.teardown()
-
-
-async def test_chat_agent_plain_reply_streams_and_persists(
+async def test_research_tool_delivery_has_no_duplicate_history(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     llm = _ScriptedLLM(
-        [
-            [
-                {"type": "delta", "text": "你好"},
-                {"type": "delta", "text": "！"},
-                {"type": "final", "content": "你好！", "tool_calls": [], "finish_reason": "stop"},
-            ]
-        ]
+        [[{
+            "type": "final",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_0",
+                "name": "research_execute",
+                "arguments": json.dumps({"query": "topic", "mode": "default"}),
+            }],
+            "finish_reason": "tool_calls",
+        }]]
     )
     initializer = await _build(tmp_path, monkeypatch, llm)
     try:
-        events = await _collect(initializer.chat_agent.stream("在吗", "conv-2"))
-        deltas = "".join(e["text"] for e in events if e["type"] == "delta")
-        assert deltas == "你好！"
-        assistant = [e for e in events if e["type"] == "assistant"]
-        assert assistant[0]["content"] == "你好！"
-        history = await initializer.api.get_chat_history("conv-2")
-        assert history[-1]["content"] == "你好！"
-        # system prompt 含工具指引；本轮 agent_enabled 默认 off → 不含注入块。
-        system = llm.calls[0][0]
-        assert system["role"] == "system"
-        assert "research_scope_probe" in system["content"]
-        assert "Knowledge Base Context" not in system["content"]
+        await initializer.conversation_service.update_session(
+            "conv-5", {"research_enabled": True, "context_enabled": False}
+        )
+        events = await _collect(
+            initializer.conversation_service.stream(
+                ConversationTurn("conv-5", "research topic", collection="default")
+            )
+        )
+        assert any(event["type"] == "assistant" for event in events)
+        history = await initializer.api.get_chat_history("conv-5")
+        assert [item["role"] for item in history] == ["user", "assistant"]
+        assert history[-1]["metadata"]["turn_kind"] == "research"
     finally:
-        await initializer.teardown()
-
-
-async def test_standalone_shell_attaches_agent_without_llm(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """standalone 恒装配：主模型未配置时自然语言通路给指引，/ka 命令仍可用。"""
-    monkeypatch.setattr("ka_core.plugin_initializer._module_available", lambda name: False)
-    initializer = PluginInitializer(
-        None, {"web_console": {"enabled": False}}, tmp_path, shell="standalone"
-    )
-    await initializer.initialize()
-    try:
-        assert initializer.chat_agent is not None
-        assert initializer.api.chat_agent_info() == {"available": True, "llm_ready": False}
-        events = await _collect(initializer.chat_agent.stream("你好", "conv-s1"))
-        assistant = [e for e in events if e["type"] == "assistant"]
-        assert "主模型尚未配置" in assistant[0]["content"]
-        events = await _collect(initializer.chat_agent.stream("/ka help", "conv-s1"))
-        assistant = [e for e in events if e["type"] == "assistant"]
-        assert "/ka 指令一览" in assistant[0]["content"]
-    finally:
-        await initializer.teardown()
-
-
-async def test_standalone_llm_factory_reads_persisted_config(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """惰性工厂按最新配置解析：main_llm 配置完整时 llm_ready=True。"""
-    monkeypatch.setattr("ka_core.plugin_initializer._module_available", lambda name: False)
-    initializer = PluginInitializer(
-        None,
-        {
-            "web_console": {"enabled": False},
-            "main_llm": {"base_url": "http://localhost:1234/v1", "model": "qwen3"},
-        },
-        tmp_path,
-        shell="standalone",
-    )
-    await initializer.initialize()
-    try:
-        assert initializer.api.chat_agent_info() == {"available": True, "llm_ready": True}
-    finally:
-        await initializer.teardown()
-
-
-async def test_chat_agent_tool_loop_research_disabled_notice(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    llm = _ScriptedLLM(
-        [
-            [
-                {
-                    "type": "final",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "call_0",
-                            "name": "research_scope_probe",
-                            "arguments": json.dumps({"query": "SHAP"}),
-                        }
-                    ],
-                    "finish_reason": "tool_calls",
-                }
-            ],
-            [
-                {
-                    "type": "final",
-                    "content": "research 尚未开启，请先发送 /ka research on。",
-                    "tool_calls": [],
-                    "finish_reason": "stop",
-                }
-            ],
-        ]
-    )
-    initializer = await _build(tmp_path, monkeypatch, llm)
-    try:
-        events = await _collect(initializer.chat_agent.stream("查一下 SHAP", "conv-3"))
-        stages = [e for e in events if e["type"] == "stage"]
-        assert stages and "探查" in stages[0]["text"]
-        # 第二轮请求应携带 tool 角色消息（research 未开启的通知回喂模型）。
-        second_call = llm.calls[1]
-        tool_msgs = [m for m in second_call if m.get("role") == "tool"]
-        assert tool_msgs and "research 未开启" in tool_msgs[0]["content"]
-        assistant = [e for e in events if e["type"] == "assistant"]
-        assert "research 尚未开启" in assistant[-1]["content"]
-    finally:
-        await initializer.teardown()
+        await asyncio.wait_for(initializer.teardown(), timeout=10)

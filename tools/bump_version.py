@@ -4,7 +4,7 @@
   同步更新 ``apps/plugin/main.py`` ``_PLUGIN_VERSION``、``apps/plugin/README.md`` 徽章、
   ``apps/plugin/CHANGELOG.md`` 的 ``[Unreleased]`` 收口。
 - ``--target standalone``：独立应用版本线 v0.1.x。版本源 = 根 ``pyproject.toml``
-  ``[project].version``；同步更新根 ``README.md`` standalone 徽章、``ka_standalone/__init__.py``
+  ``[project].version``；同步更新根 ``README.md`` standalone 徽章、``standalone/__init__.py``
   ``__version__``（文件存在时）、根 ``CHANGELOG.md`` 收口、``TODO.md`` 顶部版本标题。
 """
 from __future__ import annotations
@@ -125,7 +125,7 @@ def _standalone_current() -> str:
 
 
 def _standalone_init(target: str, release_date: str, dry_run: bool) -> bool:
-    init_path = ROOT / "ka_standalone" / "__init__.py"
+    init_path = ROOT / "standalone" / "__init__.py"
     if not init_path.exists():
         return False
     return _sub_once(init_path, INIT_VERSION_RE, rf"\g<1>{target}\g<2>", dry_run=dry_run)
@@ -163,7 +163,7 @@ TARGETS = {
             "README.md": lambda t, d, dry: _sub_once(
                 ROOT / "README.md", STANDALONE_BADGE_RE, rf"\g<1>{t}\g<2>", dry_run=dry
             ),
-            "ka_standalone/__init__.py": _standalone_init,
+            "standalone/__init__.py": _standalone_init,
             "CHANGELOG.md": lambda t, d, dry: _release_changelog(
                 ROOT / "CHANGELOG.md", t, d, dry_run=dry
             ),

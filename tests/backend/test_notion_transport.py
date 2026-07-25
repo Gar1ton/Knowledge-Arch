@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from ka_standalone.cli import main as cli_main
-from ka_standalone.notion_transport import StdioNotionToolCaller
+from standalone.cli import main as cli_main
+from standalone.notion_transport import StdioNotionToolCaller
 
 
 class _FakeSession:

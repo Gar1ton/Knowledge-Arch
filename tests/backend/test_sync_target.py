@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from ka_core.domain.models import QuotaUsage, SourceDocument, SyncTargetKind
-from ka_core.repository.sync_targets.memory import InMemorySyncTarget
+from kacore.domain.models import QuotaUsage, SourceDocument, SyncTargetKind
+from kacore.repository.sync_targets.memory import InMemorySyncTarget
 
 
 def _doc(doc_id: str, collection: str = "c") -> SourceDocument:

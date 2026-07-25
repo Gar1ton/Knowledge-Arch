@@ -14,7 +14,7 @@ import subprocess
 import sys
 import zipfile
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "release" / "published-files.txt"
@@ -33,8 +33,13 @@ REQUIRED = {
     "CHANGELOG.md",
     "LICENSE",
     "logo.png",
-    "ka_web/server.py",
+    "web/server.py",
     "pages/index.html",
+    ".agents/skills/operate-knowledge-arch/SKILL.md",
+    ".agents/skills/operate-knowledge-arch/agents/openai.yaml",
+    ".agents/skills/operate-knowledge-arch/scripts/knowledge_arch_client.py",
+    ".agents/skills/operate-knowledge-arch/references/research.md",
+    ".agents/skills/operate-knowledge-arch/references/settings.md",
     ".published-source",
 }
 FORBIDDEN_PREFIXES = (
@@ -43,11 +48,11 @@ FORBIDDEN_PREFIXES = (
     "deliverables/",
     "dev/",
     "docs/",
-    "ka_standalone/",
+    "standalone/",
     "scripts/",
     "tests/",
     "tools/",
-    "ka_web/frontend/",
+    "web/frontend/",
 )
 FORBIDDEN_FILES = {
     "TODO.md",
@@ -57,7 +62,7 @@ FORBIDDEN_FILES = {
     "pyproject.toml",
     "rebuild.sh",
     "requirements-dev.txt",
-    "ka_core/main.py",
+    "kacore/main.py",
 }
 
 
@@ -95,14 +100,14 @@ def _load_rules() -> list[Rule]:
 
 
 def _matches(path: str, pattern: str) -> bool:
-    """让 ``**`` 同时匹配零层或多层目录。"""
+    """从仓库根匹配，并让 ``**`` 同时匹配零层或多层目录。"""
     if not any(char in pattern for char in "*?["):
         return path == pattern
     if fnmatch.fnmatchcase(path, pattern):
         return True
     if "/**/" in pattern:
         return fnmatch.fnmatchcase(path, pattern.replace("/**/", "/"))
-    return PurePosixPath(path).match(pattern)
+    return False
 
 
 def _list_source_files(source: str) -> list[str]:

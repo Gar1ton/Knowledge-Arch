@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from ka_core.domain.models import DocumentChunk
-from ka_core.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
+from kacore.domain.models import DocumentChunk
+from kacore.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
 
 
 @pytest.fixture

@@ -40,13 +40,18 @@ REQUIRED_DEV = {
     "tools/build_published_tree.py",
     "release/published-files.txt",
     "release/AGENTS.published.md",
-    "ka_web/server.py",
-    "ka_core/config.py",
+    "web/server.py",
+    "kacore/config.py",
     "pages/index.html",
+    ".agents/skills/operate-knowledge-arch/SKILL.md",
+    ".agents/skills/operate-knowledge-arch/agents/openai.yaml",
+    ".agents/skills/operate-knowledge-arch/scripts/knowledge_arch_client.py",
+    ".agents/skills/operate-knowledge-arch/references/research.md",
+    ".agents/skills/operate-knowledge-arch/references/settings.md",
     MARKER,
 }
 # monorepo 专属内容绝不进入旧仓 developer 树。
-FORBIDDEN_DEV_PREFIXES = ("apps/", "ka_standalone/", "scripts/", "docs/")
+FORBIDDEN_DEV_PREFIXES = ("apps/", "standalone/", "scripts/", "docs/")
 FORBIDDEN_DEV_FILES = {"CLAUDE.md", "AGENTS.md", "ARCHITECTURE.md", "CONVENTIONS.md", "TODO.md"}
 
 

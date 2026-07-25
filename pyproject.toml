@@ -9,7 +9,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "knowledge-arch"
-version = "0.1.0"
+version = "0.2.2"
 description = "原件中心的知识库系统：PDF 原件管理、五档检索/RAG、LightRAG 图谱、Zotero/R2/Notion 同步、对话 Agent"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
@@ -31,20 +31,23 @@ graph = ["lightrag-hku>=1.5.0rc1,<2.0.0"]
 local-embedding = ["sentence-transformers>=3,<6"]
 backup = ["boto3"]
 notion = ["mcp>=1.0,<2"]
-all = ["knowledge-arch[graph,local-embedding,backup,notion]"]
+discord = ["discord.py>=2.7,<3"]
+all = ["knowledge-arch[graph,local-embedding,backup,notion,discord]"]
 
 [project.scripts]
-knowledge-arch = "ka_standalone.cli:main"
+knowledge-arch = "standalone.cli:main"
 
 [project.urls]
 Repository = "https://github.com/Gar1ton/Knowledge-Arch"
 
 [tool.hatch.build.targets.wheel]
-packages = ["ka_core", "ka_web", "ka_migrations", "ka_standalone"]
+packages = ["kacore", "web", "ka_migrations", "standalone"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"               # 异步测试免写事件循环样板
-pythonpath = [".", "tests/mocks"]   # 让测试可 import ka_core 与测试替身
+# 让测试可 import kacore、测试替身，以及插件壳自有包 ka_plugin
+# （apps/plugin 上 path 镜像生产：AstrBot 会把插件目录加入 sys.path）。
+pythonpath = [".", "tests/mocks", "apps/plugin"]
 testpaths = ["tests"]
 
 [tool.ruff]
@@ -57,4 +60,4 @@ select = ["E", "F", "I", "UP"]      # 基础错误 + 未用 + import 排序 + �
 [tool.mypy]
 python_version = "3.10"
 strict = true
-files = ["ka_core/domain/"]            # 至少对零依赖的 domain 层严格把关
+files = ["kacore/domain/"]            # 至少对零依赖的 domain 层严格把关

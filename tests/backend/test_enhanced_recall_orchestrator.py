@@ -9,17 +9,17 @@ from __future__ import annotations
 
 import pytest
 
-from ka_core.config import EnhancedRecallConfig, RerankConfig
-from ka_core.domain.models import DocumentChunk
-from ka_core.pipelines.deep_thinking_prompts import JsonContractError
-from ka_core.pipelines.enhanced_recall_orchestrator import EnhancedRecallOrchestrator
-from ka_core.pipelines.enhanced_recall_prompts import (
+from kacore.config import EnhancedRecallConfig, RerankConfig
+from kacore.domain.models import DocumentChunk
+from kacore.pipelines.deep_thinking_prompts import JsonContractError
+from kacore.pipelines.enhanced_recall_orchestrator import EnhancedRecallOrchestrator
+from kacore.pipelines.enhanced_recall_prompts import (
     build_synth_check_system,
     parse_plan_lite,
     parse_synth_check,
 )
-from ka_core.pipelines.retrieval_orchestrator import ChunkSignal, RetrievalOutcome
-from ka_core.repository.reranker.noop import NoopReranker
+from kacore.pipelines.retrieval_orchestrator import ChunkSignal, RetrievalOutcome
+from kacore.repository.reranker.noop import NoopReranker
 
 # ── 脚本化响应 ──────────────────────────────────────────────
 PLAN_OK = '{"rewritten_query":"rewritten q","sub_queries":["sub a","sub b"]}'

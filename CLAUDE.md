@@ -11,18 +11,23 @@
 这是 **Knowledge Arch monorepo**——「一套核心，两个壳」的知识库系统唯一开发源头：
 
 ```
-ka_core/         共享业务核心（domain/repository/managers/pipelines/adapters/api/config）
-ka_web/          Web 控制台（server.py + frontend/ Next.js 源码）
+kacore/         共享业务核心（domain/repository/managers/pipelines/adapters/api/config）
+                 ★ 框架中立：不 import astrbot，也不 import 任何壳
+web/          Web 控制台（server.py + frontend/ Next.js 源码）
 ka_migrations/   SQLite 编号迁移          pages/   前端构建产物（勿手改）
 apps/plugin/     AstrBot 插件薄壳（v1.0.x 版本线，发布到 Astrbot_Knowledge_Repository）
-ka_standalone/   独立跨平台应用薄壳（v0.1.x 版本线，Linux/Windows/macOS）
+  └ ka_plugin/   ★ AstrBot 专属代码（AstrBotLLMAdapter / AstrBotKnowledgeBaseReader）
+standalone/   独立跨平台应用薄壳（v0.2.x 版本线，Linux/Windows/macOS）
 tools/ release/  构建与发布脚本、发布 manifest      scripts/  一键安装/启动脚本
 ```
+
+**依赖方向只能「壳 → 核心」**：两个壳各自持有自己的适配器并经组合根显式注入；
+`kacore` 谁也不认识。这条边界由 `tests/backend/test_shell_boundaries.py` 守卫。
 
 - **双版本线**：插件版本源 = `apps/plugin/metadata.yaml`；独立版版本源 = 根 `pyproject.toml`
   `[project].version`。经 `python tools/bump_version.py --target plugin|standalone` 统一推进，
   分别对齐 `apps/plugin/CHANGELOG.md` 与根 `CHANGELOG.md`。
-- 业务逻辑只写在 `ka_core/`；两个壳只做注册与委派（见 `ARCHITECTURE.md` §2 薄壳原则）。
+- 业务逻辑只写在 `kacore/`；两个壳只做注册与委派（见 `ARCHITECTURE.md` §2 薄壳原则）。
 - 本仓治理理念不变：**规范并约束「vibe coding」的代码可视性**——让任何人/任何 agent 一眼就知道
   「代码该放在哪一层、依赖该指向哪个方向、文档该怎么写」。
 
@@ -92,8 +97,9 @@ python -m pytest
 ruff check . && mypy
 
 # 前端（Next.js App Router）
-cd ka_web/frontend && npm run build   # FRONTEND_BUILD_CMD（产物输出到 out/）
+cd web/frontend && npm run build   # FRONTEND_BUILD_CMD（产物输出到 out/）
 python tools/sync_frontend.py         # FRONTEND_SYNC_CMD（out/ → pages/）
+python tools/sync_frontend.py --check # FRONTEND_VERIFY_CMD（CI 同款只读校验）
 
 # 插件发布树（AstrBot 市场 main 形态，本地校验用）
 python tools/build_published_tree.py --source HEAD
@@ -102,8 +108,27 @@ python tools/build_published_tree.py --source HEAD
 python tools/publish_plugin.py --check-only
 
 # 独立应用（Phase 3 起）
-python -m ka_standalone serve --data-dir ~/.knowledge-arch
+python -m standalone serve --data-dir ~/.knowledge-arch
 ```
+
+### 5.1 前端导出产物契约（强制）
+
+只要本轮改动涉及 `web/frontend/` 中的源码、静态资源、构建配置或依赖锁文件，Agent 在将任务标记完成前**必须**完成以下闭环：
+
+1. 构建当前前端源码，生成 `web/frontend/out/`；
+2. 仅通过 `tools/sync_frontend.py` 将 `out/` 同步到 `pages/`，严禁手改 `pages/`；
+3. 运行 `python tools/sync_frontend.py --check`，并在交付中报告通过结果；
+4. 检查 `pages/` 的生成物变更已随对应前端源码纳入本地提交范围。用户未明确授权时，Agent 不得自行 commit 或 push。
+
+Docker 开发环境的标准命令为：
+
+```bash
+bash rebuild.sh --build-only
+python3 tools/sync_frontend.py --check
+```
+
+`bash rebuild.sh --build-only` 会执行生产构建并同步 `out/ → pages/`，但不会停止、启动或重启服务，适用于提交前、CI 前与发布前的构建产物刷新。
+普通 `bash rebuild.sh` 也会构建并同步产物，但会停止现有进程、占用端口并重新启动后端和 Next 开发服务器；仅在用户明确需要重启开发环境时使用，不能替代最后的 `--check` 校验。
 
 ## 6. 语言约定
 

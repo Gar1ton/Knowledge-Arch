@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from ka_core.log_capture import MemoryLogHandler, _categorize
+from kacore.log_capture import MemoryLogHandler, _categorize
 
 
 def _record(

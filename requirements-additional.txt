@@ -10,3 +10,6 @@ lightrag-hku>=1.5.0rc1,<2.0.0
 
 # Cloudflare R2
 boto3
+
+# 独立版 Discord 对话渠道
+discord.py>=2.7,<3

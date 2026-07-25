@@ -31,9 +31,12 @@ pyproject.toml
 .github/workflows/tests.yml
 .github/workflows/published-verify.yml
 
+# Codex project Skill (also shipped by the old repo's formal plugin tree).
+.agents/skills/operate-knowledge-arch/**
+
 # ── 共享核心 / Web / 迁移 / 静态产物 / 测试 ─────────────────
-ka_core/**
-ka_web/**
+kacore/**
+web/**
 ka_migrations/**
 pages/**
 tests/**

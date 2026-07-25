@@ -5,12 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from ka_core.config import standalone_writable_keys
-from ka_core.plugin_initializer import PluginInitializer
+from kacore.config import standalone_writable_keys
+from kacore.plugin_initializer import PluginInitializer
 
 
 async def _build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shell: str):
-    monkeypatch.setattr("ka_core.plugin_initializer._module_available", lambda name: False)
+    monkeypatch.setattr("kacore.plugin_initializer._module_available", lambda name: False)
     initializer = PluginInitializer(
         None, {"web_console": {"enabled": False}}, tmp_path, shell=shell
     )
@@ -64,7 +64,7 @@ async def test_standalone_shell_panel_sections_writable(
         # llm_ready 单独表达就绪度）。
         caps = await api.get_capabilities()
         assert caps["shell"] == "standalone"
-        assert caps["chat_agent_available"] is True
-        assert api.chat_agent_info() == {"available": True, "llm_ready": False}
+        assert caps["conversation_available"] is True
+        assert api.conversation_info() == {"available": True, "llm_ready": False}
     finally:
         await initializer.teardown()

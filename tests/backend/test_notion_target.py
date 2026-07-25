@@ -11,25 +11,25 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from ka_plugin.adapters.kb_reader import AstrBotKnowledgeBaseReader
 
-from ka_core.adapters.notion_mcp import NotionMCPAdapter
-from ka_core.config import NotionSyncConfig
-from ka_core.domain.models import (
+from kacore.adapters.notion_mcp import NotionMCPAdapter
+from kacore.config import NotionSyncConfig
+from kacore.domain.models import (
     Collection,
     DocumentChunk,
     NotionEntityRecord,
     SourceDocument,
 )
-from ka_core.repository.kb_reader.astrbot import AstrBotKnowledgeBaseReader
-from ka_core.repository.source_store.memory import InMemorySourceDocumentStore
-from ka_core.repository.sync_targets import notion_schema as schema
-from ka_core.repository.sync_targets.notion import (
+from kacore.repository.source_store.memory import InMemorySourceDocumentStore
+from kacore.repository.sync_targets import notion_schema as schema
+from kacore.repository.sync_targets.notion import (
     ACTION_CREATED,
     ACTION_UPDATED,
     NotionSyncTarget,
 )
 
-# ── AstrBot KB Reader 测试 ─────────────────────────────────────
+# ── AstrBot KB Reader 测试（插件壳专属适配器） ──────────────────
 
 
 @pytest.mark.asyncio
@@ -269,7 +269,7 @@ async def test_upsert_map_miss_but_remote_hit_updates_not_creates(
 async def test_upsert_stale_prior_page_falls_back_to_reverse_query(
     notion_config: NotionSyncConfig, store: InMemorySourceDocumentStore
 ) -> None:
-    from ka_core.adapters.notion_mcp import NotionMCPError
+    from kacore.adapters.notion_mcp import NotionMCPError
 
     doc = _doc("d1")
     prior = NotionEntityRecord(
@@ -304,7 +304,7 @@ async def test_upsert_stale_prior_page_falls_back_to_reverse_query(
 async def test_upsert_create_degrades_to_minimal_with_docid(
     notion_config: NotionSyncConfig, store: InMemorySourceDocumentStore
 ) -> None:
-    from ka_core.adapters.notion_mcp import NotionMCPError
+    from kacore.adapters.notion_mcp import NotionMCPError
 
     caller = RoutedToolCaller(
         handlers={
@@ -469,7 +469,7 @@ async def test_qa_entry_retry_reuses_page_and_rewrites_body(
 async def test_qa_entry_body_append_failure_reports_not_synced(
     notion_config: NotionSyncConfig, store: InMemorySourceDocumentStore
 ) -> None:
-    from ka_core.adapters.notion_mcp import NotionMCPError
+    from kacore.adapters.notion_mcp import NotionMCPError
 
     # 建页成功但正文追加失败 → content_synced=False（上层据此保留 outbox 正文）。
     caller = RoutedToolCaller(
@@ -497,7 +497,7 @@ async def test_qa_entry_body_append_failure_reports_not_synced(
 async def test_qa_entry_relation_failure_degrades(
     notion_config: NotionSyncConfig, store: InMemorySourceDocumentStore
 ) -> None:
-    from ka_core.adapters.notion_mcp import NotionMCPError
+    from kacore.adapters.notion_mcp import NotionMCPError
 
     caller = RoutedToolCaller(
         handlers={

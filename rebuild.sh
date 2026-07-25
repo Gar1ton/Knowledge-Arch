@@ -2,7 +2,7 @@
 # 一键停止、清理缓存、重新编译、同步并后台启动前后端的开发调试脚本。
 #
 # 用法：bash rebuild.sh [--memory] [--data-dir DIR] [--tests] [--build-only]
-#   （默认）      后端 = 真实独立应用（python3 -m ka_standalone serve）+ next dev 热重载
+#   （默认）      后端 = 真实独立应用（python3 -m standalone serve）+ next dev 热重载
 #   --memory      后端改为内存测试桩 tests/run_webui.py（旧插件开发链路，接口对换调试用）
 #   --standalone  同默认（兼容别名）
 #   --data-dir    独立应用模式的数据目录（默认 ~/.knowledge-arch）
@@ -69,7 +69,7 @@ _version_at_least() {
 _kill_matching_processes() {
   if command -v pkill >/dev/null 2>&1; then
     pkill -f "tests/run_webui.py" 2>/dev/null || true
-    pkill -f "ka_standalone serve" 2>/dev/null || true
+    pkill -f "standalone serve" 2>/dev/null || true
     pkill -f "next-server" 2>/dev/null || true
     pkill -f "next/dist/bin/next" 2>/dev/null || true
     pkill -f "npm run dev" 2>/dev/null || true
@@ -83,7 +83,7 @@ import signal
 
 needles = (
     "tests/run_webui.py",
-    "ka_standalone serve",
+    "standalone serve",
     "next-server",
     "next/dist/bin/next",
     "npm run dev",
@@ -258,7 +258,7 @@ fi
 
 # ── 2. 检查依赖是否需要更新 ──────────────────────────────────────────────────
 info "2. 检查前端依赖..."
-cd "$ROOT_DIR/ka_web/frontend"
+cd "$ROOT_DIR/web/frontend"
 NODE_STAMP="node_modules/.kr-node-version"
 NEED_INSTALL=0
 if [ ! -d node_modules ]; then
@@ -314,8 +314,8 @@ if [ "$STANDALONE" -eq 1 ]; then
   if [ -n "$STANDALONE_DATA_DIR" ]; then
     STANDALONE_ARGS+=(--data-dir "$STANDALONE_DATA_DIR")
   fi
-  info "5. 后台拉起独立应用 (ka_standalone serve on ${BACKEND_HOST}:${BACKEND_PORT})..."
-  PYTHONUNBUFFERED=1 nohup python3 -m ka_standalone serve "${STANDALONE_ARGS[@]}" > "$ROOT_DIR/dev_backend.log" 2>&1 &
+  info "5. 后台拉起独立应用 (standalone serve on ${BACKEND_HOST}:${BACKEND_PORT})..."
+  PYTHONUNBUFFERED=1 nohup python3 -m standalone serve "${STANDALONE_ARGS[@]}" > "$ROOT_DIR/dev_backend.log" 2>&1 &
 else
   info "5. 后台拉起后端开发服务 (tests/run_webui.py on ${BACKEND_HOST}:${BACKEND_PORT})..."
   PYTHONUNBUFFERED=1 nohup python3 tests/run_webui.py --host "$BACKEND_HOST" --port "$BACKEND_PORT" > "$ROOT_DIR/dev_backend.log" 2>&1 &
@@ -325,7 +325,7 @@ info "   后端日志: dev_backend.log"
 
 # ── 6. 后台启动前端 dev server ───────────────────────────────────────────────
 info "6. 后台拉起前端开发服务器 (npm run dev on ${FRONTEND_HOST}:${FRONTEND_PORT})..."
-cd "$ROOT_DIR/ka_web/frontend"
+cd "$ROOT_DIR/web/frontend"
 # dev server 不强制 NEXT_TEST_WASM：Node 20/Linux 容器下该变量会导致 .next/dev manifest 缺失并返回 500。
 # （npm run dev 自带 `rm -rf .next tsconfig.tsbuildinfo`，无需再手动清缓存。）
 KR_API_HOST=127.0.0.1 KR_API_PORT="$BACKEND_PORT" NEXT_TELEMETRY_DISABLED=1 nohup npm run dev -- --hostname "$FRONTEND_HOST" --port "$FRONTEND_PORT" > "$ROOT_DIR/dev_frontend.log" 2>&1 &

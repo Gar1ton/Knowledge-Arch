@@ -1,7 +1,8 @@
-"""独立壳（ka_standalone）引导契约测试：数据目录解析、配置引导、组合根注入。
+"""独立壳（standalone）引导契约测试：数据目录解析、配置引导、组合根注入。
 
-组合根注入的回归约束：不传覆盖参数时行为与插件壳逐字节一致（默认构造
-AstrBotKnowledgeBaseReader / LLMAdapter(context)），传入时全部生效。
+组合根注入的回归约束：**核心默认框架中立**——不传覆盖参数时构造中立实现
+（InMemoryKnowledgeBaseReader / OfflineStubLLMAdapter），绝不构造任何壳专属实现；
+AstrBot 的适配器由插件壳自己注入（见 apps/plugin/main.py）。传入覆盖参数时全部生效。
 """
 from __future__ import annotations
 
@@ -10,12 +11,12 @@ from pathlib import Path
 
 import pytest
 
-from ka_core.config import ENV_MAIN_LLM_API_KEY, Config
-from ka_core.plugin_initializer import PluginInitializer
-from ka_core.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
-from ka_standalone.bootstrap import build_initializer, resolve_main_llm_adapter
-from ka_standalone.config_bootstrap import CONFIG_FILENAME, load_or_create
-from ka_standalone.paths import ENV_DATA_DIR, default_data_dir, resolve_data_dir
+from kacore.config import ENV_MAIN_LLM_API_KEY, Config
+from kacore.plugin_initializer import PluginInitializer
+from kacore.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
+from standalone.bootstrap import build_initializer, resolve_main_llm_adapter
+from standalone.config_bootstrap import CONFIG_FILENAME, load_or_create
+from standalone.paths import ENV_DATA_DIR, default_data_dir, resolve_data_dir
 
 # ── paths ────────────────────────────────────────────────────
 
@@ -102,7 +103,7 @@ async def test_initializer_accepts_shell_overrides(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "ka_core.plugin_initializer._module_available", lambda name: False
+        "kacore.plugin_initializer._module_available", lambda name: False
     )
     kb = InMemoryKnowledgeBaseReader()
     llm = _SentinelLLM()
@@ -122,16 +123,18 @@ async def test_initializer_accepts_shell_overrides(
         await initializer.teardown()
 
 
-async def test_initializer_defaults_unchanged_without_overrides(
+async def test_initializer_defaults_are_shell_neutral(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """核心默认必须框架中立：不注入时只构造中立实现，绝不触碰任何壳专属适配器。"""
     monkeypatch.setattr(
-        "ka_core.plugin_initializer._module_available", lambda name: False
+        "kacore.plugin_initializer._module_available", lambda name: False
     )
     initializer = PluginInitializer(None, {"web_console": {"enabled": False}}, tmp_path)
     await initializer.initialize()
     try:
-        assert type(initializer.kb_reader).__name__ == "AstrBotKnowledgeBaseReader"
+        assert type(initializer.kb_reader).__name__ == "InMemoryKnowledgeBaseReader"
+        assert type(initializer.api._llm_adapter).__name__ == "OfflineStubLLMAdapter"
     finally:
         await initializer.teardown()
 

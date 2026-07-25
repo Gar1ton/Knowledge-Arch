@@ -11,7 +11,8 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from ka_core.domain.models import (
+from kacore.domain.conversation import ConversationSession
+from kacore.domain.models import (
     Collection,
     ConsoleScopeState,
     DocumentChunk,
@@ -22,8 +23,8 @@ from ka_core.domain.models import (
     SyncStatus,
     SyncTargetKind,
 )
-from ka_core.migration_runner import run_migrations
-from ka_core.repository.source_store.sqlite import SQLiteSourceDocumentStore
+from kacore.migration_runner import run_migrations
+from kacore.repository.source_store.sqlite import SQLiteSourceDocumentStore
 
 
 def _doc(doc_id: str, collection: str = "default", tags: list[str] | None = None) -> SourceDocument:
@@ -69,6 +70,36 @@ async def test_add_and_get_document(sqlite_store: SQLiteSourceDocumentStore) -> 
     assert got.doc_id == "d1"
     assert got.title == "title-d1"
     assert await sqlite_store.get_document("missing") is None
+
+
+async def test_chat_session_crud_and_metadata_roundtrip(
+    sqlite_store: SQLiteSourceDocumentStore,
+) -> None:
+    session = ConversationSession(
+        "web-session",
+        channel="web",
+        external_key="browser-profile",
+        research_enabled=True,
+        context_enabled=False,
+    )
+    await sqlite_store.upsert_chat_session(session)
+    by_external = await sqlite_store.get_chat_session_by_external_key(
+        "web", "browser-profile"
+    )
+    assert by_external is not None
+    assert by_external.research_enabled is True and by_external.context_enabled is False
+
+    await sqlite_store.add_chat_message(
+        "web-session",
+        "assistant",
+        "answer",
+        metadata={"context_applied": True, "retrieval_scope": {"kind": "collection"}},
+    )
+    messages = await sqlite_store.get_chat_messages("web-session")
+    assert messages[0]["metadata"]["context_applied"] is True
+
+    await sqlite_store.delete_chat_session("web-session")
+    assert await sqlite_store.get_chat_session("web-session") is None
 
 
 async def test_graph_build_job_pause_migration_defaults_and_cleanup() -> None:
@@ -535,7 +566,7 @@ async def test_exact_mentions_sqlite_ascii_terms_require_boundaries(
 
 
 async def test_notion_entity_map_crud(sqlite_store: SQLiteSourceDocumentStore) -> None:
-    from ka_core.domain.models import (
+    from kacore.domain.models import (
         NOTION_ENTITY_DOCUMENT,
         NOTION_ENTITY_NOTE,
         NOTION_PUSH_DEGRADED,
@@ -580,7 +611,7 @@ async def test_notion_entity_map_crud(sqlite_store: SQLiteSourceDocumentStore) -
 
 
 async def test_notion_outbox_lifecycle(sqlite_store: SQLiteSourceDocumentStore) -> None:
-    from ka_core.domain.models import (
+    from kacore.domain.models import (
         NOTION_OUTBOX_PUSHED,
         NOTION_PUSH_FAILED,
         NOTION_PUSH_PENDING,

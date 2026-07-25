@@ -1,13 +1,13 @@
 """能力注册表单测：环节状态机、依赖清单、安装白名单。
 
 只构造 Config 即可断言各环节状态——detect_pipeline 是纯函数，无 I/O。
-通过 monkeypatch `ka_core.capabilities.module_available` 模拟可选依赖的安装与缺失。
+通过 monkeypatch `kacore.capabilities.module_available` 模拟可选依赖的安装与缺失。
 """
 from __future__ import annotations
 
 import pytest
 
-from ka_core.capabilities import (
+from kacore.capabilities import (
     OPTIONAL_DEPENDENCIES,
     STATUS_DEGRADED,
     STATUS_OFF,
@@ -16,7 +16,7 @@ from ka_core.capabilities import (
     detect_pipeline,
     resolve_install_spec,
 )
-from ka_core.config import Config
+from kacore.config import Config
 
 
 def _cfg(raw: dict | None = None, dim: int | None = None) -> Config:
@@ -32,9 +32,9 @@ def _stage(pipeline: list[dict], stage_id: str) -> dict:
 
 def _patch_modules(monkeypatch: pytest.MonkeyPatch, available: set[str]) -> None:
     monkeypatch.setattr(
-        "ka_core.capabilities.module_available", lambda name: name in available
+        "kacore.capabilities.module_available", lambda name: name in available
     )
-    monkeypatch.setattr("ka_core.config._module_available", lambda name: name in available)
+    monkeypatch.setattr("kacore.config._module_available", lambda name: name in available)
 
 
 # ── 安装白名单 ────────────────────────────────────────────────────
@@ -55,10 +55,11 @@ def test_dependency_statuses_cover_all_optional(monkeypatch: pytest.MonkeyPatch)
     _patch_modules(monkeypatch, set())
     deps = dependency_statuses()
     assert {d["key"] for d in deps} == {
-        "local_embedding", "milvus", "lightrag", "r2"
+        "local_embedding", "milvus", "lightrag", "r2", "discord"
     }
     assert next(d for d in deps if d["key"] == "milvus")["required"] is True
     assert next(d for d in deps if d["key"] == "lightrag")["required"] is False
+    assert next(d for d in deps if d["key"] == "discord")["required"] is False
     assert "ask" in next(d for d in deps if d["key"] == "local_embedding")["stages"]
     assert all(d["installed"] is False for d in deps)
 

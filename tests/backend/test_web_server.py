@@ -1,6 +1,6 @@
-"""ka_web/server.py 路由 smoke 测试（aiohttp TestServer + 内存 api）。
+"""web/server.py 路由 smoke 测试（aiohttp TestServer + 内存 api）。
 
-验证 HTTP↔ka_core/api 的翻译与认证中间件，不连真实后端。
+验证 HTTP↔kacore/api 的翻译与认证中间件，不连真实后端。
 """
 from __future__ import annotations
 
@@ -13,22 +13,23 @@ from aiohttp import FormData
 from aiohttp.test_utils import TestClient, TestServer
 from yarl import URL
 
-from ka_core.api import KnowledgeRepositoryApi
-from ka_core.config import Config
-from ka_core.domain.models import (
+from kacore.api import KnowledgeRepositoryApi
+from kacore.config import Config
+from kacore.domain.conversation import ConversationSession
+from kacore.domain.models import (
     Collection,
     DocumentChunk,
     DocumentOrigin,
     SourceDocument,
     SyncTargetKind,
 )
-from ka_core.index_compatibility import IndexCompatibilityStore
-from ka_core.plugin_initializer import PluginInitializer
-from ka_core.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
-from ka_core.repository.source_store.memory import InMemorySourceDocumentStore
-from ka_core.repository.sync_targets.memory import InMemorySyncTarget
-from ka_core.secret_store import EncryptedSecretStore
-from ka_web.server import SESSION_COOKIE, build_app
+from kacore.index_compatibility import IndexCompatibilityStore
+from kacore.plugin_initializer import PluginInitializer
+from kacore.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
+from kacore.repository.source_store.memory import InMemorySourceDocumentStore
+from kacore.repository.sync_targets.memory import InMemorySyncTarget
+from kacore.secret_store import EncryptedSecretStore
+from web.server import SESSION_COOKIE, build_app
 
 _GB = 1024 * 1024 * 1024
 
@@ -80,6 +81,43 @@ async def _client(tmp_path: Path, *, auth_required: bool = False) -> TestClient:
     return client
 
 
+class _FakeConversationService:
+    llm_ready = True
+
+    def __init__(self) -> None:
+        self.sessions: dict[str, ConversationSession] = {}
+        self.turns = []
+
+    async def get_or_create_session(self, conversation_id: str) -> ConversationSession:
+        return self.sessions.setdefault(conversation_id, ConversationSession(conversation_id))
+
+    async def update_session(
+        self, conversation_id: str, values: dict[str, object]
+    ) -> ConversationSession:
+        invalid = set(values) - {
+            "research_enabled",
+            "context_enabled",
+            "persona_enabled",
+        }
+        if invalid:
+            raise ValueError("unsupported session setting")
+        session = await self.get_or_create_session(conversation_id)
+        for key, value in values.items():
+            setattr(session, key, bool(value))
+        return session
+
+    async def stream(self, turn):
+        self.turns.append(turn)
+        yield {"type": "stage", "text": "retrieving"}
+        yield {
+            "type": "assistant",
+            "content": "answer",
+            "sources": [],
+            "retrieval_scope": {"kind": "collection", "collection_names": ["papers"]},
+        }
+        yield {"type": "done"}
+
+
 # ── 配置校验 ────────────────────────────────────────────────────
 
 
@@ -92,6 +130,90 @@ def test_build_app_rejects_empty_password_when_auth_required(tmp_path: Path) -> 
             auth_required=True,
             password="",
         )
+
+
+async def test_unified_chat_turn_and_session_routes(tmp_path: Path) -> None:
+    api = await _make_api()
+    service = _FakeConversationService()
+    api.attach_conversation_service(service)
+    app = build_app(
+        api=api,
+        static_dir=tmp_path / "frontend",
+        upload_dir=tmp_path / "uploads",
+        auth_required=False,
+    )
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        session = await (await client.get("/api/chat/session/web-conv")).json()
+        assert session["context_enabled"] is True and session["research_enabled"] is False
+
+        patched = await (
+            await client.patch(
+                "/api/chat/session/web-conv",
+                json={"research_enabled": True, "persona_enabled": True},
+            )
+        ).json()
+        assert patched["research_enabled"] is True and patched["persona_enabled"] is True
+
+        response = await client.post(
+            "/api/chat/turn",
+            json={
+                "conversation_id": "web-conv",
+                "message": "question",
+                "collection": "papers",
+                "retrieval_mode": "default",
+            },
+        )
+        assert response.status == 200
+        body = await response.text()
+        assert '"type": "assistant"' in body and '"type": "done"' in body
+        assert service.turns[0].collection == "papers"
+
+        assert (await client.post("/api/chat/agent", json={})).status == 404
+        assert (await client.get("/api/chat/agent/info")).status == 404
+    finally:
+        await client.close()
+
+
+async def test_discord_settings_and_token_routes_never_echo_secret(tmp_path: Path) -> None:
+    api = await _make_api()
+    api.attach_shell("standalone")
+    api._secret_store = EncryptedSecretStore(tmp_path / "secrets")
+    app = build_app(
+        api=api,
+        static_dir=tmp_path / "frontend",
+        upload_dir=tmp_path / "uploads",
+        auth_required=False,
+    )
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        rejected = await client.put("/api/channels/discord", json={"enabled": True})
+        assert rejected.status == 400
+
+        updated = await client.put(
+            "/api/channels/discord",
+            json={"enabled": True, "allowed_user_ids": ["123"]},
+        )
+        assert updated.status == 200
+        assert (await updated.json())["restart_required"] is True
+
+        token = "discord-super-secret-token"
+        stored = await client.put("/api/channels/discord/token", json={"token": token})
+        stored_body = await stored.json()
+        assert stored_body["token_present"] is True
+        assert token not in str(stored_body)
+
+        settings = await (await client.get("/api/channels/discord")).json()
+        assert settings["token_present"] is True
+        assert token not in str(settings)
+        assert settings["allowed_user_ids"] == ["123"]
+
+        deleted = await (await client.delete("/api/channels/discord/token")).json()
+        assert deleted["token_present"] is False
+    finally:
+        await client.close()
 
 
 # ── 集合 / 文档（no-auth）──────────────────────────────────────
@@ -892,7 +1014,7 @@ async def test_document_annotations_route_uses_zotero_readonly_client(
                 },
             ]
 
-    from ka_core.adapters.zotero import local_api
+    from kacore.adapters.zotero import local_api
 
     monkeypatch.setattr(local_api, "ZoteroLocalApiClient", FakeZoteroClient)
 
@@ -1121,6 +1243,7 @@ async def test_capabilities_route_returns_pipeline_and_dependencies(tmp_path: Pa
             "milvus",
             "lightrag",
             "r2",
+            "discord",
         }
         assert isinstance(data["diagnostics"], list)
     finally:
@@ -1163,7 +1286,7 @@ async def test_zotero_server_key_routes_encrypt_and_mask(
                 "access": {"user": {"library": True, "files": True}},
             }
 
-    monkeypatch.setattr("ka_core.adapters.zotero.web_api.ZoteroWebApiClient", Client)
+    monkeypatch.setattr("kacore.adapters.zotero.web_api.ZoteroWebApiClient", Client)
     api = await _make_api()
     api._secret_store = EncryptedSecretStore(tmp_path / "secrets")
     app = build_app(
@@ -1210,7 +1333,7 @@ async def test_zotero_account_change_requires_confirmation_and_preserves_old_key
                 "access": {"user": {"library": True, "files": True}},
             }
 
-    monkeypatch.setattr("ka_core.adapters.zotero.web_api.ZoteroWebApiClient", Client)
+    monkeypatch.setattr("kacore.adapters.zotero.web_api.ZoteroWebApiClient", Client)
     api = await _make_api()
     api._secret_store = EncryptedSecretStore(tmp_path / "secrets")
     app = build_app(
@@ -1470,8 +1593,8 @@ async def test_graph_mixed_ask_returns_structured_not_ready(tmp_path: Path) -> N
 
 async def test_graph_mixed_ask_returns_renamed_failure_status(tmp_path: Path) -> None:
     """图谱 workspace 已就绪但查询失败时，HTTP 契约使用 graph_mixed_failed。"""
-    from ka_core.index_compatibility import IndexCompatibilityStore
-    from ka_core.pipelines.retrieval_orchestrator import RetrievalOutcome
+    from kacore.index_compatibility import IndexCompatibilityStore
+    from kacore.pipelines.retrieval_orchestrator import RetrievalOutcome
 
     class Registry:
         def has_workspace(self, collection: str) -> bool:
@@ -1530,8 +1653,8 @@ async def test_graph_mixed_ask_returns_renamed_failure_status(tmp_path: Path) ->
 
 async def test_metrics_route(tmp_path: Path) -> None:
     """GET /api/metrics 应返回 ops + total_records 结构。"""
-    from ka_core.ask_progress import ProgressStore
-    from ka_core.metrics import PerformanceTracker
+    from kacore.ask_progress import ProgressStore
+    from kacore.metrics import PerformanceTracker
 
     tracker = PerformanceTracker()
     tracker.record("embed_query", 100.0)
@@ -1566,8 +1689,8 @@ async def test_metrics_route(tmp_path: Path) -> None:
 
 async def test_ask_progress_route_not_found(tmp_path: Path) -> None:
     """GET /api/ask/progress/{cid} — 不存在的 cid 应返回 404。"""
-    from ka_core.ask_progress import ProgressStore
-    from ka_core.metrics import PerformanceTracker
+    from kacore.ask_progress import ProgressStore
+    from kacore.metrics import PerformanceTracker
 
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
@@ -1592,8 +1715,8 @@ async def test_ask_progress_route_not_found(tmp_path: Path) -> None:
 
 async def test_ask_progress_route_found(tmp_path: Path) -> None:
     """GET /api/ask/progress/{cid} — 已设置进度时应返回 stage + pct。"""
-    from ka_core.ask_progress import ProgressStore
-    from ka_core.metrics import PerformanceTracker
+    from kacore.ask_progress import ProgressStore
+    from kacore.metrics import PerformanceTracker
 
     progress_store = ProgressStore()
     progress_store.set("test-cid-123", "vector_search", 20)
@@ -1759,7 +1882,7 @@ async def test_login_malformed_json_returns_400(tmp_path: Path) -> None:
 async def test_upload_over_size_limit_returns_413(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import ka_web.server as server_mod
+    import web.server as server_mod
 
     monkeypatch.setattr(server_mod, "_MAX_UPLOAD_BYTES", 16)
     client = await _client(tmp_path)

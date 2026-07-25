@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""把前端构建产物（ka_web/frontend/out/）同步到运行时静态目录（pages/）。
+"""把前端构建产物（web/frontend/out/）同步到运行时静态目录（pages/）。
 
-v0.10.0 起前端改用 Next.js App Router，构建产物在 ka_web/frontend/out/。
-本脚本检测 out/ 目录是否存在：存在则同步 out/，不存在时回退同步 ka_web/frontend/（兼容旧版）。
+v0.10.0 起前端改用 Next.js App Router，构建产物在 web/frontend/out/。
+本脚本检测 out/ 目录是否存在：存在则同步 out/，不存在时回退同步 web/frontend/（兼容旧版）。
 
 构建流程：
-    cd ka_web/frontend && npm run build   # Next.js export → out/
+    cd web/frontend && npm run build   # Next.js export → out/
     python tools/sync_frontend.py      # 同步 out/ → pages/
 
 用法：
@@ -22,8 +22,8 @@ import sys
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
-_NEXT_OUT = _ROOT / "ka_web" / "frontend" / "out"
-_LEGACY_SRC = _ROOT / "ka_web" / "frontend"
+_NEXT_OUT = _ROOT / "web" / "frontend" / "out"
+_LEGACY_SRC = _ROOT / "web" / "frontend"
 _DST = _ROOT / "pages"
 
 _SKIP_NAMES = {"README.md", ".DS_Store"}
@@ -68,6 +68,25 @@ def _check() -> int:
     return 0
 
 
+def _replace_in_place(src: Path, dst: Path) -> None:
+    """在 Windows 目录被监视器占用时，将 ``src`` 内容镜像到 ``dst``。"""
+    src_relatives = {path.relative_to(src) for path in _iter_files(src)}
+    for path in sorted(_iter_files(dst), key=lambda item: len(item.parts), reverse=True):
+        if path.relative_to(dst) not in src_relatives:
+            path.unlink()
+    for directory in sorted(
+        (path for path in dst.rglob("*") if path.is_dir()),
+        key=lambda item: len(item.parts),
+        reverse=True,
+    ):
+        if not any(directory.iterdir()):
+            directory.rmdir()
+    for source in _iter_files(src):
+        target = dst / source.relative_to(src)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+
+
 def _sync() -> int:
     src = _resolve_src()
     print(f"同步源：{src.relative_to(_ROOT)} → pages/")
@@ -92,10 +111,17 @@ def _sync() -> int:
     # 原子替换：重命名临时目录为正式目录
     old = _DST.parent / f"{_DST.name}.__old__"
     if _DST.exists():
-        _DST.rename(old)
-    tmp.rename(_DST)
-    if old.exists():
-        shutil.rmtree(old)
+        try:
+            _DST.rename(old)
+        except PermissionError:
+            print("  pages/ 正被占用，改用原地镜像替换")
+            _replace_in_place(tmp, _DST)
+            shutil.rmtree(tmp)
+        else:
+            tmp.rename(_DST)
+            shutil.rmtree(old)
+    else:
+        tmp.rename(_DST)
     print(f"完成：同步 {count} 个文件到 pages/。")
     return 0
 

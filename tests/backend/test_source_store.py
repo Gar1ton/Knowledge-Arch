@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from ka_core.domain.models import (
+from kacore.domain.conversation import ConversationSession
+from kacore.domain.models import (
     Collection,
     ConsoleScopeState,
     DocumentChunk,
@@ -13,7 +14,7 @@ from ka_core.domain.models import (
     ScopedNote,
     SourceDocument,
 )
-from ka_core.repository.source_store.memory import InMemorySourceDocumentStore
+from kacore.repository.source_store.memory import InMemorySourceDocumentStore
 
 
 def _doc(doc_id: str, collection: str = "default", tags: list[str] | None = None) -> SourceDocument:
@@ -163,6 +164,37 @@ async def test_scoped_notes_chat_lock_and_console_state(
     assert state is not None
     assert state.selected_doc_id == "d1"
     assert state.payload == {"right": "notes"}
+
+
+async def test_chat_session_crud_and_message_metadata(
+    store: InMemorySourceDocumentStore,
+) -> None:
+    session = ConversationSession(
+        "discord-session",
+        channel="discord",
+        external_key="user-1:channel-2",
+        research_enabled=True,
+        persona_enabled=True,
+    )
+    await store.upsert_chat_session(session)
+    by_id = await store.get_chat_session("discord-session")
+    by_external = await store.get_chat_session_by_external_key(
+        "discord", "user-1:channel-2"
+    )
+    assert by_id is not None and by_id.context_enabled is True
+    assert by_external is not None and by_external.conversation_id == "discord-session"
+
+    await store.add_chat_message(
+        "discord-session",
+        "assistant",
+        "answer",
+        metadata={"turn_kind": "research", "retrieval_scope": {"kind": "global"}},
+    )
+    messages = await store.get_chat_messages("discord-session")
+    assert messages[0]["metadata"]["turn_kind"] == "research"
+
+    await store.delete_chat_session("discord-session")
+    assert await store.get_chat_session("discord-session") is None
 
 
 async def test_purge_zotero_mirror_keeps_local_state(
@@ -423,7 +455,7 @@ async def test_exact_mentions_ascii_terms_require_boundaries(
 
 
 async def test_notion_entity_map_crud(store: InMemorySourceDocumentStore) -> None:
-    from ka_core.domain.models import (
+    from kacore.domain.models import (
         NOTION_ENTITY_DOCUMENT,
         NOTION_ENTITY_NOTE,
         NOTION_PUSH_DEGRADED,
@@ -468,7 +500,7 @@ async def test_notion_entity_map_crud(store: InMemorySourceDocumentStore) -> Non
 
 
 async def test_notion_outbox_lifecycle(store: InMemorySourceDocumentStore) -> None:
-    from ka_core.domain.models import (
+    from kacore.domain.models import (
         NOTION_OUTBOX_PUSHED,
         NOTION_PUSH_FAILED,
         NOTION_PUSH_PENDING,

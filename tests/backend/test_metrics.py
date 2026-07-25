@@ -1,6 +1,6 @@
 """单元测试：PerformanceTracker（core/metrics.py）。"""
 
-from ka_core.metrics import PerformanceTracker
+from kacore.metrics import PerformanceTracker
 
 
 def test_record_and_summary_empty():

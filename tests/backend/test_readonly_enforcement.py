@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import pytest
 
-from ka_core.api import KnowledgeRepositoryApi, ReadOnlyError
-from ka_core.config import Config
-from ka_core.domain.models import Collection, DocumentOrigin, SourceDocument
-from ka_core.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
-from ka_core.repository.source_store.memory import InMemorySourceDocumentStore
+from kacore.api import KnowledgeRepositoryApi, ReadOnlyError
+from kacore.config import Config
+from kacore.domain.models import Collection, DocumentOrigin, SourceDocument
+from kacore.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
+from kacore.repository.source_store.memory import InMemorySourceDocumentStore
 
 
 def _zotero_doc() -> SourceDocument:

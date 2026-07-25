@@ -10,12 +10,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ka_core.config import R2SyncConfig
-from ka_core.domain.models import Collection, SyncStatus, SyncTargetKind
-from ka_core.managers.quota_manager import QuotaManager
-from ka_core.pipelines.sync_pipeline import SyncPipeline
-from ka_core.repository.source_store.memory import InMemorySourceDocumentStore
-from ka_core.repository.sync_targets.memory import InMemorySyncTarget
+from kacore.config import R2SyncConfig
+from kacore.domain.models import Collection, SyncStatus, SyncTargetKind
+from kacore.managers.quota_manager import QuotaManager
+from kacore.pipelines.sync_pipeline import SyncPipeline
+from kacore.repository.source_store.memory import InMemorySourceDocumentStore
+from kacore.repository.sync_targets.memory import InMemorySyncTarget
 
 
 @pytest.fixture
@@ -43,7 +43,7 @@ async def pipeline(
     # 准备默认的集合与源文档
     await store.upsert_collection(Collection(name="papers"))
 
-    from ka_core.domain.models import SourceDocument
+    from kacore.domain.models import SourceDocument
     await store.add_document(
         SourceDocument(
             doc_id="d1",
@@ -212,7 +212,7 @@ async def test_restore_from_backup(pipeline: SyncPipeline) -> None:
         access_key_id="x",
         secret_access_key="y",
     )
-    from ka_core.repository.sync_targets.r2 import R2SyncTarget
+    from kacore.repository.sync_targets.r2 import R2SyncTarget
     real_target = R2SyncTarget(r2_config)
 
     # 替换 pipeline 中的 target

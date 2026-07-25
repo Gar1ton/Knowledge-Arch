@@ -14,7 +14,7 @@ if str(_ROOT_DIR) not in sys.path:
 
 
 def _purge_stale_local_modules() -> None:
-    """Evict ALL cached ka_core/ka_web/ka_migrations modules on every load.
+    """Evict this plugin's uniquely owned cached modules on every load.
 
     Two reasons:
     1. Defense in depth against another plugin claiming the same top-level
@@ -28,7 +28,9 @@ def _purge_stale_local_modules() -> None:
        installs are invisible.  Unconditional eviction forces a fresh import
        every time, fixing AttributeError on hot-reload.
     """
-    _OWNED_TOPS = frozenset(("ka_core", "ka_web", "ka_migrations"))
+    # ``web`` is deliberately absent: it is a generic top-level name and the
+    # Web server is loaded by file path under a plugin-unique module alias.
+    _OWNED_TOPS = frozenset(("kacore", "ka_migrations", "ka_plugin"))
 
     for name in list(sys.modules.keys()):
         if name == __name__:
@@ -43,22 +45,23 @@ from typing import TYPE_CHECKING, Any
 
 from astrbot.api.event import filter
 from astrbot.api.star import Context, Star, StarTools, register
+from ka_plugin.adapters import AstrBotKnowledgeBaseReader, AstrBotLLMAdapter
 
-from ka_core.event_handler import EventHandler
-from ka_core.plugin_initializer import PluginInitializer
-from ka_core.retrieval_modes import (
+from kacore.event_handler import EventHandler
+from kacore.plugin_initializer import PluginInitializer
+from kacore.retrieval_modes import (
     MODE_GRAPH_MIXED,
     MODE_GRAPH_ONLY,
     STRICT_COLLECTION_MODES,
     normalize_retrieval_mode,
 )
-from ka_core.utils import text_chunks
+from kacore.utils import text_chunks
 
 if TYPE_CHECKING:
     from astrbot.api.event import AstrMessageEvent
     from astrbot.api.provider import ProviderRequest
 
-_PLUGIN_VERSION = "v1.0.3"
+_PLUGIN_VERSION = "v1.0.5"
 logger = logging.getLogger(__name__)
 _RESEARCH_MESSAGE_CHUNK_LIMIT = 1600
 _RESEARCH_PARAGRAPH_LIMIT = 700
@@ -83,7 +86,16 @@ class KnowledgeRepositoryPlugin(Star):
     async def initialize(self) -> None:
         data_dir: Path = StarTools.get_data_dir("astrbot_plugin_knowledge_repository")
         raw_cfg = self.config if self.config else {}
-        self._initializer = PluginInitializer(self.context, raw_cfg, data_dir)
+        # 壳差异经组合根显式注入（ARCHITECTURE §2）：kacore 不认识 AstrBot，
+        # 由本壳提供 AstrBot 的 LLM Provider 与默认 KB 读取实现。
+        self._initializer = PluginInitializer(
+            self.context,
+            raw_cfg,
+            data_dir,
+            llm_adapter=AstrBotLLMAdapter(self.context),
+            kb_reader=AstrBotKnowledgeBaseReader(self.context),
+            shell="plugin",
+        )
         await self._initializer.initialize()
         self._handler = EventHandler(self._initializer)
 
@@ -149,12 +161,12 @@ class KnowledgeRepositoryPlugin(Star):
         yield event.plain_result(await self._handler.on_ka_persona(action))
 
     @ka.command("webui")
-    async def ka_webui(self, event: AstrMessageEvent, action: str = ""):
+    async def webui(self, event: AstrMessageEvent, action: str = ""):
         '''/ka webui <on|off> — 实时启停 Web 控制台'''
         if not self._handler:
             yield event.plain_result("插件未初始化。")
             return
-        yield event.plain_result(await self._handler.on_ka_webui(action))
+        yield event.plain_result(await self._handler.on_webui(action))
 
     @ka.command("r2")
     async def ka_r2(self, event: AstrMessageEvent, action: str = "", target: str = ""):

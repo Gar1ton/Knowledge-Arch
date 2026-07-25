@@ -6,10 +6,10 @@ from __future__ import annotations
 
 import pytest
 
-from ka_core.config import R2SyncConfig
-from ka_core.domain.models import QuotaLevel, SyncTargetKind
-from ka_core.managers.quota_manager import QuotaManager
-from ka_core.repository.sync_targets.memory import InMemorySyncTarget
+from kacore.config import R2SyncConfig
+from kacore.domain.models import QuotaLevel, SyncTargetKind
+from kacore.managers.quota_manager import QuotaManager
+from kacore.repository.sync_targets.memory import InMemorySyncTarget
 
 
 @pytest.fixture

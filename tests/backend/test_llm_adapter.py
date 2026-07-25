@@ -1,10 +1,10 @@
-"""LLMAdapter 对 AstrBot 运行态 Provider 的兼容测试。"""
+"""AstrBotLLMAdapter 对 AstrBot 运行态 Provider 的兼容测试（插件壳专属适配器）。"""
 
 from __future__ import annotations
 
 from typing import Any
 
-from ka_core.adapters.llm import LLMAdapter
+from ka_plugin.adapters.llm import AstrBotLLMAdapter
 
 
 class _ProviderMeta:
@@ -53,7 +53,7 @@ class _AstrBotContext:
 
 async def test_generate_uses_astrbot_llm_generate_completion_text() -> None:
     context = _AstrBotContext(_LLMResponse("real answer"))
-    adapter = LLMAdapter(context)
+    adapter = AstrBotLLMAdapter(context)
 
     answer = await adapter.generate("question", system_prompt="system", allow_mock=False)
 
@@ -68,7 +68,7 @@ async def test_generate_uses_astrbot_llm_generate_completion_text() -> None:
 
 
 async def test_generate_reads_astrbot_result_chain_text() -> None:
-    adapter = LLMAdapter(_AstrBotContext(_LLMResponseWithChain("chain answer")))
+    adapter = AstrBotLLMAdapter(_AstrBotContext(_LLMResponseWithChain("chain answer")))
 
     assert await adapter.generate("question", allow_mock=False) == "chain answer"
 
@@ -79,7 +79,7 @@ async def test_extract_graph_uses_astrbot_llm_generate() -> None:
         '"description":"model"}],"relations":[]}'
     )
     context = _AstrBotContext(_LLMResponse(payload))
-    adapter = LLMAdapter(context)
+    adapter = AstrBotLLMAdapter(context)
 
     graph = await adapter.extract_graph("Transformer model", ["Method"])
 

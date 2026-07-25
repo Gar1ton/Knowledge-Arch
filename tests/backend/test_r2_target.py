@@ -13,9 +13,9 @@ from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
-from ka_core.config import R2SyncConfig
-from ka_core.domain.models import SourceDocument, SyncTargetKind
-from ka_core.repository.sync_targets.r2 import R2SyncTarget
+from kacore.config import R2SyncConfig
+from kacore.domain.models import SourceDocument, SyncTargetKind
+from kacore.repository.sync_targets.r2 import R2SyncTarget
 
 
 @contextmanager
