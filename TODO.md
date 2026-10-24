@@ -1,5 +1,27 @@
 # TODO
 
+## v2.0.0 Knowledge Arch 独立桌面版（🚧 in progress）
+
+- 计划：`docs/plans/knowledge-arch-standalone.html`（已批准，决策定稿）。来源为插件仓库
+  developer `8e6f1af`（v1.2.0），本仓库为全新 git 历史；远端操作（push/tag/PR）另行批准。
+- 决策：Tauri 2 + 现有 React 静态导出；LLM 角色集中在「模型分配」节点；删除宿主对话的
+  RAG 注入与 research 工具（`research_skill.py` 删除）；Notion 直连 REST API（token 在节点填写）。
+- 每个 Phase：先更新本节 → 写代码 → 测试全绿 → CHANGELOG 追加条目。
+- [x] P0 · 基线：`git archive 8e6f1af` 导出全部已提交文件（826 个，绕过发布用 export-ignore）
+  到本仓库并 `git init -b developer`；`.venv` 按插件 venv 的包版本复刻，`npm ci` 装前端依赖。
+  基线：1289 passed / 2 skipped / 3 failed（既有三项：两项缺 torch 的 device 用例与
+  `bad19` 测试桩；skip 为缺 lightrag 与 boto3）。
+- [ ] P1 · 后端脱钩：`ka_server` 薄壳与 `AppInitializer`；删除 `main.py`、`EventHandler`、
+  astr Embedding、`kb_reader`、`research_skill.py`。验收：除 `kacore/legacy_import` 外
+  `grep -ri astrbot` 无结果。
+- [ ] P2 · 设置与模型：`SettingSpec`、`SettingsStore`、`legacy_keys`；`ProviderRegistry`、
+  `ModelRouter`；`LLMAdapter` 改造。
+- [ ] P3 · 外部能力：`NotionRestClient`、uv extras、`system_prompt`、旧数据导入器。
+- [ ] P4 · 前端：`backend.ts` 与 token；`NodePanel` 与 4 个新节点；`PreferencesWindow`；
+  删除 `LoginScreen` 与旧宿主配置弹窗。
+- [ ] P5 · 桌面壳：Tauri 工程、sidecar、单实例、原生对话框、托盘、Python 打包脚本；本地出包。
+- [ ] P6 · 发布：Actions 三平台矩阵、签名与公证、updater、文档改写、v2.0.0（远端操作另行批准）。
+
 ## v1.2.0 正式发布（🚧 in progress）
 
 - 用户已审核 README 并批准发布；远端仅限推送 developer、推送 `publish/v1.2.0` 与创建

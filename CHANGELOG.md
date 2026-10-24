@@ -1,5 +1,17 @@
 # CHANGELOG
 
+## [v2.0.0-dev.0] — 2026-10-25
+
+### 基线 (Baseline)
+
+- **Knowledge Arch 独立仓库建立**：从插件仓库 developer `8e6f1af`（v1.2.0）用 `git archive`
+  导出全部已提交文件（826 个；通过临时 `info/attributes` 关闭发布用 `export-ignore`，
+  使 tests/docs/tools/web/frontend 等开发资产一并导入），全新 git 历史，首个提交即该快照。
+  工作区未提交改动未带入。
+- 测试基线：1289 passed / 2 skipped / 3 failed（既有：`test_embedding.py` 两项 device 用例
+  缺 torch，`test_external_embedding_contract.py::...[bad19]` 测试桩问题）；skip 为缺 lightrag 与 boto3。
+- `TODO.md` 新增 v2.0.0 P0–P6 路线图。
+
 ## [v1.2.0] — 2026-10-18
 
 ### 发布 (Release)
