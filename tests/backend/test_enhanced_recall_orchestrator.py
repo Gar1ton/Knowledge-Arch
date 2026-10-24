@@ -1,0 +1,378 @@
+"""EnhancedRecallOrchestrator（A-RAG「2+1」中间档）契约测试。
+
+用脚本化 LLM（固定响应/抛异常）+ NoopReranker + mock 检索，离线覆盖：
+两步契约解析（PLAN-lite / SYNTH+CHECK fail-open）、happy path 恰 2 次 LLM、
+纠偏路径 3 次 LLM、PLAN 异常降级 baseline、SYNTH 异常交 api.ask 兜底、
+anchor pinned 保留、跨子查询去重、corrective 开关。
+"""
+from __future__ import annotations
+
+import pytest
+
+from kacore.config import EnhancedRecallConfig, RerankConfig
+from kacore.domain.models import DocumentChunk
+from kacore.pipelines.deep_thinking_prompts import JsonContractError
+from kacore.pipelines.enhanced_recall_orchestrator import EnhancedRecallOrchestrator
+from kacore.pipelines.enhanced_recall_prompts import (
+    build_synth_check_system,
+    parse_plan_lite,
+    parse_synth_check,
+)
+from kacore.pipelines.retrieval_orchestrator import ChunkSignal, RetrievalOutcome
+from kacore.repository.reranker.noop import NoopReranker
+
+# ── 脚本化响应 ──────────────────────────────────────────────
+PLAN_OK = '{"rewritten_query":"rewritten q","sub_queries":["sub a","sub b"]}'
+SYNTH_SUFFICIENT = (
+    "answer body [1]\n===VERDICT===\n"
+    '{"sufficient":true,"insufficiency_reasons":[],"corrective_queries":[]}'
+)
+SYNTH_INSUFFICIENT = (
+    "draft answer [1]\n===VERDICT===\n"
+    '{"sufficient":false,"insufficiency_reasons":["缺对比证据"],'
+    '"corrective_queries":["Paper Y Table 2"]}'
+)
+SYNTH_NO_VERDICT = "plain answer without verdict [1]"
+SYNTH_SUFFICIENT_AFTER_CORRECTION = (
+    "final answer [1]\n===VERDICT===\n"
+    '{"sufficient":true,"insufficiency_reasons":[],"corrective_queries":[]}'
+)
+SYNTH_STILL_INSUFFICIENT_AFTER_CORRECTION = (
+    "final answer [1]\n===VERDICT===\n"
+    '{"sufficient":false,"insufficiency_reasons":["仍缺权威来源"],"corrective_queries":[]}'
+)
+
+
+# ── 测试替身 ────────────────────────────────────────────────
+def _chunk(cid: str, doc_id: str = "doc1") -> DocumentChunk:
+    return DocumentChunk(cid, doc_id, 0, f"text of {cid}", f"h-{cid}")
+
+
+def _outcome(chunks: list[DocumentChunk], anchor_ids: set[str] = frozenset()) -> RetrievalOutcome:
+    signals = {
+        c.chunk_id: ChunkSignal(rrf_score=1.0 / (i + 1), anchor_hit=c.chunk_id in anchor_ids)
+        for i, c in enumerate(chunks)
+    }
+    return RetrievalOutcome(chunks=list(chunks), engines=["milvus"], per_chunk_signals=signals)
+
+
+class MockRetrieval:
+    def __init__(self, outcome: RetrievalOutcome) -> None:
+        self._outcome = outcome
+        self.queries: list[str] = []
+        # 按 query 文本覆盖返回值（未命中退回默认 outcome）。按调用序号覆盖会踩坑：
+        # 首轮的 sub_queries 会发起多次检索，个数随 PLAN 脚本变化。
+        self.outcome_by_query: dict[str, RetrievalOutcome] = {}
+
+    async def retrieve_with_outcome(
+        self, collection, query, top_k, scope=None, candidate_k=None, reranker=None
+    ):
+        self.queries.append(query)
+        return self.outcome_by_query.get(query, self._outcome)
+
+    async def document_labels(self, doc_ids):
+        return {d: d for d in doc_ids if d}
+
+
+class ScriptedLLM:
+    def __init__(self, responses: list) -> None:
+        self._responses = list(responses)
+        self.calls = 0
+        self.prompts: list[str] = []
+        self.system_prompts: list[str] = []
+
+    async def generate(self, prompt, system_prompt="", *, allow_mock=True):
+        result = await self.generate_result(prompt, system_prompt, allow_mock=allow_mock)
+        return result.text
+
+    async def generate_result(self, prompt, system_prompt="", *, allow_mock=True):
+        from kacore.domain.llm_generation import GenerationResult
+
+        self.calls += 1
+        self.prompts.append(prompt)
+        self.system_prompts.append(system_prompt)
+        item = self._responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return GenerationResult(text=item)
+
+
+def _make(outcome, responses, **cfg_over):
+    retrieval = MockRetrieval(outcome)
+    llm = ScriptedLLM(responses)
+    orch = EnhancedRecallOrchestrator(
+        retrieval_orchestrator=retrieval,
+        reranker=NoopReranker(),
+        llm_adapter=llm,
+        er_config=EnhancedRecallConfig(**cfg_over),
+        rerank_config=RerankConfig(provider="noop", keep=5),
+    )
+    return orch, retrieval, llm
+
+
+# ── 契约解析 ────────────────────────────────────────────────
+def test_parse_plan_lite_valid_and_mixed_items():
+    rewritten, subs = parse_plan_lite(PLAN_OK)
+    assert rewritten == "rewritten q"
+    assert subs == ["sub a", "sub b"]
+    # 元素可为对象；rewritten 缺失由调用方回退原 query。
+    rewritten2, subs2 = parse_plan_lite('{"sub_queries":[{"query":"only sub"}]}')
+    assert rewritten2 == ""
+    assert subs2 == ["only sub"]
+
+
+def test_parse_plan_lite_empty_raises():
+    with pytest.raises(JsonContractError):
+        parse_plan_lite('{"rewritten_query":"","sub_queries":[]}')
+
+
+def test_parse_synth_check_three_states():
+    ok = parse_synth_check(SYNTH_SUFFICIENT)
+    assert ok.answer == "answer body [1]"
+    assert ok.sufficient is True and not ok.corrective_queries
+    bad = parse_synth_check(SYNTH_INSUFFICIENT)
+    assert bad.sufficient is False
+    assert bad.insufficiency_reasons == ["缺对比证据"]
+    assert bad.corrective_queries == ["Paper Y Table 2"]
+    # 标记缺失 → 保留答案，但不虚报 sufficient=True（不浪费重试）。
+    open_ = parse_synth_check(SYNTH_NO_VERDICT)
+    assert open_.answer == SYNTH_NO_VERDICT
+    assert open_.sufficient is False
+
+
+def test_parse_synth_check_empty_body_raises():
+    with pytest.raises(JsonContractError):
+        parse_synth_check("   ")
+    with pytest.raises(JsonContractError):
+        parse_synth_check('===VERDICT===\n{"sufficient":true}')
+
+
+def test_synth_check_system_embeds_verdict_contract():
+    system = build_synth_check_system("zh", max_corrective_queries=3)
+    assert "===VERDICT===" in system
+    assert '"sufficient"' in system
+    assert "at most 3" in system
+    assert "中文" in system  # answer_language 指令保留。
+    assert "moderately detailed" in system
+    assert "Begin with a concise, direct answer" in system
+    assert "do not force stock sections" in system
+    assert "do not repeat the same citation" in system
+    assert "COMPREHENSIVE" not in system  # enhanced 不再误用 deep 的穷尽式报告模板。
+
+
+# ── 编排流程 ────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_happy_path_exactly_two_llm_calls():
+    outcome = _outcome([_chunk("c1"), _chunk("c2"), _chunk("c3")])
+    orch, retrieval, llm = _make(outcome, [PLAN_OK, SYNTH_SUFFICIENT])
+    result = await orch.run("papers", "原始问题")
+    assert llm.calls == 2  # PLAN-lite + SYNTH+CHECK，无第三次调用。
+    assert retrieval.queries == ["rewritten q", "sub a", "sub b"]
+    assert result.answer == "answer body [1]"
+    assert result.verified is True
+    assert result.degraded is False
+    assert result.actual_mode == "enhanced_recall"
+    assert len(result.trace) == 1
+    assert result.trace[0].queries == ["rewritten q", "sub a", "sub b"]
+    assert result.trace[0].llm_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_insufficient_triggers_corrective_round_and_resynthesis():
+    outcome = _outcome([_chunk("c1"), _chunk("c2")])
+    orch, retrieval, llm = _make(
+        outcome, [PLAN_OK, SYNTH_INSUFFICIENT, SYNTH_SUFFICIENT_AFTER_CORRECTION]
+    )
+    result = await orch.run("papers", "原始问题")
+    assert llm.calls == 3  # PLAN + SYNTH+CHECK + 重合成（复用同一 SYNTH+CHECK 契约）。
+    assert retrieval.queries[-1] == "Paper Y Table 2"  # 纠偏 query 进入检索。
+    assert result.answer == "final answer [1]"
+    # verified 现在来自纠偏轮自己的 verdict，不是「跑完一轮纠偏」就直接置真。
+    assert result.verified is True
+    assert result.verify_notes == []  # 纠偏轮 verdict 报告缺口已清零。
+    assert len(result.trace) == 2
+    assert result.trace[1].queries == ["Paper Y Table 2"]
+    assert result.trace[1].gaps == []
+
+
+@pytest.mark.asyncio
+async def test_corrective_round_still_insufficient_does_not_force_verified_true():
+    """核心修正：纠偏轮完成不等于已验证。若纠偏轮自己的 verdict 仍判不充分，verified
+    必须如实为 False，不能像旧行为那样只因为跑完一轮纠偏就置 True。"""
+    outcome = _outcome([_chunk("c1"), _chunk("c2")])
+    orch, _retrieval, llm = _make(
+        outcome, [PLAN_OK, SYNTH_INSUFFICIENT, SYNTH_STILL_INSUFFICIENT_AFTER_CORRECTION]
+    )
+    result = await orch.run("papers", "原始问题")
+    assert llm.calls == 3
+    assert result.answer == "final answer [1]"
+    assert result.verified is False
+    assert result.verify_notes == ["仍缺权威来源"]
+
+
+@pytest.mark.asyncio
+async def test_plan_llm_unavailable_degrades_to_single_round_baseline():
+    outcome = _outcome([_chunk(f"c{i}") for i in range(1, 8)])
+    orch, retrieval, llm = _make(outcome, [RuntimeError("no real llm")])
+    result = await orch.run("papers", "原始问题")
+    assert result.degraded is True
+    assert result.actual_mode == "enhanced_degraded_to_default"
+    assert result.degraded_reason == "no real llm"
+    # 降级证据严格等于单轮 baseline 前 5 条；答案交 api.ask 兜底。
+    assert [c.chunk_id for c in result.evidence] == ["c1", "c2", "c3", "c4", "c5"]
+    assert result.answer is None
+    assert retrieval.queries == ["原始问题"]
+
+
+@pytest.mark.asyncio
+async def test_plan_json_invalid_falls_back_to_original_query_without_degrade():
+    outcome = _outcome([_chunk("c1"), _chunk("c2")])
+    orch, retrieval, llm = _make(
+        outcome, ["not json", "still not json", SYNTH_SUFFICIENT], json_max_retries=1
+    )
+    result = await orch.run("papers", "原始问题")
+    assert result.degraded is False
+    assert retrieval.queries[0] == "原始问题"  # JSON 坏 → 原 query 检索，不降级。
+    assert result.answer == "answer body [1]"
+
+
+@pytest.mark.asyncio
+async def test_synth_llm_unavailable_keeps_evidence_with_no_answer():
+    outcome = _outcome([_chunk("c1"), _chunk("c2")])
+    orch, _retrieval, _llm = _make(outcome, [PLAN_OK, RuntimeError("synth down")])
+    result = await orch.run("papers", "原始问题")
+    # SYNTH 挂 → answer=None（api.ask deep-fallback 合成兜底），证据保留、不降级。
+    assert result.answer is None
+    assert result.degraded is False
+    assert len(result.evidence) > 0
+
+
+@pytest.mark.asyncio
+async def test_corrective_disabled_returns_first_answer_without_extra_call():
+    outcome = _outcome([_chunk("c1")])
+    orch, _retrieval, llm = _make(
+        outcome, [PLAN_OK, SYNTH_INSUFFICIENT], corrective_enabled=False
+    )
+    result = await orch.run("papers", "原始问题")
+    assert llm.calls == 2  # 不追加纠偏检索与重合成。
+    assert result.answer == "draft answer [1]"
+    assert result.verified is False  # 自检不充分如实透传。
+    assert result.verify_notes == ["缺对比证据"]
+    assert len(result.trace) == 1
+
+
+@pytest.mark.asyncio
+async def test_resynthesis_failure_keeps_first_answer():
+    outcome = _outcome([_chunk("c1")])
+    orch, _retrieval, llm = _make(
+        outcome, [PLAN_OK, SYNTH_INSUFFICIENT, RuntimeError("resynth down")]
+    )
+    result = await orch.run("papers", "原始问题")
+    assert llm.calls == 3
+    assert result.answer == "draft answer [1]"  # 重合成挂 → 保留首轮答案。
+    # 纠偏轮没能产出新 verdict，必须沿用首轮已知的「不充分」判定，不能虚报为已验证。
+    assert result.verified is False
+    assert result.verify_notes == ["缺对比证据"]
+
+
+@pytest.mark.asyncio
+async def test_resynthesis_failure_rolls_back_evidence_to_match_kept_answer():
+    """保留首轮答案就必须一并回滚证据池：`[n]` 是按纠正前池编号的。
+
+    v1.1.0 起 `[n]` 会被 `citation_rendering` 改写成含作者姓名的 Harvard 短引，错位不再只是
+    「点错来源卡片」，而是正文明文把 A 的结论归给 B。
+    """
+    outcome = _outcome([_chunk("c1")])
+    orch, retrieval, _llm = _make(
+        outcome, [PLAN_OK, SYNTH_INSUFFICIENT, RuntimeError("resynth down")]
+    )
+    # 纠正轮（SYNTH_INSUFFICIENT 指定的 query）引入一条全新证据；
+    # 它绝不能出现在与首轮答案一起返回的证据池里。
+    retrieval.outcome_by_query = {"Paper Y Table 2": _outcome([_chunk("c9")])}
+
+    result = await orch.run("papers", "原始问题")
+
+    assert result.answer == "draft answer [1]"
+    assert [c.chunk_id for c in result.evidence] == ["c1"]
+
+
+@pytest.mark.asyncio
+async def test_anchor_pinned_chunks_survive_cutoff():
+    outcome = _outcome([_chunk("c1"), _chunk("c2"), _chunk("c3")], anchor_ids={"c3"})
+    orch, _retrieval, _llm = _make(outcome, [PLAN_OK, SYNTH_SUFFICIENT])
+    result = await orch.run("papers", "原始问题")
+    assert "c3" in {c.chunk_id for c in result.evidence}
+
+
+@pytest.mark.asyncio
+async def test_cross_subquery_candidates_deduped():
+    # 同一 outcome 被三个 query 命中 → 证据无重复 chunk_id。
+    outcome = _outcome([_chunk("c1"), _chunk("c2")])
+    orch, _retrieval, _llm = _make(outcome, [PLAN_OK, SYNTH_SUFFICIENT])
+    result = await orch.run("papers", "原始问题")
+    ids = [c.chunk_id for c in result.evidence]
+    assert len(ids) == len(set(ids)) == 2
+
+
+@pytest.mark.asyncio
+async def test_answer_question_used_for_synthesis_not_retrieval_query():
+    outcome = _outcome([_chunk("c1")])
+    orch, retrieval, llm = _make(outcome, [PLAN_OK, SYNTH_SUFFICIENT])
+    await orch.run(
+        "papers", "translated retrieval query", answer_question="用户原始问题"
+    )
+    assert retrieval.queries[0] == "rewritten q"
+    synth_prompt = llm.prompts[1]
+    assert "Question: 用户原始问题" in synth_prompt
+    assert "Question: translated retrieval query" not in synth_prompt
+
+
+@pytest.mark.asyncio
+async def test_progress_stages_pushed_in_order():
+    outcome = _outcome([_chunk("c1")])
+    orch, _retrieval, _llm = _make(
+        outcome, [PLAN_OK, SYNTH_INSUFFICIENT, "final [1]"]
+    )
+    stages: list[str] = []
+    await orch.run(
+        "papers",
+        "原始问题",
+        progress=lambda stage, pct, detail=None: stages.append(stage),
+    )
+    assert stages == [
+        "enhanced_plan",
+        "enhanced_retrieve",
+        "enhanced_synthesize",
+        "enhanced_corrective",
+        "enhanced_resynthesize",
+    ]
+
+
+# ── 部分失败降级（v1.0.0-rc.1）──────────────────────────────
+
+
+async def test_retrieve_many_skips_failed_subquery():
+    """单个 sub_query 检索瞬断不应废掉整次增强召回。"""
+    outcome = _outcome([_chunk("c1", "d1")])
+    orch, retrieval, _llm = _make(outcome, [])
+
+    async def flaky(collection, query, top_k, scope=None, candidate_k=None, reranker=None):
+        if query == "bad":
+            raise RuntimeError("embedding down")
+        return outcome
+
+    retrieval.retrieve_with_outcome = flaky
+    results = await orch._retrieve_many("col", ["good", "bad", "also-good"], None)
+    assert [q for q, _ in results] == ["good", "also-good"]
+
+
+async def test_retrieve_many_raises_when_all_subqueries_fail():
+    outcome = _outcome([_chunk("c1", "d1")])
+    orch, retrieval, _llm = _make(outcome, [])
+
+    async def broken(collection, query, top_k, scope=None, candidate_k=None, reranker=None):
+        raise RuntimeError("embedding down")
+
+    retrieval.retrieve_with_outcome = broken
+    with pytest.raises(RuntimeError):
+        await orch._retrieve_many("col", ["q1", "q2"], None)

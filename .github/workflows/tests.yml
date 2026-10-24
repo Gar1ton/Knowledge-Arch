@@ -1,0 +1,72 @@
+name: Developer CI
+
+on:
+  push:
+    branches: [developer]
+  pull_request:
+    branches: [developer]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install developer dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+      - name: Ruff
+        run: python -m ruff check .
+      - name: Mypy
+        run: python -m mypy
+      - name: Pytest
+        run: python -m pytest
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: ESLint
+        run: npm run lint
+      - name: TypeScript
+        run: npx tsc --noEmit --incremental false
+      - name: Production build
+        run: npm run build
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Verify exported pages
+        working-directory: .
+        # 结构校验：忽略 _next/ 的 webpack 内容哈希（跨平台构建必然不同），只校验
+        # 路由/静态资源结构对齐，避免逐字节比对因 Windows/Linux 哈希漂移必然误红。
+        run: python tools/sync_frontend.py --check-structure
+
+  package:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Build and audit published tree
+        run: >-
+          python tools/build_published_tree.py
+          --source HEAD
+          --output dist/published
+          --zip dist/astrbot_plugin_knowledge_repository.zip
+          --max-mib 15

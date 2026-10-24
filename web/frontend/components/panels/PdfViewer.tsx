@@ -1,0 +1,430 @@
+"use client";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Icon } from "@/components/ds/Icon";
+import { IconButton } from "@/components/ds/IconButton";
+import { ZoteroAnnotation } from "@/lib/api";
+import { useI18n } from "@/lib/i18n";
+
+interface PdfViewerProps {
+  docId: string;
+  title?: string;
+  annotations: ZoteroAnnotation[];
+}
+
+type PdfDocument = {
+  numPages: number;
+  getPage: (pageNumber: number) => Promise<PdfPage>;
+  destroy?: () => Promise<void>;
+};
+
+type PdfPage = {
+  getViewport: (options: { scale: number }) => { width: number; height: number };
+  render: (context: {
+    canvasContext: CanvasRenderingContext2D;
+    viewport: { width: number; height: number };
+    transform?: number[];
+  }) => { promise: Promise<void>; cancel: () => void };
+};
+
+type PdfDocumentSource = {
+  url: string;
+  // pdfjs v6 把 JBIG2/JPEG2000 解码器迁到 WASM，扫描件 PDF 需要这些资源 URL 才能渲染图像。
+  wasmUrl?: string;
+  cMapUrl?: string;
+  cMapPacked?: boolean;
+  standardFontDataUrl?: string;
+};
+
+type PdfJsModule = {
+  GlobalWorkerOptions: { workerSrc: string };
+  getDocument: (source: PdfDocumentSource) => { promise: Promise<PdfDocument>; destroy?: () => void };
+};
+
+type PdfLoadState = {
+  pdfUrl: string;
+  pdf: PdfDocument | null;
+  pageCount: number;
+  loading: boolean;
+  error: string;
+};
+
+type PageState = {
+  pdfUrl: string;
+  page: number;
+};
+
+const MIN_SCALE = 0.5;
+const MAX_SCALE = 2.4;
+const SCALE_STEP = 0.15;
+
+export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
+  const { t } = useI18n();
+  const [scale, setScale] = useState(1);
+  const pagesRef = useRef<Record<number, HTMLDivElement | null>>({});
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+
+  const pdfUrl = useMemo(
+    () => `/api/documents/${encodeURIComponent(docId)}/raw?disposition=inline`,
+    [docId],
+  );
+  const [loadState, setLoadState] = useState<PdfLoadState>(() => ({
+    pdfUrl,
+    pdf: null,
+    pageCount: 0,
+    loading: true,
+    error: "",
+  }));
+  const [pageState, setPageState] = useState<PageState>(() => ({ pdfUrl, page: 1 }));
+  const isCurrentPdf = loadState.pdfUrl === pdfUrl;
+  const pdf = isCurrentPdf ? loadState.pdf : null;
+  const pageCount = isCurrentPdf ? loadState.pageCount : 0;
+  const loading = isCurrentPdf ? loadState.loading : true;
+  const error = isCurrentPdf ? loadState.error : "";
+  const currentPage = pageState.pdfUrl === pdfUrl ? pageState.page : 1;
+  const setCurrentPage = useCallback<React.Dispatch<React.SetStateAction<number>>>(
+    (updater) => {
+      setPageState((current) => {
+        const base = current.pdfUrl === pdfUrl ? current.page : 1;
+        const page = typeof updater === "function" ? updater(base) : updater;
+        return { pdfUrl, page };
+      });
+    },
+    [pdfUrl],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    let loadingTask: { promise: Promise<PdfDocument>; destroy?: () => void } | null = null;
+
+    async function loadPdf() {
+      try {
+        const pdfjs = (await import("pdfjs-dist")) as unknown as PdfJsModule;
+        pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+          "pdfjs-dist/build/pdf.worker.mjs",
+          import.meta.url,
+        ).toString();
+        loadingTask = pdfjs.getDocument({
+          url: pdfUrl,
+          wasmUrl: "/pdfjs/wasm/",
+          cMapUrl: "/pdfjs/cmaps/",
+          cMapPacked: true,
+          standardFontDataUrl: "/pdfjs/standard_fonts/",
+        });
+        const doc = await loadingTask.promise;
+        if (cancelled) {
+          await doc.destroy?.();
+          return;
+        }
+        setLoadState({ pdfUrl, pdf: doc, pageCount: doc.numPages, loading: false, error: "" });
+      } catch (err) {
+        if (!cancelled) {
+          setLoadState({
+            pdfUrl,
+            pdf: null,
+            pageCount: 0,
+            loading: false,
+            error: err instanceof Error ? err.message : "PDF load failed",
+          });
+        }
+      }
+    }
+
+    void loadPdf();
+    return () => {
+      cancelled = true;
+      loadingTask?.destroy?.();
+    };
+  }, [pdfUrl]);
+
+  const scrollToPage = useCallback((page: number) => {
+    const clamped = Math.max(1, Math.min(pageCount || page, page));
+    setCurrentPage(clamped);
+    pagesRef.current[clamped]?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, [pageCount, setCurrentPage]);
+
+  const fitWidth = useCallback(() => {
+    const viewport = viewportRef.current;
+    if (!viewport || !pdf) return;
+    void pdf.getPage(1).then((page) => {
+      const natural = page.getViewport({ scale: 1 });
+      const availableWidth = Math.max(320, viewport.clientWidth - 46);
+      const nextScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, availableWidth / natural.width));
+      setScale(Number(nextScale.toFixed(2)));
+    });
+  }, [pdf]);
+
+  useEffect(() => {
+    if (pdf) fitWidth();
+  }, [pdf, fitWidth]);
+
+  const annotatedPages = useMemo(() => {
+    const pages = new Set<number>();
+    annotations.forEach((ann) => {
+      const page = annotationPage(ann);
+      if (page != null) pages.add(page);
+    });
+    return pages;
+  }, [annotations]);
+
+  return (
+    <div
+      style={{
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        border: "1px solid var(--border)",
+        borderRadius: "var(--radius-lg)",
+        overflow: "hidden",
+        background: "var(--surface)",
+      }}
+    >
+      <div
+        style={{
+          height: 38,
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "0 10px",
+          borderBottom: "1px solid var(--border)",
+          background: "var(--bg-inset)",
+        }}
+      >
+        <Icon name="filePdf" size={15} />
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            fontSize: 12,
+            fontWeight: 650,
+            color: "var(--heading)",
+          }}
+        >
+          {title ?? "PDF"}
+        </span>
+        <IconButton
+          name="chevL"
+          label={t("pdf_prev_page")}
+          onClick={() => scrollToPage(currentPage - 1)}
+          style={{ opacity: currentPage <= 1 ? 0.45 : 1 }}
+        />
+        <span style={{ fontSize: 11, color: "var(--fg-muted)", fontFamily: "var(--font-mono)" }}>
+          {currentPage}/{pageCount || "-"}
+        </span>
+        <IconButton
+          name="chevR"
+          label={t("pdf_next_page")}
+          onClick={() => scrollToPage(currentPage + 1)}
+          style={{ opacity: pageCount && currentPage >= pageCount ? 0.45 : 1 }}
+        />
+        <IconButton
+          name="zoomOut"
+          label={t("pdf_zoom_out")}
+          onClick={() => setScale((value) => Math.max(MIN_SCALE, Number((value - SCALE_STEP).toFixed(2))))}
+        />
+        <span style={{ minWidth: 38, textAlign: "center", fontSize: 11, color: "var(--fg-muted)" }}>
+          {Math.round(scale * 100)}%
+        </span>
+        <IconButton
+          name="zoomIn"
+          label={t("pdf_zoom_in")}
+          onClick={() => setScale((value) => Math.min(MAX_SCALE, Number((value + SCALE_STEP).toFixed(2))))}
+        />
+        <IconButton name="maximize" label={t("pdf_fit_width")} onClick={fitWidth} />
+      </div>
+
+      <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>
+        <div
+          ref={viewportRef}
+          onScroll={() => {
+            const entries = Object.entries(pagesRef.current);
+            const top = viewportRef.current?.getBoundingClientRect().top ?? 0;
+            let closest = currentPage;
+            let distance = Number.POSITIVE_INFINITY;
+            entries.forEach(([page, el]) => {
+              if (!el) return;
+              const nextDistance = Math.abs(el.getBoundingClientRect().top - top);
+              if (nextDistance < distance) {
+                distance = nextDistance;
+                closest = Number(page);
+              }
+            });
+            if (closest !== currentPage) setCurrentPage(closest);
+          }}
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflow: "auto",
+            background: "var(--bg)",
+            padding: "10px 14px",
+          }}
+        >
+          {loading && <PdfState label="Loading PDF" />}
+          {error && <PdfState label={error} tone="error" />}
+          {!loading && !error && pdf && (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
+              {Array.from({ length: pageCount }, (_, index) => {
+                const pageNumber = index + 1;
+                return (
+                  <div
+                    key={pageNumber}
+                    ref={(el) => { pagesRef.current[pageNumber] = el; }}
+                    style={{
+                      position: "relative",
+                      border: annotatedPages.has(pageNumber)
+                        ? "2px solid var(--accent)"
+                        : "1px solid var(--border)",
+                      boxShadow: "var(--shadow-card)",
+                      background: "white",
+                    }}
+                  >
+                    <PdfPageCanvas pdf={pdf} pageNumber={pageNumber} scale={scale} />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        {annotations.length > 0 && (
+          <aside
+            style={{
+              width: 260,
+              flexShrink: 0,
+              borderLeft: "1px solid var(--border)",
+              background: "var(--surface)",
+              overflow: "auto",
+              padding: 12,
+            }}
+          >
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--fg-muted)", marginBottom: 9 }}>
+              Annotations · {annotations.length}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {annotations.map((ann) => {
+                const page = annotationPage(ann);
+                return (
+                  <button
+                    key={ann.id}
+                    type="button"
+                    onClick={() => page != null && scrollToPage(page)}
+                    style={{
+                      width: "100%",
+                      textAlign: "left",
+                      border: "1px solid var(--border)",
+                      borderLeft: `3px solid ${ann.color || "var(--accent)"}`,
+                      borderRadius: "var(--radius-sm)",
+                      background: "var(--bg-inset)",
+                      padding: "8px 9px",
+                      cursor: page != null ? "pointer" : "default",
+                      fontFamily: "var(--font-sans)",
+                    }}
+                  >
+                    <div style={{ fontSize: 10.5, color: "var(--fg-subtle)", marginBottom: 4 }}>
+                      {page != null ? `p.${page}` : "PDF"} · {ann.type || "annotation"}
+                    </div>
+                    <div style={{ fontSize: 11.5, lineHeight: 1.45, color: "var(--fg)" }}>
+                      {ann.text || ann.comment || "Annotation"}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </aside>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PdfPageCanvas({ pdf, pageNumber, scale }: { pdf: PdfDocument; pageNumber: number; scale: number }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [rendering, setRendering] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    let renderTask: { promise: Promise<void>; cancel: () => void } | null = null;
+
+    async function renderPage() {
+      setRendering(true);
+      const page = await pdf.getPage(pageNumber);
+      if (cancelled) return;
+      const viewport = page.getViewport({ scale });
+      const canvas = canvasRef.current;
+      const context = canvas?.getContext("2d");
+      if (!canvas || !context) return;
+      const ratio = window.devicePixelRatio || 1;
+      canvas.width = Math.floor(viewport.width * ratio);
+      canvas.height = Math.floor(viewport.height * ratio);
+      canvas.style.width = `${Math.floor(viewport.width)}px`;
+      canvas.style.height = `${Math.floor(viewport.height)}px`;
+      // pdfjs v6 会从 canvasContext 反推 canvas 并重新 getContext，预设的 context 变换会被忽略；
+      // 设备像素比通过 render 的 transform 参数传入才能在高 DPR 屏正确缩放。
+      renderTask = page.render({
+        canvasContext: context,
+        viewport,
+        transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : undefined,
+      });
+      try {
+        await renderTask.promise;
+      } catch (err) {
+        // 缩放 / 切换文档时的渲染取消属正常，其余错误打印出来便于排障。
+        if (err instanceof Error && err.name !== "RenderingCancelledException") {
+          console.error(`PDF page ${pageNumber} render failed:`, err);
+        }
+      } finally {
+        if (!cancelled) setRendering(false);
+      }
+    }
+
+    void renderPage();
+    return () => {
+      cancelled = true;
+      renderTask?.cancel();
+    };
+  }, [pdf, pageNumber, scale]);
+
+  return (
+    <>
+      <canvas ref={canvasRef} style={{ display: "block" }} />
+      {rendering && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "grid",
+            placeItems: "center",
+            background: "rgba(255,255,255,.62)",
+            fontSize: 11,
+            color: "var(--fg-subtle)",
+          }}
+        >
+          Rendering
+        </div>
+      )}
+    </>
+  );
+}
+
+function PdfState({ label, tone = "neutral" }: { label: string; tone?: "neutral" | "error" }) {
+  return (
+    <div
+      style={{
+        minHeight: 260,
+        display: "grid",
+        placeItems: "center",
+        color: tone === "error" ? "var(--danger)" : "var(--fg-subtle)",
+        fontSize: 12,
+      }}
+    >
+      {label}
+    </div>
+  );
+}
+
+function annotationPage(annotation: ZoteroAnnotation): number | null {
+  if (typeof annotation.page === "number") return annotation.page;
+  if (typeof annotation.position?.pageIndex === "number") return annotation.position.pageIndex + 1;
+  return null;
+}

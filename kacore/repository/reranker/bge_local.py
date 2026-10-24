@@ -1,0 +1,159 @@
+"""本地 cross-encoder 重排器（repository 层，可选依赖 sentence-transformers）。
+
+为何存在：bge-reranker 这类 cross-encoder 对每个 (query, chunk) 对联合编码打分，
+精度远高于双塔向量召回，但每对一次前向、成本随候选数线性增长。故由 max_candidates
+截断候选、batch 推理，并把阻塞推理下放 executor，不阻塞事件循环。
+
+两个稳健性设计：
+    - 懒加载：模型在首次 rerank 时才加载，避免插件启动即下载大模型。
+    - 自我保护：加载或推理失败时记一次 warning 并永久回退为「按入参顺序」，绝不向上
+      抛异常拖垮 deep thinking（reranker 不可用 = 退化，不是错误）。
+
+不做 timeout：本地线程内的推理无法可靠中断，改由 max_candidates / batch_size 控成本。
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import threading
+from typing import TYPE_CHECKING, Any
+
+from kacore.repository.reranker.base import Reranker, ScoredChunk
+from kacore.utils.torch_memory import release_accelerator_cache
+
+if TYPE_CHECKING:
+    from kacore.domain.models import DocumentChunk
+
+logger = logging.getLogger("Reranker")
+
+
+def _passthrough(pool: list[DocumentChunk], top_n: int | None) -> list[ScoredChunk]:
+    """回退：按入参顺序打分（名次倒数），语义同 NoopReranker。"""
+    limit = len(pool) if top_n is None else min(top_n, len(pool))
+    return [ScoredChunk(chunk=chunk, score=1.0 / (i + 1)) for i, chunk in enumerate(pool[:limit])]
+
+
+class CrossEncoderReranker(Reranker):
+    """sentence-transformers CrossEncoder 封装（懒加载 + 自我保护）。
+
+    契约：构造不加载模型（不触发下载）；首次 rerank 时懒加载。加载/推理任一失败 →
+    记一次 warning、置 disabled、回退按序返回，后续直接按序（不再重试）。
+    """
+
+    def __init__(
+        self,
+        *,
+        model: str,
+        device: str = "auto",
+        batch_size: int = 32,
+        max_candidates: int = 30,
+        idle_timeout: float = 420,
+    ) -> None:
+        self._model_name = model
+        self._device = None if device == "auto" else device
+        self._batch_size = batch_size
+        self._max_candidates = max_candidates
+        self._idle_timeout = max(0.0, float(idle_timeout))
+        self._model: Any = None
+        self._disabled = False
+        self._state = "idle"
+        self._last_error: str | None = None
+        self._model_lock = threading.RLock()
+        self._idle_timer: threading.Timer | None = None
+
+    @property
+    def is_passthrough(self) -> bool:
+        # 加载/推理失败后永久退化为按序（_disabled=True），此时视为 passthrough。
+        return self._disabled
+
+    @property
+    def status(self) -> dict[str, str | bool | None]:
+        return {
+            "provider": "cross_encoder",
+            "status": self._state,
+            "model": self._model_name,
+            "enabled": not self._disabled,
+            "last_error": self._last_error,
+        }
+
+    def _ensure_model(self) -> None:
+        with self._model_lock:
+            if self._model is None:
+                from sentence_transformers import CrossEncoder
+
+                self._model = CrossEncoder(self._model_name, device=self._device)
+
+    def _reset_idle_timer(self) -> None:
+        """Reset the timer after a completed inference."""
+        with self._model_lock:
+            if self._idle_timer is not None:
+                self._idle_timer.cancel()
+                self._idle_timer = None
+            if self._idle_timeout > 0 and self._model is not None:
+                self._idle_timer = threading.Timer(self._idle_timeout, self._unload)
+                self._idle_timer.daemon = True
+                self._idle_timer.start()
+
+    @staticmethod
+    def _release_model_memory(model: Any) -> None:
+        """Release Python references and clear optional accelerator caches."""
+        del model
+        release_accelerator_cache()
+
+    def _unload(self) -> None:
+        """Unload the model after an idle period; the next call lazy-loads it again."""
+        with self._model_lock:
+            model = self._model
+            self._model = None
+            if self._idle_timer is not None:
+                self._idle_timer.cancel()
+                self._idle_timer = None
+            if model is None:
+                return
+            self._state = "idle"
+        self._release_model_memory(model)
+
+    def close(self) -> None:
+        """Unload the local model and cancel its idle timer."""
+        self._unload()
+
+    def _predict(self, pairs: list[tuple[str, str]]) -> Any:
+        """Load, predict, and arm the idle timer as one lifecycle-critical operation."""
+        with self._model_lock:
+            if self._model is None:
+                self._state = "loading"
+                self._ensure_model()
+            self._state = "ready"
+            self._last_error = None
+            model = self._model
+            scores = model.predict(pairs, batch_size=self._batch_size)
+            self._reset_idle_timer()
+            return scores
+
+    async def rerank(
+        self, query: str, candidates: list[DocumentChunk], *, top_n: int | None = None
+    ) -> list[ScoredChunk]:
+        if not candidates:
+            return []
+        pool = candidates[: self._max_candidates]
+        if self._disabled:
+            return _passthrough(pool, top_n)
+        try:
+            pairs = [(query, chunk.text) for chunk in pool]
+            scores = await asyncio.to_thread(self._predict, pairs)
+        except Exception as exc:  # 加载/推理失败 → 永久退化为按序，不抛崩 deep thinking。
+            logger.warning("CrossEncoder rerank failed, fallback to input order: %s", exc)
+            self._unload()
+            self._disabled = True
+            self._state = "failed"
+            self._last_error = str(exc)
+            return _passthrough(pool, top_n)
+        scored = [
+            ScoredChunk(chunk=chunk, score=float(score))
+            for chunk, score in zip(pool, scores)
+        ]
+        scored.sort(key=lambda item: item.score, reverse=True)
+        return scored if top_n is None else scored[:top_n]
+
+
+__all__ = ["CrossEncoderReranker"]
