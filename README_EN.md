@@ -35,12 +35,18 @@ The installer bundles a standalone Python 3.12 runtime and all core dependencies
 ## First Launch & Quick Start
 
 1. **Local backend startup**: Launching the app starts the local backend service (listening only on `127.0.0.1` on an OS-assigned port, with a fresh 256-bit access token per launch) and opens the **Welcome** screen on an empty library.
-2. **Choose how to initialize your library**:
+2. **Choose the interface language**: 中文 or English; change it later in **Preferences › General**.
+3. **Choose how to initialize your library**:
    - **Start empty**: Begin with a blank library.
    - **Import old plugin data**: Select the root directory of a v1 plugin installation (which contains `data/plugin_data/`). Knowledge Arch **copies** (never modifies or deletes) the SQLite database, original PDFs, vector index, graph workspaces, and secrets, rewrites absolute file paths, and migrates settings:
      - **Keeps local Embedding**: Imported legacy configurations keep **Local model** (`local`) as the Embedding source by default (unless the old config explicitly used an external Embedding API). Install the **Local embedding & rerank** component in **Preferences › Components**, or switch to an online Embedding API (which will rebuild the vector index).
      - **Switches to built-in Milvus Lite**: If the old config was set to SQLite keyword recall only, it is switched to the built-in Milvus Lite and listed under **Needs your attention** after import.
-3. **Configure models & start asking** (on the **Data Flow** page):
+4. **Set up with an AI assistant (recommended)**: the last welcome step shows a prompt to paste into Codex or Claude Code.
+   The assistant asks which model services you use and whether to connect Zotero / Notion / R2, then configures the whole data flow; the page shows the connection and each node's progress live.
+   - Copying the prompt turns on **Preferences › General › Allow AI assistants to connect**: the app writes its local address and a per-launch token to a connection file only your user can read, and deletes it when access is turned off or the app quits.
+   - The assistant can only use configuration, retrieval and Q&A endpoints and **cannot write any API key or token**: when a key is needed, the app shows a field and you type it into the app yourself; the assistant never sees it.
+   - You can also install the skill for Codex / Claude Code with one click in Preferences, then simply ask it to "set up Knowledge Arch".
+5. **Or configure models manually & start asking** (on the **Data Flow** page):
    - Open the **Model providers** node and add at least one **OpenAI-compatible** connection (or Anthropic for chat/research/graph).
    - Open **Model assignment** to select your **Chat model** (and optionally separate **Research** and **Graph** models).
    - Open **Embedding** (and optionally **Retrieval orchestration** for Rerank) to select an OpenAI-compatible connection and model—or install the local component in **Preferences › Components**.

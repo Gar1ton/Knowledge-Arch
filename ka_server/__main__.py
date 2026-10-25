@@ -17,6 +17,7 @@ import logging.handlers
 import os
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ka_server import APP_VERSION
@@ -140,6 +141,19 @@ def open_extras(paths: AppPaths, uv_path: str | None) -> ExtrasManager:
     return manager
 
 
+def refresh_agent_skill(connection_file: Path) -> None:
+    """已一键安装到 Codex / Claude Code 的 skill 随本次启动的路径与版本刷新；失败不影响启动。"""
+    from kacore.agent_skill import refresh_installed
+
+    try:
+        refreshed = refresh_installed(version=APP_VERSION, connection_file=connection_file)
+    except (OSError, FileNotFoundError) as exc:
+        logger.warning("could not refresh the installed AI assistant skill: %s", exc)
+        return
+    if refreshed:
+        logger.info("refreshed the installed AI assistant skill: %s", ", ".join(refreshed))
+
+
 def dev_origins(cli_values: Sequence[str]) -> list[str]:
     env_values = [v.strip() for v in os.environ.get(ENV_DEV_ORIGINS, "").split(",")]
     return [v for v in (*cli_values, *env_values) if v]
@@ -148,6 +162,7 @@ def dev_origins(cli_values: Sequence[str]) -> list[str]:
 async def serve(args: argparse.Namespace, token: str) -> int:
     from aiohttp import web
 
+    from ka_server.agent_access import AgentAccess, connection_file_for
     from kacore.app_initializer import AppInitializer
     from web.server import DEFAULT_ALLOWED_ORIGINS, build_app
 
@@ -173,6 +188,7 @@ async def serve(args: argparse.Namespace, token: str) -> int:
     stop = asyncio.Event()
     install_signal_handlers(stop)
     app_init = AppInitializer(settings, paths.data, extras=extras)
+    agent = AgentAccess(connection_file_for(args.data_dir, paths.data))
     runner: web.AppRunner | None = None
     try:
         await app_init.initialize_or_rollback(raise_after_recovery=False)
@@ -183,15 +199,21 @@ async def serve(args: argparse.Namespace, token: str) -> int:
             allowed_origins=(*DEFAULT_ALLOWED_ORIGINS, *dev_origins(args.dev_origin)),
             shutdown_callback=stop.set,
             log_handler=app_init.log_handler,
+            agent_access=agent,
+            app_version=APP_VERSION,
         )
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()
         site = web.TCPSite(runner, LISTEN_HOST, args.port)
         await site.start()
-        announce_ready(bound_port(site))
+        port = bound_port(site)
+        agent.start(port, bool(settings.get("prefs.general.agent_access")))
+        refresh_agent_skill(agent.connection_file)
+        announce_ready(port)
         reason = await wait_for_shutdown(stop, args.parent_pid)
         logger.info("shutdown: %s", reason)
     finally:
+        agent.remove()
         if runner is not None:
             await runner.cleanup()
         await app_init.teardown()

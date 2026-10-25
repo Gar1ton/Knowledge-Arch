@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Token-efficient, standard-library client for the local Knowledge Arch WebUI API."""
+"""Token-efficient, standard-library client for the local Knowledge Arch desktop app API.
+
+Knowledge Arch writes its address and a per-launch agent token to a connection file while
+"Allow AI assistants to connect" is on. This client reads that file on every call, so an app
+restart (which rotates the token) needs no re-registration. Run it with the Python that ships
+with Knowledge Arch; nothing has to be installed.
+"""
 
 from __future__ import annotations
 
 import argparse
-import getpass
 import hashlib
 import json
 import os
@@ -13,16 +18,22 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from http.cookiejar import CookieJar
 from pathlib import Path
-from tempfile import NamedTemporaryFile
-from typing import Any, Protocol
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
-from urllib.request import HTTPCookieProcessor, Request, build_opener
+from urllib.request import Request, urlopen
 
-CONNECTION_CONFIG_VERSION = 1
-CONNECTION_KEYRING_SERVICE = "knowledge-arch.codex.connection.v1"
+# `python -I` leaves the script directory off sys.path; the setup commands live next to this file.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from knowledge_arch_setup import SETUP_COMMANDS, add_setup_parsers, run_setup_command  # noqa: E402
+
+CONNECTION_VERSION = 1
+CONNECTION_FILE_NAME = "agent-connection.json"
+ENV_CONNECTION_FILE = "KNOWLEDGE_ARCH_CONNECTION_FILE"
+ENV_URL = "KNOWLEDGE_ARCH_URL"
+ENV_TOKEN = "KNOWLEDGE_ARCH_TOKEN"
 
 
 DEFAULT_TIMEOUT_SECONDS = 30
@@ -202,6 +213,21 @@ def _compact_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+def redact_home(text: str) -> str:
+    """Show the home directory as ~ so the user name never reaches the assistant's provider.
+
+    Matches whole path prefixes only (followed by a separator, quote, space or the end), including
+    the JSON-escaped Windows form.
+    """
+    home = str(Path.home())
+    if len(home) <= 1:
+        return text
+    variants = {home, home.replace("\\", "\\\\"), home.replace("\\", "/")}
+    for variant in sorted(variants, key=len, reverse=True):
+        text = re.sub(re.escape(variant) + r'(?=[/\\"\s]|$)', "~", text)
+    return text
+
+
 def parse_value(raw: str) -> Any:
     """Parse JSON literals while keeping ordinary unquoted strings ergonomic."""
     try:
@@ -219,290 +245,125 @@ class ConnectionNotConfigured(ClientError):
     exit_code = 6
 
 
-class CredentialStoreUnavailable(ClientError):
-    code = "credential_store_unavailable"
-    exit_code = 7
-
-
-class CredentialStore(Protocol):
-    """最小系统凭据库契约，便于隔离测试且不提供明文回退。"""
-
-    def get_password(self, service: str, username: str) -> str | None: ...
-
-    def set_password(self, service: str, username: str, password: str) -> None: ...
-
-    def delete_password(self, service: str, username: str) -> None: ...
-
-
-class KeyringCredentialStore:
-    """通过 keyring 使用操作系统凭据库；依赖缺失时明确失败。"""
-
-    def __init__(self) -> None:
-        try:
-            import keyring
-        except ImportError as exc:
-            raise CredentialStoreUnavailable(
-                "System credential storage requires keyring. Install it into this Python "
-                "environment with: python -m pip install -r requirements-codex-skill.txt"
-            ) from exc
-        try:
-            backend = keyring.get_keyring()
-            if getattr(backend, "priority", 0) <= 0:
-                raise RuntimeError("no usable keyring backend")
-        except Exception as exc:
-            raise CredentialStoreUnavailable(
-                "System credential storage is unavailable. Configure an operating-system "
-                "credential backend and rerun connection-setup."
-            ) from exc
-        self._keyring = keyring
-
-    def get_password(self, service: str, username: str) -> str | None:
-        try:
-            return self._keyring.get_password(service, username)
-        except Exception as exc:
-            raise CredentialStoreUnavailable(
-                "System credential storage could not read the registered password."
-            ) from exc
-
-    def set_password(self, service: str, username: str, password: str) -> None:
-        try:
-            self._keyring.set_password(service, username, password)
-        except Exception as exc:
-            raise CredentialStoreUnavailable(
-                "System credential storage could not save the password."
-            ) from exc
-
-    def delete_password(self, service: str, username: str) -> None:
-        try:
-            self._keyring.delete_password(service, username)
-        except Exception as exc:
-            raise CredentialStoreUnavailable(
-                "System credential storage could not remove a replaced password."
-            ) from exc
+_NOT_CONNECTED = (
+    "Knowledge Arch is not reachable: start the app and turn on Preferences > General > "
+    "Allow AI assistants to connect (the welcome page does this when you copy the setup prompt)."
+)
 
 
 @dataclass(frozen=True)
-class ConnectionProfile:
-    """单一日常实例的非秘密连接资料。"""
+class Connection:
+    """Address and per-launch agent token published by the running app."""
 
     base_url: str
-    username: str
-    credential_id: str | None
+    token: str
+    pid: int | None
 
 
 def _normalize_base_url(base_url: str) -> str:
     parsed = urlsplit(base_url.strip())
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise UsageError("WebUI URL must be an absolute http(s) URL")
+        raise UsageError("Knowledge Arch URL must be an absolute http(s) URL")
     if parsed.username or parsed.password:
-        raise UsageError("Do not embed credentials in the WebUI URL")
+        raise UsageError("Do not embed credentials in the Knowledge Arch URL")
     return base_url.strip().rstrip("/")
 
 
-def _credential_id(base_url: str, username: str) -> str:
-    identity = f"{base_url}\0{username}".encode()
-    return hashlib.sha256(identity).hexdigest()
-
-
-def connection_config_path() -> Path:
-    """返回用户级连接配置路径；该文件不含密码。"""
+def default_connection_file() -> Path:
+    """Mirror platformdirs.user_config_dir("Knowledge Arch") used by the app."""
     if os.name == "nt":
-        root = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
-        return root / "Codex" / "knowledge-arch" / "connection.json"
-    if sys.platform == "darwin":
-        return (
-            Path.home()
-            / "Library"
-            / "Application Support"
-            / "Codex"
-            / "knowledge-arch"
-            / "connection.json"
-        )
-    root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    return root / "codex" / "knowledge-arch" / "connection.json"
+        root = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support"
+    else:
+        root = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return root / "Knowledge Arch" / CONNECTION_FILE_NAME
 
 
-def load_connection_profile(path: Path | None = None) -> ConnectionProfile | None:
-    """加载非秘密单实例配置；损坏配置要求用户重新登记。"""
-    target = path or connection_config_path()
-    if not target.is_file():
-        return None
+def connection_file_path(path: Path | None = None) -> Path:
+    if path is not None:
+        return path
+    override = os.environ.get(ENV_CONNECTION_FILE)
+    return Path(override) if override else default_connection_file()
+
+
+def _pid_alive(pid: int | None) -> bool:
+    if not pid or os.name == "nt":
+        return True  # Windows: os.kill(pid, 0) would terminate; rely on the HTTP probe instead
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def load_connection(path: Path | None = None) -> Connection:
+    target = connection_file_path(path)
     try:
         raw = json.loads(target.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict) or raw.get("version") != CONNECTION_CONFIG_VERSION:
-            raise ValueError("unsupported connection profile")
-        base_url = _normalize_base_url(str(raw["base_url"]))
-        username = str(raw["username"]).strip()
-        credential_id = raw.get("credential_id")
-    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise ConnectionNotConfigured(
-            "Registered connection details are invalid. Run connection-setup again."
-        ) from exc
-    if not username or (credential_id is not None and not isinstance(credential_id, str)):
-        raise ConnectionNotConfigured(
-            "Registered connection details are invalid. Run connection-setup again."
-        )
-    return ConnectionProfile(
-        base_url=base_url,
-        username=username,
-        credential_id=credential_id or None,
-    )
-
-
-def _write_connection_profile(profile: ConnectionProfile, path: Path | None = None) -> None:
-    """原子写入无密码配置，并在 POSIX 上限制为当前用户可读写。"""
-    target = path or connection_config_path()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "version": CONNECTION_CONFIG_VERSION,
-        "base_url": profile.base_url,
-        "username": profile.username,
-        "credential_id": profile.credential_id,
-    }
-    with NamedTemporaryFile(
-        "w", encoding="utf-8", dir=target.parent, delete=False, prefix=".connection-"
-    ) as handle:
-        temp_path = Path(handle.name)
-        json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
-        handle.write("\n")
+    except FileNotFoundError:
+        raise ConnectionNotConfigured(_NOT_CONNECTED) from None
+    except (OSError, ValueError) as exc:
+        raise ConnectionNotConfigured(f"Cannot read the connection file: {exc}") from None
+    if not isinstance(raw, dict) or raw.get("version") != CONNECTION_VERSION:
+        raise ConnectionNotConfigured("Unsupported connection file; update Knowledge Arch.")
     try:
-        os.replace(temp_path, target)
-        if os.name != "nt":
-            os.chmod(target, 0o600)
-    except OSError:
-        temp_path.unlink(missing_ok=True)
-        raise
-
-
-def _default_credential_store() -> CredentialStore:
-    return KeyringCredentialStore()
+        connection = Connection(
+            base_url=_normalize_base_url(str(raw["url"])),
+            token=str(raw["token"]),
+            pid=int(raw["pid"]) if raw.get("pid") else None,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConnectionNotConfigured("The connection file is incomplete.") from exc
+    if not connection.token:
+        raise ConnectionNotConfigured("The connection file has no token.")
+    if not _pid_alive(connection.pid):
+        raise ConnectionNotConfigured(_NOT_CONNECTED)
+    return connection
 
 
 def connection_status(path: Path | None = None) -> dict[str, str]:
-    """仅报告连接来源状态，不输出地址、用户名、密码或凭据标识。"""
-    env_url = os.environ.get("KNOWLEDGE_ARCH_URL")
-    env_username = os.environ.get("KNOWLEDGE_ARCH_USERNAME")
-    if env_url or env_username:
-        if env_url and env_username:
+    """Report where the connection comes from, never the address or token."""
+    if os.environ.get(ENV_URL) or os.environ.get(ENV_TOKEN):
+        if os.environ.get(ENV_URL) and os.environ.get(ENV_TOKEN):
             return {"status": "environment_override"}
         return {"status": "unconfigured", "reason": "temporary_connection_incomplete"}
-    return {"status": "configured" if load_connection_profile(path) else "unconfigured"}
-
-
-def resolve_connection_client(
-    *,
-    path: Path | None = None,
-    credential_store: CredentialStore | None = None,
-) -> tuple[KnowledgeArchClient, str]:
-    """解析临时覆盖或已登记实例，绝不将已登记密码发送给临时目标。"""
-    env_url = os.environ.get("KNOWLEDGE_ARCH_URL")
-    env_username = os.environ.get("KNOWLEDGE_ARCH_USERNAME")
-    env_password = os.environ.get("KR_WEB_PASSWORD")
-    if env_url or env_username:
-        if not env_url or not env_username:
-            raise UsageError(
-                "Temporary connection requires both KNOWLEDGE_ARCH_URL and "
-                "KNOWLEDGE_ARCH_USERNAME."
-            )
-        return KnowledgeArchClient(env_url, env_username, env_password), "environment_override"
-
-    profile = load_connection_profile(path)
-    if profile is None:
-        raise ConnectionNotConfigured(
-            "No Knowledge Arch instance is registered. Run connection-setup first."
-        )
-    if env_password is not None:
-        return KnowledgeArchClient(profile.base_url, profile.username, env_password), "configured"
-    password = None
-    if profile.credential_id:
-        store = credential_store or _default_credential_store()
-        password = store.get_password(CONNECTION_KEYRING_SERVICE, profile.credential_id)
-    return KnowledgeArchClient(profile.base_url, profile.username, password), "configured"
-
-
-def connection_setup(
-    *,
-    path: Path | None = None,
-    credential_store: CredentialStore | None = None,
-    input_func: Callable[[str], str] = input,
-    password_func: Callable[[str], str] = getpass.getpass,
-) -> dict[str, object]:
-    """交互验证后持久化单一实例；失败时不留下新配置或新密码。"""
-    target = path or connection_config_path()
-    previous = load_connection_profile(target)
-    if previous is not None:
-        replace = input_func(
-            "A connection is already registered. Replace it? [y/N]: "
-        ).strip().lower()
-        if replace not in {"y", "yes"}:
-            raise UsageError("Connection setup cancelled; existing registration was kept.")
-    base_url = _normalize_base_url(input_func("Knowledge Arch WebUI URL: "))
-    username = input_func("Knowledge Arch username: ").strip()
-    if not username:
-        raise UsageError("Knowledge Arch username must not be empty")
-    password = password_func(
-        "Knowledge Arch password (leave blank only when authentication is disabled): "
-    )
-    client = KnowledgeArchClient(base_url, username, password or None)
-    verification = doctor(client)
-
-    credential_id = _credential_id(base_url, username) if password else None
-    store = credential_store
-    stored_new_credential = False
     try:
-        if credential_id:
-            store = store or _default_credential_store()
-            store.set_password(CONNECTION_KEYRING_SERVICE, credential_id, password)
-            stored_new_credential = True
-        _write_connection_profile(
-            ConnectionProfile(base_url=base_url, username=username, credential_id=credential_id),
-            target,
-        )
-    except Exception:
-        if stored_new_credential and store is not None and credential_id:
-            try:
-                store.delete_password(CONNECTION_KEYRING_SERVICE, credential_id)
-            except CredentialStoreUnavailable:
-                pass
-        raise
+        load_connection(path)
+    except ConnectionNotConfigured as exc:
+        return {"status": "not_running", "message": str(exc)}
+    return {"status": "connected"}
 
-    if previous and previous.credential_id and previous.credential_id != credential_id:
-        store = store or _default_credential_store()
-        store.delete_password(CONNECTION_KEYRING_SERVICE, previous.credential_id)
-    return {
-        "status": "configured",
-        "auth_required": bool(verification["auth_required"]),
-        "credential_stored": bool(credential_id),
-    }
+
+def resolve_connection_client(path: Path | None = None) -> tuple[KnowledgeArchClient, str]:
+    """Environment override (development) first, then the app's connection file."""
+    env_url = os.environ.get(ENV_URL)
+    env_token = os.environ.get(ENV_TOKEN)
+    if env_url or env_token:
+        if not env_url or not env_token:
+            raise UsageError(f"A temporary connection needs both {ENV_URL} and {ENV_TOKEN}.")
+        return KnowledgeArchClient(env_url, env_token), "environment_override"
+    connection = load_connection(path)
+    return KnowledgeArchClient(connection.base_url, connection.token), "connected"
 
 
 class KnowledgeArchClient:
-    """Cookie-aware synchronous client; one short-lived instance per CLI invocation."""
+    """Synchronous bearer-token client; one short-lived instance per CLI invocation."""
 
-    def __init__(
-        self,
-        base_url: str,
-        username: str = "",
-        password: str | None = None,
-        timeout: int = DEFAULT_TIMEOUT_SECONDS,
-    ) -> None:
+    def __init__(self, base_url: str, token: str, timeout: int = DEFAULT_TIMEOUT_SECONDS) -> None:
         self.base_url = _normalize_base_url(base_url)
-        self.username = username
-        self._password = password
+        self._token = token
         self.timeout = timeout
-        self._opener = build_opener(HTTPCookieProcessor(CookieJar()))
-        self._auth_state: dict[str, Any] | None = None
 
     @classmethod
-    def from_env(cls) -> KnowledgeArchClient:
-        """兼容入口：解析临时覆盖或用户已登记的单一实例。"""
-        client, _source = resolve_connection_client()
+    def from_env(cls, path: Path | None = None) -> KnowledgeArchClient:
+        client, _source = resolve_connection_client(path)
         return client
 
     def _protect_message(self, message: str) -> str:
-        if self._password:
-            return message.replace(self._password, "[redacted]")
-        return message
+        return message.replace(self._token, "[redacted]") if self._token else message
 
     def _request_bytes(
         self,
@@ -511,21 +372,18 @@ class KnowledgeArchClient:
         method: str = "GET",
         query_params: dict[str, object] | None = None,
         body: Any = None,
-        authenticate: bool = True,
     ) -> bytes:
-        if authenticate:
-            self.authenticate()
         url = f"{self.base_url}{path}"
         if query_params:
             url = f"{url}?{urlencode(query_params)}"
         data = None if body is None else _json_bytes(body)
-        headers = {"Accept": "application/json"}
+        headers = {"Accept": "application/json", "Authorization": f"Bearer {self._token}"}
         if data is not None:
             headers["Content-Type"] = "application/json"
         request = Request(url, data=data, headers=headers, method=method)
         try:
-            with self._opener.open(request, timeout=self.timeout) as response:
-                return response.read()
+            with urlopen(request, timeout=self.timeout) as response:  # noqa: S310
+                return bytes(response.read())
         except HTTPError as exc:
             payload = exc.read().decode("utf-8", errors="replace")
             structured: dict[str, Any] | None = None
@@ -539,7 +397,8 @@ class KnowledgeArchClient:
             message = self._protect_message(str(detail))
             if exc.code == 401:
                 raise AuthenticationError(
-                    f"Knowledge Arch authentication failed: {message}"
+                    "Knowledge Arch rejected the token. It changes whenever the app restarts or "
+                    "AI assistant access is turned off; check that access is on and rerun."
                 ) from None
             summary = f"Knowledge Arch API returned HTTP {exc.code}: {message}"
             if structured is not None:
@@ -558,15 +417,8 @@ class KnowledgeArchClient:
         method: str = "GET",
         query_params: dict[str, object] | None = None,
         body: Any = None,
-        authenticate: bool = True,
     ) -> Any:
-        raw = self._request_bytes(
-            path,
-            method=method,
-            query_params=query_params,
-            body=body,
-            authenticate=authenticate,
-        )
+        raw = self._request_bytes(path, method=method, query_params=query_params, body=body)
         try:
             return json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -578,30 +430,6 @@ class KnowledgeArchClient:
             return raw.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise ApiError(f"Knowledge Arch returned non-UTF-8 text for {path}") from exc
-
-    def authenticate(self) -> dict[str, Any]:
-        if self._auth_state is not None:
-            return self._auth_state
-        probe = self.request_json("/api/auth", authenticate=False)
-        if not isinstance(probe, dict):
-            raise ApiError("Knowledge Arch auth probe returned an unexpected payload")
-        if not probe.get("auth_required") or probe.get("logged_in"):
-            self._auth_state = probe
-            return probe
-        if not self._password:
-            raise AuthenticationError(
-                "WebUI authentication is enabled; set KR_WEB_PASSWORD in the environment"
-            )
-        result = self.request_json(
-            "/api/login",
-            method="POST",
-            body={"username": self.username, "password": self._password},
-            authenticate=False,
-        )
-        if not isinstance(result, dict) or not result.get("ok"):
-            raise AuthenticationError("Knowledge Arch login did not establish a session")
-        self._auth_state = {"auth_required": True, "logged_in": True}
-        return self._auth_state
 
 
 def _expect_list(value: Any, endpoint: str) -> list[Any]:
@@ -617,7 +445,7 @@ def _expect_dict(value: Any, endpoint: str) -> dict[str, Any]:
 
 
 def doctor(client: KnowledgeArchClient) -> dict[str, Any]:
-    auth = client.authenticate()
+    health = _expect_dict(client.request_json("/api/health"), "/api/health")
     collections = _expect_list(client.request_json("/api/collections"), "/api/collections")
     kb_collections = _expect_list(
         client.request_json("/api/kb/collections"), "/api/kb/collections"
@@ -628,7 +456,7 @@ def doctor(client: KnowledgeArchClient) -> dict[str, Any]:
     return {
         "status": "ok",
         "url": client.base_url,
-        "auth_required": bool(auth.get("auth_required")),
+        "backend_status": health.get("status"),
         "local_collection_count": len(collections),
         "kb_collection_count": len(kb_collections),
         "config_sections": sorted(config),
@@ -1393,7 +1221,7 @@ def restart(client: KnowledgeArchClient, *, apply: bool) -> dict[str, Any]:
             "status": "preview",
             "mutation_performed": False,
             "requires_explicit_confirmation": True,
-            "effect": "WebUI connection will briefly drop while the plugin runtime restarts",
+            "effect": "Knowledge Arch briefly stops answering while the service restarts",
         }
     result = client.request_json("/api/plugin/restart", method="POST", body={})
     return {
@@ -1406,14 +1234,17 @@ def restart(client: KnowledgeArchClient, *, apply: bool) -> dict[str, Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--connection-file",
+        type=Path,
+        help=f"connection file written by the app (default: {default_connection_file()})",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser(
-        "connection-status", help="Show whether a safe local connection is available"
+        "connection-status", help="Show whether the running app accepts AI assistants"
     )
-    subparsers.add_parser(
-        "connection-setup", help="Interactively register one Knowledge Arch instance"
-    )
-    subparsers.add_parser("doctor", help="Probe authentication and core read endpoints")
+    subparsers.add_parser("doctor", help="Probe the connection and core read endpoints")
+    add_setup_parsers(subparsers)
 
     catalog_parser = subparsers.add_parser(
         "catalog", help="Find collections and documents by metadata"
@@ -1526,7 +1357,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stop observing after this many seconds; the rebuild itself keeps running",
     )
 
-    restart_parser = subparsers.add_parser("restart", help="Preview or apply a plugin restart")
+    restart_parser = subparsers.add_parser("restart", help="Preview or apply a service restart")
     restart_parser.add_argument("--apply", action="store_true")
     return parser
 
@@ -1535,14 +1366,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "connection-status":
-            result = connection_status()
-        elif args.command == "connection-setup":
-            result = connection_setup()
+            result = connection_status(args.connection_file)
         elif args.command == "config-options":
             result = config_options()
         else:
-            client = KnowledgeArchClient.from_env()
-            if args.command == "doctor":
+            client = KnowledgeArchClient.from_env(args.connection_file)
+            if args.command in SETUP_COMMANDS:
+                try:
+                    result = run_setup_command(client, args)
+                except ValueError as exc:
+                    raise UsageError(str(exc)) from None
+            elif args.command == "doctor":
                 result = doctor(client)
             elif args.command == "catalog":
                 result = catalog(client, args.query, args.limit)
@@ -1616,11 +1450,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result = restart(client, apply=args.apply)
             else:  # pragma: no cover - argparse guarantees a known command
                 raise UsageError(f"Unknown command: {args.command}")
-        print(_compact_json(result))
+        print(redact_home(_compact_json(result)))
         return 0
     except ClientError as exc:
         print(
-            _compact_json({"status": "error", "error": exc.code, "message": str(exc)}),
+            redact_home(_compact_json({"status": "error", "error": exc.code, "message": str(exc)})),
             file=sys.stderr,
         )
         return exc.exit_code

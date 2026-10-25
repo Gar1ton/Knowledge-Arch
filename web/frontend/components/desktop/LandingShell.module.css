@@ -490,3 +490,121 @@
     animation: none;
   }
 }
+
+/* ── 欢迎页：语言选择 / AI 助手配置 ───────────────────────────── */
+
+.langOptions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: var(--radius-md);
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.tab {
+  flex: 1;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: calc(var(--radius-md) - 2px);
+  background: transparent;
+  color: rgba(200, 196, 190, 0.62);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.tab:hover {
+  color: #e8e4da;
+}
+
+.tabActive {
+  background: rgba(255, 255, 255, 0.09);
+  color: #f0ede6;
+}
+
+.prompt {
+  max-height: 150px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-md);
+  background: rgba(0, 0, 0, 0.36);
+  color: rgba(232, 228, 218, 0.82);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.statusLine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(200, 196, 190, 0.72);
+  font-size: 12px;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: rgba(200, 196, 190, 0.32);
+}
+
+.dotWaiting {
+  background: rgba(230, 200, 120, 0.85);
+  animation: statusPulse 1.6s ease-in-out infinite;
+}
+
+.dotOn {
+  background: rgba(140, 210, 160, 0.95);
+}
+
+.checklist {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.checkItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  color: rgba(232, 228, 218, 0.78);
+  font-size: 12px;
+}
+
+.checkState {
+  flex: none;
+  color: rgba(200, 196, 190, 0.45);
+  font-size: 11px;
+}
+
+.checkReady {
+  color: rgba(140, 210, 160, 0.95);
+}
+
+@media (max-width: 520px) {
+  .checklist,
+  .langOptions {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,4 +1,4 @@
-"""Codex 项目级 Knowledge Arch Skill 客户端契约测试。"""
+"""Knowledge Arch skill 客户端契约测试（连接文件 + Bearer token）。"""
 
 from __future__ import annotations
 
@@ -45,31 +45,12 @@ CLIENT = _load_client_module()
 SKILL_PATH = ROOT / ".agents" / "skills" / "operate-knowledge-arch" / "SKILL.md"
 
 
-class _MemoryCredentialStore:
-    """测试用系统凭据库桩：密码永不写入连接配置文件。"""
-
-    def __init__(self) -> None:
-        self.passwords: dict[tuple[str, str], str] = {}
-        self.deleted: list[tuple[str, str]] = []
-        self.fail_on_set = False
-
-    def get_password(self, service: str, username: str) -> str | None:
-        return self.passwords.get((service, username))
-
-    def set_password(self, service: str, username: str, password: str) -> None:
-        if self.fail_on_set:
-            raise CLIENT.CredentialStoreUnavailable("credential backend unavailable")
-        self.passwords[(service, username)] = password
-
-    def delete_password(self, service: str, username: str) -> None:
-        self.deleted.append((service, username))
-        self.passwords.pop((service, username), None)
+TOKEN = "agent-test-token"
 
 
 class _State:
-    def __init__(self, *, auth_required: bool = False) -> None:
-        self.auth_required = auth_required
-        self.login_bodies: list[dict[str, Any]] = []
+    def __init__(self) -> None:
+        self.auth_headers: list[str] = []
         self.config_updates: list[dict[str, Any]] = []
         self.restart_count = 0
         self.search_queries: list[dict[str, list[str]]] = []
@@ -94,13 +75,11 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, _format: str, *args: object) -> None:
         del args
 
-    def _json(self, status: int, value: Any, *, cookie: str | None = None) -> None:
+    def _json(self, status: int, value: Any) -> None:
         payload = json.dumps(value, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
-        if cookie:
-            self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(payload)
 
@@ -110,29 +89,21 @@ class _Handler(BaseHTTPRequestHandler):
         assert isinstance(payload, dict)
         return payload
 
-    def _logged_in(self) -> bool:
-        return "kr_session=test-session" in self.headers.get("Cookie", "")
-
     def _reject_if_unauthenticated(self) -> bool:
-        if self.state.auth_required and not self._logged_in():
-            self._json(401, {"error": "authentication required"})
+        header = self.headers.get("Authorization", "")
+        self.state.auth_headers.append(header)
+        if header != f"Bearer {TOKEN}":
+            self._json(401, {"error": "unauthorized"})
             return True
         return False
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlsplit(self.path)
-        if parsed.path == "/api/auth":
-            self._json(
-                200,
-                {
-                    "auth_required": self.state.auth_required,
-                    "logged_in": not self.state.auth_required or self._logged_in(),
-                },
-            )
-            return
         if self._reject_if_unauthenticated():
             return
-        if parsed.path == "/api/collections":
+        if parsed.path == "/api/health":
+            self._json(200, {"status": "ok"})
+        elif parsed.path == "/api/collections":
             self._json(
                 200,
                 [
@@ -289,14 +260,6 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlsplit(self.path)
-        if parsed.path == "/api/login":
-            body = self._body()
-            self.state.login_bodies.append(body)
-            if body == {"username": "admin", "password": "correct-password"}:
-                self._json(200, {"ok": True}, cookie="kr_session=test-session; Path=/; HttpOnly")
-            else:
-                self._json(401, {"error": "invalid credentials"})
-            return
         if self._reject_if_unauthenticated():
             return
         if parsed.path == "/api/ask/evidence":
@@ -403,8 +366,8 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 @contextmanager
-def _mock_api(*, auth_required: bool = False) -> Iterator[tuple[_State, str]]:
-    state = _State(auth_required=auth_required)
+def _mock_api() -> Iterator[tuple[_State, str]]:
+    state = _State()
 
     class Handler(_Handler):
         pass
@@ -424,7 +387,7 @@ def _mock_api(*, auth_required: bool = False) -> Iterator[tuple[_State, str]]:
 
 def test_doctor_and_catalog_use_read_only_endpoints() -> None:
     with _mock_api() as (state, url):
-        client = CLIENT.KnowledgeArchClient(url)
+        client = CLIENT.KnowledgeArchClient(url, TOKEN)
         result = CLIENT.doctor(client)
         catalog = CLIENT.catalog(client, "Ada Alpha", 20)
     assert result["status"] == "ok"
@@ -434,201 +397,91 @@ def test_doctor_and_catalog_use_read_only_endpoints() -> None:
     assert state.config_updates == []
 
 
-def test_authentication_uses_environment_only_password(monkeypatch: pytest.MonkeyPatch) -> None:
-    with _mock_api(auth_required=True) as (state, url):
-        monkeypatch.setenv("KNOWLEDGE_ARCH_URL", url)
-        monkeypatch.setenv("KNOWLEDGE_ARCH_USERNAME", "admin")
-        monkeypatch.setenv("KR_WEB_PASSWORD", "correct-password")
-        result = CLIENT.doctor(CLIENT.KnowledgeArchClient.from_env())
-    assert result["auth_required"] is True
-    assert state.login_bodies == [{"username": "admin", "password": "correct-password"}]
+def _write_connection(path: Path, url: str, *, pid: int | None = None, **extra: Any) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"version": 1, "url": url, "token": TOKEN, "pid": pid or os.getpid(), **extra}
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def no_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    for variable in (
+        "KNOWLEDGE_ARCH_URL", "KNOWLEDGE_ARCH_TOKEN", "KNOWLEDGE_ARCH_CONNECTION_FILE",
+    ):
+        monkeypatch.delenv(variable, raising=False)
+
+
+def test_bearer_token_is_sent_and_never_echoed() -> None:
+    with _mock_api() as (state, url):
+        result = CLIENT.doctor(CLIENT.KnowledgeArchClient(url, TOKEN))
+        with pytest.raises(CLIENT.AuthenticationError, match="token") as err:
+            CLIENT.doctor(CLIENT.KnowledgeArchClient(url, "stale-token"))
+    assert result["backend_status"] == "ok"
+    assert state.auth_headers[0] == f"Bearer {TOKEN}"
+    assert TOKEN not in json.dumps(result) and "stale-token" not in str(err.value)
     assert "password" not in CLIENT.build_parser().format_help().lower()
-    assert "correct-password" not in json.dumps(result)
 
 
-def test_missing_password_and_connection_failure_are_actionable() -> None:
-    with _mock_api(auth_required=True) as (_state, url):
-        with pytest.raises(CLIENT.AuthenticationError, match="KR_WEB_PASSWORD"):
-            CLIENT.doctor(CLIENT.KnowledgeArchClient(url))
-
+def test_connection_failure_is_actionable() -> None:
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     sock.close()
     with pytest.raises(CLIENT.ConnectionFailure, match="Cannot reach Knowledge Arch"):
-        CLIENT.doctor(CLIENT.KnowledgeArchClient(f"http://127.0.0.1:{port}"))
+        CLIENT.doctor(CLIENT.KnowledgeArchClient(f"http://127.0.0.1:{port}", TOKEN))
 
 
-def test_connection_status_requires_explicit_registration(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """首次使用不猜测本机端口或用户名，必须先登记。"""
-    for variable in (
-        "KNOWLEDGE_ARCH_URL",
-        "KNOWLEDGE_ARCH_USERNAME",
-        "KR_WEB_PASSWORD",
-    ):
-        monkeypatch.delenv(variable, raising=False)
-    config_path = tmp_path / "connection.json"
+def test_connection_file_is_read_on_every_call(tmp_path: Path, no_env_override: None) -> None:
+    path = tmp_path / "agent-connection.json"
+    assert CLIENT.connection_status(path)["status"] == "not_running"
+    with pytest.raises(CLIENT.ConnectionNotConfigured, match="Allow AI assistants to connect"):
+        CLIENT.resolve_connection_client(path)
 
-    assert CLIENT.connection_status(config_path) == {"status": "unconfigured"}
-    with pytest.raises(CLIENT.ConnectionNotConfigured, match="connection-setup"):
-        CLIENT.resolve_connection_client(path=config_path)
+    with _mock_api() as (_state, url):
+        _write_connection(path, url)
+        client, source = CLIENT.resolve_connection_client(path)
+        assert source == "connected" and CLIENT.doctor(client)["status"] == "ok"
+        status = CLIENT.connection_status(path)
+    assert status == {"status": "connected"}  # 不输出地址与 token
 
 
-def test_connection_setup_stores_only_non_secret_profile_and_resolves(
-    tmp_path: Path,
-) -> None:
-    """成功登记先验证，密码只进入凭据库，后续可被安全解析。"""
-    config_path = tmp_path / "connection.json"
-    store = _MemoryCredentialStore()
-    with _mock_api(auth_required=True) as (state, url):
-        answers = iter([url, "admin"])
-        result = CLIENT.connection_setup(
-            path=config_path,
-            credential_store=store,
-            input_func=lambda _prompt: next(answers),
-            password_func=lambda _prompt: "correct-password",
-        )
-        client, source = CLIENT.resolve_connection_client(
-            path=config_path, credential_store=store
-        )
-        doctor = CLIENT.doctor(client)
-
-    saved = json.loads(config_path.read_text(encoding="utf-8"))
-    saved_text = json.dumps(saved)
-    assert result == {
-        "status": "configured",
-        "auth_required": True,
-        "credential_stored": True,
-    }
-    assert CLIENT.connection_status(config_path) == {"status": "configured"}
-    assert source == "configured"
-    assert doctor["status"] == "ok"
-    assert "password" not in saved
-    assert "correct-password" not in saved_text
-    assert len(store.passwords) == 1
-    assert state.login_bodies == [
-        {"username": "admin", "password": "correct-password"},
-        {"username": "admin", "password": "correct-password"},
-    ]
+def test_stale_or_unsupported_connection_files(tmp_path: Path, no_env_override: None) -> None:
+    path = tmp_path / "agent-connection.json"
+    if os.name != "nt":
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        _write_connection(path, "http://127.0.0.1:1", pid=dead.pid)
+        assert CLIENT.connection_status(path)["status"] == "not_running"
+    _write_connection(path, "http://127.0.0.1:1", version=99)
+    with pytest.raises(CLIENT.ConnectionNotConfigured, match="Unsupported"):
+        CLIENT.load_connection(path)
+    path.write_text("{broken", encoding="utf-8")
+    with pytest.raises(CLIENT.ConnectionNotConfigured, match="Cannot read"):
+        CLIENT.load_connection(path)
 
 
-def test_connection_setup_rolls_back_on_verification_or_profile_write_failure(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """验证或原子配置写入失败时均不残留新配置或密码。"""
-    config_path = tmp_path / "connection.json"
-    store = _MemoryCredentialStore()
-    with _mock_api(auth_required=True) as (_state, url):
-        answers = iter([url, "admin"])
-        with pytest.raises(CLIENT.AuthenticationError):
-            CLIENT.connection_setup(
-                path=config_path,
-                credential_store=store,
-                input_func=lambda _prompt: next(answers),
-                password_func=lambda _prompt: "wrong-password",
-            )
-    assert not config_path.exists()
-    assert store.passwords == {}
-
-    with _mock_api(auth_required=True) as (_state, url):
-        monkeypatch.setattr(
-            CLIENT,
-            "_write_connection_profile",
-            lambda _profile, _path=None: (_ for _ in ()).throw(OSError("disk unavailable")),
-        )
-        answers = iter([url, "admin"])
-        with pytest.raises(OSError, match="disk unavailable"):
-            CLIENT.connection_setup(
-                path=config_path,
-                credential_store=store,
-                input_func=lambda _prompt: next(answers),
-                password_func=lambda _prompt: "correct-password",
-            )
-    assert not config_path.exists()
-    assert store.passwords == {}
-    assert store.deleted
+def test_environment_override_needs_url_and_token(monkeypatch: pytest.MonkeyPatch,
+                                                  tmp_path: Path) -> None:
+    monkeypatch.delenv("KNOWLEDGE_ARCH_TOKEN", raising=False)
+    monkeypatch.setenv("KNOWLEDGE_ARCH_URL", "http://127.0.0.1:1")
+    assert CLIENT.connection_status(tmp_path / "x.json")["status"] == "unconfigured"
+    with pytest.raises(CLIENT.UsageError, match="KNOWLEDGE_ARCH_TOKEN"):
+        CLIENT.resolve_connection_client(tmp_path / "x.json")
+    monkeypatch.setenv("KNOWLEDGE_ARCH_TOKEN", TOKEN)
+    client, source = CLIENT.resolve_connection_client(tmp_path / "x.json")
+    assert source == "environment_override" and client.base_url == "http://127.0.0.1:1"
 
 
-def test_connection_setup_replaces_old_credential_only_after_new_registration(
-    tmp_path: Path,
-) -> None:
-    """替换成功后才删除旧凭据，避免失败时丢失可用连接。"""
-    config_path = tmp_path / "connection.json"
-    store = _MemoryCredentialStore()
-    old_id = CLIENT._credential_id("http://old-instance.invalid", "old-user")
-    store.set_password(CLIENT.CONNECTION_KEYRING_SERVICE, old_id, "old-password")
-    CLIENT._write_connection_profile(
-        CLIENT.ConnectionProfile(
-            base_url="http://old-instance.invalid",
-            username="old-user",
-            credential_id=old_id,
-        ),
-        config_path,
-    )
-    with _mock_api(auth_required=True) as (_state, url):
-        answers = iter(["y", url, "admin"])
-        CLIENT.connection_setup(
-            path=config_path,
-            credential_store=store,
-            input_func=lambda _prompt: next(answers),
-            password_func=lambda _prompt: "correct-password",
-        )
+def test_default_connection_file_matches_the_app(monkeypatch: pytest.MonkeyPatch,
+                                                 tmp_path: Path, no_env_override: None) -> None:
+    from ka_server.agent_access import connection_file_for
 
-    assert (CLIENT.CONNECTION_KEYRING_SERVICE, old_id) in store.deleted
-    assert old_id not in {account for _service, account in store.passwords}
-    assert CLIENT.load_connection_profile(config_path).username == "admin"
-
-
-def test_temporary_connection_override_never_reuses_registered_password(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """开发者临时 URL/用户名覆盖不读取、发送或写回日常实例密码。"""
-    config_path = tmp_path / "connection.json"
-    store = _MemoryCredentialStore()
-    credential_id = CLIENT._credential_id("http://registered.invalid", "registered")
-    store.set_password(CLIENT.CONNECTION_KEYRING_SERVICE, credential_id, "stored-secret")
-    CLIENT._write_connection_profile(
-        CLIENT.ConnectionProfile(
-            base_url="http://registered.invalid",
-            username="registered",
-            credential_id=credential_id,
-        ),
-        config_path,
-    )
-    monkeypatch.setenv("KNOWLEDGE_ARCH_URL", "http://temporary.invalid")
-    monkeypatch.setenv("KNOWLEDGE_ARCH_USERNAME", "developer")
-    monkeypatch.delenv("KR_WEB_PASSWORD", raising=False)
-
-    client, source = CLIENT.resolve_connection_client(
-        path=config_path, credential_store=store
-    )
-
-    assert CLIENT.connection_status(config_path) == {"status": "environment_override"}
-    assert source == "environment_override"
-    assert client.username == "developer"
-    assert client._password is None
-    assert CLIENT.load_connection_profile(config_path).username == "registered"
-
-
-def test_credential_store_failure_is_actionable_and_never_writes_a_profile(
-    tmp_path: Path,
-) -> None:
-    """无法使用系统凭据库时拒绝明文降级，并保留未登记状态。"""
-    config_path = tmp_path / "connection.json"
-    store = _MemoryCredentialStore()
-    store.fail_on_set = True
-    with _mock_api(auth_required=True) as (_state, url):
-        answers = iter([url, "admin"])
-        with pytest.raises(CLIENT.CredentialStoreUnavailable):
-            CLIENT.connection_setup(
-                path=config_path,
-                credential_store=store,
-                input_func=lambda _prompt: next(answers),
-                password_func=lambda _prompt: "correct-password",
-            )
-    assert not config_path.exists()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    assert CLIENT.default_connection_file() == connection_file_for(None, tmp_path)
+    monkeypatch.setenv("KNOWLEDGE_ARCH_CONNECTION_FILE", str(tmp_path / "custom.json"))
+    assert CLIENT.connection_file_path() == tmp_path / "custom.json"
 
 
 def test_skill_requires_explicit_connection_and_external_authorization() -> None:
@@ -636,10 +489,9 @@ def test_skill_requires_explicit_connection_and_external_authorization() -> None
     source = SKILL_PATH.read_text(encoding="utf-8")
     assert "9821" not in source
     assert "connection-status" in source
-    assert "connection-setup" in source
+    assert "connection-setup" not in source and "password" not in source.lower()
     assert "unless the user explicitly grants permission" in source
-    assert "windows sandbox: helper_unknown_error: apply deny-read ACLs" in source
-    assert "Do not rerun `doctor`" in source
+    assert "request-secret" in source and "references/setup.md" in source
     assert "notion-save-qa" in source
     assert "qa_database_id" in source
     assert "Never create a loose Notion page" in source
@@ -668,7 +520,7 @@ def test_notion_save_qa_uses_configured_database_and_preserves_partial_results(
     )
 
     with _mock_api() as (state, url):
-        result = CLIENT.notion_save_qa(CLIENT.KnowledgeArchClient(url), str(payload_path))
+        result = CLIENT.notion_save_qa(CLIENT.KnowledgeArchClient(url, TOKEN), str(payload_path))
 
     assert result["status"] == "partial"
     assert result["target_database_id"] == "qa-configured"
@@ -714,7 +566,7 @@ def test_notion_save_qa_requires_configured_qa_database(tmp_path: Path) -> None:
 def test_search_fuses_queries_deduplicates_content_and_caps_text() -> None:
     with _mock_api() as (state, url):
         result = CLIENT.search(
-            CLIENT.KnowledgeArchClient(url),
+            CLIENT.KnowledgeArchClient(url, TOKEN),
             ["alpha concept", "beta mechanism"],
             [""],
             top_k=8,
@@ -737,7 +589,7 @@ def test_search_rejects_unbounded_query_fanout() -> None:
     with _mock_api() as (_state, url):
         with pytest.raises(CLIENT.UsageError, match="At most 4 queries"):
             CLIENT.search(
-                CLIENT.KnowledgeArchClient(url),
+                CLIENT.KnowledgeArchClient(url, TOKEN),
                 ["1", "2", "3", "4", "5"],
                 [""],
                 top_k=8,
@@ -750,7 +602,7 @@ def test_search_rejects_unbounded_query_fanout() -> None:
 def test_ask_evidence_preserves_agent_reasoning_boundary() -> None:
     with _mock_api() as (state, url):
         result = CLIENT.ask_evidence(
-            CLIENT.KnowledgeArchClient(url),
+            CLIENT.KnowledgeArchClient(url, TOKEN),
             "Compare Alpha and Beta",
             ["alpha mechanism", "beta mechanism"],
             "papers",
@@ -775,7 +627,7 @@ def test_ask_evidence_preserves_agent_reasoning_boundary() -> None:
 def test_read_document_pages_without_dumping_full_text() -> None:
     with _mock_api() as (_state, url):
         result = CLIENT.read_document(
-            CLIENT.KnowledgeArchClient(url), "d1", 10, 25, intent="anchored"
+            CLIENT.KnowledgeArchClient(url, TOKEN), "d1", 10, 25, intent="anchored"
         )
     assert result == {
         "doc_id": "d1",
@@ -793,7 +645,7 @@ def test_read_document_requires_explicit_intent() -> None:
     with _mock_api() as (_state, url):
         with pytest.raises(CLIENT.UsageError, match="read requires --intent"):
             CLIENT.read_document(
-                CLIENT.KnowledgeArchClient(url), "d1", 0, 10, intent=""
+                CLIENT.KnowledgeArchClient(url, TOKEN), "d1", 0, 10, intent=""
             )
 
 
@@ -809,7 +661,7 @@ def test_distribution_policy_snapshot_matches_config_truth_source() -> None:
 
 def test_config_preview_apply_whitelist_and_redaction() -> None:
     with _mock_api() as (state, url):
-        client = CLIENT.KnowledgeArchClient(url)
+        client = CLIENT.KnowledgeArchClient(url, TOKEN)
         preview = CLIENT.config_set(client, "embedding", "provider", "external", apply=False)
         assert state.config_updates == []
         assert preview["consequence"] == "rebuild"
@@ -832,7 +684,7 @@ def test_config_preview_apply_whitelist_and_redaction() -> None:
 
 def test_restart_has_a_separate_apply_gate() -> None:
     with _mock_api() as (state, url):
-        client = CLIENT.KnowledgeArchClient(url)
+        client = CLIENT.KnowledgeArchClient(url, TOKEN)
         preview = CLIENT.restart(client, apply=False)
         assert preview["requires_explicit_confirmation"] is True
         assert state.restart_count == 0
@@ -845,7 +697,7 @@ def test_index_status_is_read_only_and_reports_auto_rebuild() -> None:
     """先看状态再决定要不要重建：多数时候自动重建已经在排空队列。"""
     with _mock_api() as (state, url):
         state.pending_reindex_count = 4
-        client = CLIENT.KnowledgeArchClient(url)
+        client = CLIENT.KnowledgeArchClient(url, TOKEN)
         result = CLIENT.index_status(client)
     assert result["pending_reindex_count"] == 4
     assert result["auto_rebuild_enabled"] is True
@@ -858,7 +710,7 @@ def test_index_status_is_read_only_and_reports_auto_rebuild() -> None:
 def test_index_rebuild_has_a_separate_apply_gate() -> None:
     with _mock_api() as (state, url):
         state.pending_reindex_count = 2
-        client = CLIENT.KnowledgeArchClient(url)
+        client = CLIENT.KnowledgeArchClient(url, TOKEN)
         preview = CLIENT.index_rebuild(client, apply=False)
         assert preview["status"] == "preview"
         assert preview["requires_explicit_confirmation"] is True
@@ -879,7 +731,7 @@ def test_index_rebuild_wait_reports_terminal_status() -> None:
             {"job_id": "milvus-1", "status": "running", "progress_percent": 40},
             {"job_id": "milvus-1", "status": "partial_failure", "failed_docs": 1},
         ]
-        client = CLIENT.KnowledgeArchClient(url)
+        client = CLIENT.KnowledgeArchClient(url, TOKEN)
         result = CLIENT.index_rebuild(
             client, apply=True, wait=True, sleep=lambda _seconds: None
         )
@@ -892,7 +744,7 @@ def test_index_rebuild_wait_reports_terminal_status() -> None:
 def test_index_rebuild_wait_treats_vanished_job_as_success() -> None:
     """成功后 /active 返回 job: null（前端据此隐藏进度条）——不能被当成失败。"""
     with _mock_api() as (_state, url):
-        client = CLIENT.KnowledgeArchClient(url)
+        client = CLIENT.KnowledgeArchClient(url, TOKEN)
         result = CLIENT.index_rebuild(
             client, apply=True, wait=True, sleep=lambda _seconds: None
         )
@@ -905,7 +757,7 @@ def test_index_rebuild_wait_timeout_does_not_claim_cancellation() -> None:
     ticks = iter([0.0, 0.0, 100.0, 200.0])
     with _mock_api() as (state, url):
         state.active_jobs = [{"job_id": "milvus-1", "status": "running"}]
-        client = CLIENT.KnowledgeArchClient(url)
+        client = CLIENT.KnowledgeArchClient(url, TOKEN)
         result = CLIENT.index_rebuild(
             client,
             apply=True,
@@ -928,7 +780,7 @@ def test_config_options_advertises_the_rebuild_command() -> None:
 
 def test_codex_graph_build_is_previewed_and_uses_task_protocol() -> None:
     with _mock_api() as (state, url):
-        client = CLIENT.KnowledgeArchClient(url)
+        client = CLIENT.KnowledgeArchClient(url, TOKEN)
         preview = CLIENT.graph_codex_build(client, "papers", apply=False)
         assert preview["mutation_performed"] is False
         assert preview["embedding_provider_will_be_used"] is True
@@ -997,11 +849,11 @@ def test_fresh_process_cli_notion_save_qa(tmp_path: Path) -> None:
     with _mock_api() as (state, url):
         env = os.environ.copy()
         env["KNOWLEDGE_ARCH_URL"] = url
-        env["KNOWLEDGE_ARCH_USERNAME"] = "admin"
-        env.pop("KR_WEB_PASSWORD", None)
+        env["KNOWLEDGE_ARCH_TOKEN"] = TOKEN
         saved = subprocess.run(
             [
                 sys.executable,
+                "-I",  # 与应用生成的命令一致：隔离模式下也要能找到同目录的 setup 模块
                 str(CLIENT_PATH),
                 "notion-save-qa",
                 "--input-file",
@@ -1025,8 +877,7 @@ def test_fresh_process_cli_research_and_config_preview() -> None:
     with _mock_api() as (state, url):
         env = os.environ.copy()
         env["KNOWLEDGE_ARCH_URL"] = url
-        env["KNOWLEDGE_ARCH_USERNAME"] = "admin"
-        env.pop("KR_WEB_PASSWORD", None)
+        env["KNOWLEDGE_ARCH_TOKEN"] = TOKEN
         research = subprocess.run(
             [
                 sys.executable,
@@ -1075,7 +926,7 @@ def test_read_document_small_document_needs_no_confirmation() -> None:
     """低于阈值零摩擦：整篇读（--whole → max_chars=0）也直接返回正文。"""
     with _mock_api() as (_state, url):
         result = CLIENT.read_document(
-            CLIENT.KnowledgeArchClient(url), "d1", 0, 0, intent="full-text"
+            CLIENT.KnowledgeArchClient(url, TOKEN), "d1", 0, 0, intent="full-text"
         )
     assert result["full_text_used"] is True
     assert len(result["content"]) == 100
@@ -1087,7 +938,7 @@ def test_read_document_large_document_previews_before_returning_text() -> None:
     with _mock_api() as (state, url):
         state.doc_chars = 200_000
         result = CLIENT.read_document(
-            CLIENT.KnowledgeArchClient(url), "d1", 0, 0, intent="full-text"
+            CLIENT.KnowledgeArchClient(url, TOKEN), "d1", 0, 0, intent="full-text"
         )
     assert result["status"] == "preview"
     assert result["requires_explicit_confirmation"] is True
@@ -1103,7 +954,7 @@ def test_read_document_confirmed_returns_whole_document() -> None:
     with _mock_api() as (state, url):
         state.doc_chars = 200_000
         result = CLIENT.read_document(
-            CLIENT.KnowledgeArchClient(url),
+            CLIENT.KnowledgeArchClient(url, TOKEN),
             "d1",
             0,
             0,
@@ -1120,7 +971,7 @@ def test_read_document_paging_below_threshold_never_trips_the_gate() -> None:
     with _mock_api() as (state, url):
         state.doc_chars = 200_000
         result = CLIENT.read_document(
-            CLIENT.KnowledgeArchClient(url), "d1", 0, 12000, intent="anchored"
+            CLIENT.KnowledgeArchClient(url, TOKEN), "d1", 0, 12000, intent="anchored"
         )
     assert result["full_text_used"] is True
     assert len(result["content"]) == 12000
@@ -1130,5 +981,31 @@ def test_read_document_rejects_negative_max_chars() -> None:
     with _mock_api() as (_state, url):
         with pytest.raises(CLIENT.UsageError, match="zero or greater"):
             CLIENT.read_document(
-                CLIENT.KnowledgeArchClient(url), "d1", 0, -1, intent="anchored"
+                CLIENT.KnowledgeArchClient(url, TOKEN), "d1", 0, -1, intent="anchored"
             )
+
+
+def test_output_never_contains_the_home_directory(monkeypatch: pytest.MonkeyPatch,
+                                                  tmp_path: Path) -> None:
+    home = tmp_path / "home" / "alice"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    text = json.dumps({"dir": f"{home}/Zotero", "same": str(home), "other": f"{home}2/x"})
+    redacted = CLIENT.redact_home(text)
+    assert f"{home}/" not in redacted and f'"{home}"' not in redacted
+    assert '"~/Zotero"' in redacted and '"same": "~"' in redacted
+    assert f"{home}2/x" in redacted  # 只是前缀相同的其它目录不改
+
+
+def test_cli_output_is_redacted(tmp_path: Path) -> None:
+    with _mock_api() as (_state, url):
+        env = os.environ.copy()
+        env["KNOWLEDGE_ARCH_URL"] = url
+        env["KNOWLEDGE_ARCH_TOKEN"] = TOKEN
+        env["HOME"] = str(Path.home())
+        result = subprocess.run(
+            [sys.executable, "-I", str(CLIENT_PATH), "detect"],
+            check=False, capture_output=True, text=True, encoding="utf-8", env=env, timeout=20,
+        )
+    assert result.returncode == 0, result.stderr
+    assert str(Path.home()) not in result.stdout
+    assert "system" not in json.loads(result.stdout)

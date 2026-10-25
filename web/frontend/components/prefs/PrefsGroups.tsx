@@ -41,6 +41,7 @@ import {
   type ComponentStatus,
   type ComponentsStatus,
 } from "@/lib/settingsApi";
+import { AgentPrefsField } from "./AgentPrefsField";
 import { PrefsSchemaFields, useSettingsHome } from "./PrefsSchemaFields";
 
 // ─── 通用 ──────────────────────────────────────────────────────
@@ -95,6 +96,7 @@ export function GeneralGroup() {
           if (key === "prefs.general.language" && (value === "zh" || value === "en")) setLang(value as Lang);
         }}
       />
+      <AgentPrefsField />
       {inDesktopShell() ? (
         <UpdateField />
       ) : (

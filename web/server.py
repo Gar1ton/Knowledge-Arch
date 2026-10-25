@@ -4,6 +4,7 @@
 服务只监听 127.0.0.1，只接受桌面壳窗口的请求：
 - 鉴权：每次启动随机生成的 token，经 `Authorization: Bearer <token>` 携带（GET 下载类请求
   可退而用 `?access_token=`，因为浏览器导航无法附带请求头）。没有登录页与会话。
+  另有可选的 agent token（AI 助手用，见 web/agent_routes.py）：只能访问白名单接口、不能写机密。
 - CORS：只放行桌面壳窗口的 Origin（`tauri://localhost` 与 `http://tauri.localhost`），
   其余带 Origin 的请求一律 403；开发期经 build_app 的 allowed_origins 追加。
 界面静态文件由桌面壳从安装包加载，本服务不托管。
@@ -25,9 +26,17 @@ from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import web
 
+from web.agent_routes import (
+    after_setting_change,
+    authorize_agent,
+    guard_secret_fields,
+    guard_secret_setting,
+)
+
 if TYPE_CHECKING:
     from kacore.api import KnowledgeRepositoryApi
     from kacore.log_capture import MemoryLogHandler
+    from web.agent_routes import AgentAccessLike
 
 # ── 常量 ────────────────────────────────────────────────────────
 
@@ -212,11 +221,21 @@ def _request_token(request: web.Request) -> str:
 
 @web.middleware
 async def _auth_middleware(request: web.Request, handler: web.Handler) -> web.StreamResponse:
-    """保护全部 /api/*：token 用常数时间比较，避免逐字符短路的定时侧信道。"""
+    """保护全部 /api/*：token 用常数时间比较，避免逐字符短路的定时侧信道。
+
+    界面 token 放行全部接口；agent token 只放行白名单（authorize_agent）。
+    """
     if request.path.startswith(_API_PREFIX):
         token = _request_token(request)
-        if not token or not secrets.compare_digest(token, request.app[_TOKEN_KEY]):
+        if not token:
             return web.json_response({"error": "unauthorized"}, status=401)
+        if not secrets.compare_digest(token, request.app[_TOKEN_KEY]):
+            try:
+                denied = authorize_agent(request, token)
+            except KeyError:
+                return web.json_response({"error": "unauthorized"}, status=401)
+            if denied is not None:
+                return denied
     return await handler(request)
 
 
@@ -869,10 +888,15 @@ async def handle_settings_patch(request: web.Request) -> web.Response:
     body = await _json_body(request)
     if body is None or not isinstance(body.get("key"), str):
         return web.json_response({"status": "error", "message": "key required"}, status=400)
+    denied = guard_secret_setting(request, body["key"])
+    if denied is not None:
+        return denied
     try:
-        return web.json_response(await _api(request).update_setting(body["key"], body.get("value")))
+        result = await _api(request).update_setting(body["key"], body.get("value"))
     except (ValueError, RuntimeError) as exc:
         return _settings_error(exc)
+    after_setting_change(request, body["key"], body.get("value"))
+    return web.json_response(result)
 
 
 async def handle_providers_list(request: web.Request) -> web.Response:
@@ -886,6 +910,9 @@ async def handle_providers_create(request: web.Request) -> web.Response:
     body = await _json_body(request)
     if body is None:
         return web.json_response({"status": "error", "message": "invalid JSON body"}, status=400)
+    denied = guard_secret_fields(request, body)
+    if denied is not None:
+        return denied
     try:
         return web.json_response(_api(request).create_provider(body), status=201)
     except (ValueError, TypeError, RuntimeError) as exc:
@@ -896,6 +923,9 @@ async def handle_providers_patch(request: web.Request) -> web.Response:
     body = await _json_body(request)
     if body is None:
         return web.json_response({"status": "error", "message": "invalid JSON body"}, status=400)
+    denied = guard_secret_fields(request, body)
+    if denied is not None:
+        return denied
     try:
         return web.json_response(
             await _api(request).update_provider(request.match_info["provider_id"], body)
@@ -1862,12 +1892,14 @@ def build_app(
     allowed_origins: Iterable[str] = DEFAULT_ALLOWED_ORIGINS,
     shutdown_callback: Callable[[], None] | None = None,
     log_handler: MemoryLogHandler | None = None,
+    agent_access: AgentAccessLike | None = None,
+    app_version: str = "",
 ) -> web.Application:
     """构造 aiohttp 应用：注入业务门面、token 与 CORS 白名单。
 
     api 与 api_provider 二选一：固定门面（测试）或每次请求现取（进程薄壳——服务软重启会
     重建门面，HTTP 服务本身不重启）。token 为空时拒绝构造（避免无鉴权暴露）。
-    shutdown_callback 为空时 /api/shutdown 返回 501。
+    shutdown_callback 为空时 /api/shutdown 返回 501。agent_access 为空时不认 agent token。
     """
     if not token:
         raise ValueError("an access token is required")
@@ -2014,6 +2046,10 @@ def build_app(
     from web.desktop_routes import register_desktop_routes
 
     register_desktop_routes(app, _api)
+
+    from web.agent_routes import register_agent_routes
+
+    register_agent_routes(app, _api, agent_access, app_version)
 
     # 日志 handler 已在路由装配前注入；生产由组合根传入，独立测试/开发则幂等安装默认实例。
     return app

@@ -4,6 +4,40 @@
 
 ## [Unreleased]
 
+### 新增 (Added) — P15 首次启动 AI 辅助配置
+
+- **欢迎页**：`web/frontend/components/desktop/WelcomeScreen.tsx` 改为「选择语言 → 导入旧数据 / 从空库开始 → 用 AI 助手完成配置」；
+  `components/desktop/AgentSetup.tsx` 提供 Codex / Claude Code / 其他三种用法提示、可复制的 prompt（复制即打开接入）、
+  实时的「已连接」状态与十个数据流节点进度、一键安装 skill。
+- **AI 助手接入**：`ka_server/agent_access.py` 在「偏好设置 › 通用 › 允许 AI 助手连接」（`prefs.general.agent_access`）
+  打开时写出连接文件（地址 + 每次启动生成、与界面 token 无关的 agent token，仅当前用户可读，关闭或退出即删）。
+- **权限与机密**：`web/agent_routes.py` 的白名单只放行配置、检索、问答记录与图谱接口；agent 写 provider 的 api_key 或
+  kind=secret 的设置一律 403。需要密钥时 agent 创建密钥请求，`components/desktop/SecretRequestDialog.tsx` 弹框由用户填进应用，
+  agent 只能看到状态。
+- **prompt 与一键安装**：`kacore/agent_skill.py` 按界面语言渲染 skill 自带的 `assets/setup-prompt.<lang>.md`（含应用自带 Python
+  与 skill 的绝对路径）；一键安装到 `~/.codex/skills` 与 `~/.claude/skills` 并改写 SKILL.md 的命令块，启动时自动刷新，
+  不覆盖用户同名的 skill。偏好设置 › 通用新增入口（`components/prefs/AgentPrefsField.tsx`）。
+
+- **路径不外泄**：prompt 会被粘贴给 AI 服务商，家目录下的路径写成 `"$HOME/…"` / `~/…`（POSIX）；skill 客户端的全部
+  输出把家目录替换为 `~`；agent 白名单不含 `/api/system/info`。
+
+### 改进 (Changed) — skill 适配桌面版
+
+- **`.agents/skills/operate-knowledge-arch`**：客户端改为读连接文件 + Bearer token（去掉 WebUI 登录、密码与 keyring，
+  删除 `requirements-codex-skill.txt`）；新增 `scripts/knowledge_arch_setup.py`（setup-status、detect、providers、provider-add /
+  test / models、settings-show / set、component-install、request-secret、secret-status，变更一律先预览、`--apply` 才写入）；
+  SKILL.md 按桌面版重写，新增 `references/setup.md` 首次配置流程，references 的命令统一为 `KA` 占位。
+- **打包**：`desktop/scripts/bundle_python.py` 把 skill 放进 `ka/agent_skill/`，补登 `web/agent_routes.py`，冒烟测试检查 skill 可定位。
+
+### 测试 (Tests)
+
+- `tests/backend/test_agent_access.py`：连接文件权限与开关、白名单、机密拦截、密钥请求往返不泄露值、prompt、一键安装与启动刷新、
+  白名单里每条路由都真实存在。
+- `tests/backend/test_knowledge_arch_skill_setup.py`：后台线程跑真实后端，同步客户端走完配置流程；用 prompt 里的
+  `-I --connection-file` 命令形式起子进程。
+- `tests/backend/test_ka_server.py`：真实进程就绪后写连接文件、agent token 不能关机、退出后文件删除、token 不进日志。
+- `tests/backend/test_knowledge_arch_skill_client.py` 改为连接文件 + Bearer；`test_bundle_python.py` 守护 web 模块与 skill 都已打包。
+
 ### 新增 (Added) — P14 发布分支 main 自动生成
 
 - **`.github/scripts/build_main.py`**：由 developer 的发布提交生成干净的 main 提交（临时 index，不碰工作区）：

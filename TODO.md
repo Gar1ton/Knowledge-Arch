@@ -271,3 +271,23 @@
     `test_no_legacy_host_references.py` 放行两份 README 的来源说明。
   - 验证：`pytest` 1339 passed / 4 skipped（新增 `test_build_main.py` 7 项）；ruff / mypy；actionlint；
     本地预演 main（447 个文件、无死链、父提交为旧 main `1640a57`）。
+- [x] P15 · 首次启动 AI 辅助配置。决策：欢迎页顺序「语言 → 导入 / 空库 → AI 配置」；密钥只由用户在 app 里填
+  （agent 发请求、app 弹框，服务端拦截 agent 写机密）；skill 随安装包内置，另提供一键安装到 Codex / Claude Code。
+  - [x] P15.1 后端 agent 接入：`prefs.general.agent_access`；独立 agent token + 连接文件（仅当前用户可读、退出即删）；
+    agent token 走路由白名单并拦截机密写入；`/api/agent/status`、`/api/agent/prompt`、密钥请求、skill 一键安装。
+  - [x] P15.2 skill：客户端改为连接文件 + Bearer（去掉登录 / 密码 / keyring）；新增 setup-status、detect、
+    provider-*、settings-*、component-install、request-secret；SKILL.md 按桌面版重写，新增 references/setup.md；
+    随安装包打包。
+  - [x] P15.3 欢迎页：语言选择 → 导入 / 空库 → AI 配置（prompt 复制、实时清单、密钥弹框）；偏好设置 › 通用可重新
+    复制 prompt 与安装 skill。
+  - [x] P15.4 测试与文档：后端白名单 / 连接文件 / 密钥请求；skill 客户端契约测试；前端 lint / tsc / 截图；README 中英。
+  - 补充：后端启动时刷新本应用装过的 skill（AppImage 每次挂载路径不同，升级后路径与版本也会变）；只处理带
+    `.knowledge-arch-skill` 标记的目录。`web/agent_routes.py` 登记进打包 SOURCES，新增守卫测试防止漏登。
+  - 验证：`pytest` 1413 passed / 4 skipped（新增 `test_agent_access.py`、`test_knowledge_arch_skill_setup.py`、
+    ka_server 进程级连接文件测试，skill 客户端测试改为连接文件 + Bearer）；ruff；新模块 strict mypy；前端 lint / tsc /
+    build；本机打包冒烟（含 skill 定位）并用打包后的 Python 渲染 prompt；Playwright 走通「语言 → 空库 → 复制 prompt →
+    模拟 agent 建连接并请求密钥 → 弹框填写 → 已连接」，密钥写入后 `api_key_set` 为真。
+  - 路径脱敏：prompt 与已安装 SKILL.md 里家目录下的路径写成 `"$HOME/…"` / `~/…`；客户端所有输出把家目录替换为 `~`
+    （写回 path 类设置前展开）；白名单去掉 `/api/system/info`（只有带用户名的路径），`detect` 只在本机探测。
+    Windows 上 prompt 仍是绝对路径（Git Bash 对 $HOME 的展开与 PowerShell 不同），会带出用户名。
+  - 未验证：真实 Codex / Claude Code 会话全程；Windows / macOS 上的连接文件位置与 prompt 引号（逻辑有测试，未上机）。

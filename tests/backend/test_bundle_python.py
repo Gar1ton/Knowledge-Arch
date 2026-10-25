@@ -165,3 +165,19 @@ def test_slim_interpreter_windows_keeps_stdlib(tmp_path: Path, monkeypatch) -> N
 
     assert all(p.exists() for p in keep), [p for p in keep if not p.exists()]
     assert not any(p.exists() for p in drop), [p for p in drop if p.exists()]
+
+
+def test_copy_sources_bundles_agent_routes_and_skill(tmp_path: Path) -> None:
+    ka = bundle.copy_sources(tmp_path)
+    assert (ka / "web" / "agent_routes.py").is_file()
+    skill = ka / "agent_skill" / "operate-knowledge-arch"
+    for rel in ("SKILL.md", "references/setup.md", "assets/setup-prompt.zh.md",
+                "scripts/knowledge_arch_client.py", "scripts/knowledge_arch_setup.py"):
+        assert (skill / rel).is_file(), rel
+    assert not list(skill.rglob("__pycache__"))
+
+
+def test_every_web_module_is_bundled() -> None:
+    """web/ 下的路由模块逐个列在 SOURCES 里：新增模块忘了登记，打包后的后端就起不来。"""
+    modules = {f"web/{p.name}" for p in (ROOT / "web").glob("*.py") if p.name != "__init__.py"}
+    assert modules <= set(bundle.SOURCES), modules - set(bundle.SOURCES)

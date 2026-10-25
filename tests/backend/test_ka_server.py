@@ -217,3 +217,33 @@ def test_serve_exits_when_parent_process_disappears(tmp_path: Path) -> None:
                 p.kill()
     log_text = (data_dir / "logs" / "ka_server.log").read_text(encoding="utf-8")
     assert "shutdown: parent_exited" in log_text
+
+
+def test_serve_publishes_agent_connection_only_while_running(tmp_path: Path) -> None:
+    """开启 AI 助手接入：就绪后写连接文件（agent token ≠ 界面 token），退出后删除。"""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "settings.json").write_text(json.dumps({
+        "version": 1,
+        "values": {"flow.vector_store.backend": "lexical", "prefs.general.agent_access": True},
+        "providers": [],
+    }), encoding="utf-8")
+    token = "ui-token-e2e"
+    proc = _spawn(data_dir, token)
+    connection = data_dir / "agent-connection.json"
+    try:
+        port = _read_port(proc)
+        published = json.loads(connection.read_text(encoding="utf-8"))
+        assert published["url"] == f"http://127.0.0.1:{port}"
+        agent_token = published["token"]
+        assert agent_token != token
+        assert _request(port, "/api/capabilities", agent_token)[0] == 200
+        assert _request(port, "/api/shutdown", agent_token, method="POST")[0] == 403
+        assert _request(port, "/api/shutdown", token, method="POST")[0] == 202
+        assert proc.wait(timeout=60) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert not connection.exists()
+    log_text = (data_dir / "logs" / "ka_server.log").read_text(encoding="utf-8")
+    assert agent_token not in log_text and token not in log_text

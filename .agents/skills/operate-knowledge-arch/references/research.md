@@ -5,8 +5,8 @@
 - Skip `doctor` when a preceding command already proved the API works.
 - If the user names a paper, author, year, DOI, tag, or collection but the exact scope is uncertain, run:
 
-```powershell
-python .agents/skills/operate-knowledge-arch/scripts/knowledge_arch_client.py catalog --query "terms"
+```
+KA catalog --query "terms"
 ```
 
 - Use document and collection metadata to select the narrowest relevant collection. Do not load full
@@ -24,10 +24,8 @@ Choose the least expensive mode that matches the question:
 
 Preserve names, DOI fragments, and technical terms. Prefer English subqueries for English papers.
 
-```powershell
-python .agents/skills/operate-knowledge-arch/scripts/knowledge_arch_client.py ask-evidence `
-  --question "original user question" --query "focused retrieval query" `
-  --mode default --all
+```
+KA ask-evidence --question "original user question" --query "focused retrieval query" --mode default --all
 ```
 
 For enhanced or deep work, repeat `--query` within the returned per-round limit. Prefer
@@ -56,9 +54,8 @@ Do not read a document merely because it is the top hit. Reading is allowed only
    necessary; use `--intent anchored`; or
 2. the user explicitly asked to read the full text; use `--intent full-text`.
 
-```powershell
-python .agents/skills/operate-knowledge-arch/scripts/knowledge_arch_client.py read `
-  --doc-id DOCUMENT_ID --intent anchored --start 0 --max-chars 12000
+```
+KA read --doc-id DOCUMENT_ID --intent anchored --start 0 --max-chars 12000
 ```
 
 The server returns only the requested page. Continue from `end` only when `has_more` is true and the
@@ -77,9 +74,8 @@ read larger than the server's confirmation threshold comes back as a preview ins
 Do not retry blindly. Tell the user how large the document is, then rerun with the confirmation flag
 only after they agree:
 
-```powershell
-python .agents/skills/operate-knowledge-arch/scripts/knowledge_arch_client.py read `
-  --doc-id DOCUMENT_ID --intent full-text --whole --confirm-large-read
+```
+KA read --doc-id DOCUMENT_ID --intent full-text --whole --confirm-large-read
 ```
 
 Read the threshold from `confirm_threshold_chars` in the response; never hardcode the number — it is

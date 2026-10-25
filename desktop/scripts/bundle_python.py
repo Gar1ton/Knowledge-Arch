@@ -7,7 +7,7 @@
                 site-packages 里写 `knowledge_arch.pth` 指向 ../ka，使 `python -I -m ka_server`
                 可导入（-I 会忽略 PYTHONPATH，但仍处理 site-packages 里的 .pth）；
                 uv 可执行文件放在解释器旁，供应用内安装可选组件（torch 等大包不进安装包）。
-    ka/         kacore/、ka_server/、web/server.py、web/desktop_routes.py、migrations/；
+    ka/         kacore/、ka_server/、web/ 的路由模块、migrations/、AI 助手 skill（agent_skill/）；
                 另有标记文件 `.ka_bundle`，运行时据此把字节码缓存写到用户缓存目录。
     frontend/   web/frontend/out/ 的静态导出（tauri.conf.json 的 frontendDist）。
 
@@ -31,7 +31,12 @@ PYTHON_VERSION = "3.12"
 IS_WINDOWS = os.name == "nt"
 
 # 只带运行所需的源码（相对仓库根）；目录按 _IGNORE 过滤缓存与测试残留。
-SOURCES = ("kacore", "ka_server", "migrations", "web/server.py", "web/desktop_routes.py")
+SOURCES = (
+    "kacore", "ka_server", "migrations",
+    "web/server.py", "web/desktop_routes.py", "web/agent_routes.py",
+)
+# AI 助手 skill（kacore/agent_skill.py 在 ka/agent_skill/ 下查找）：仓库路径 → 包内路径。
+SKILL_SOURCE = (".agents/skills/operate-knowledge-arch", "agent_skill/operate-knowledge-arch")
 _IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", ".pytest_cache", "README.md")
 PTH_NAME = "knowledge_arch.pth"
 BUNDLE_MARKER = ".ka_bundle"  # 与 ka_server/bytecode_cache.py 一致
@@ -190,6 +195,8 @@ def copy_sources(out: Path) -> Path:
             shutil.copytree(src, dst, ignore=_IGNORE)
         else:
             shutil.copy2(src, dst)
+    skill_src, skill_dst = SKILL_SOURCE
+    shutil.copytree(ROOT / skill_src, target / skill_dst, ignore=_IGNORE)
     (target / BUNDLE_MARKER).write_text("bundled runtime\n", encoding="utf-8")
     return target
 
@@ -249,7 +256,8 @@ def smoke_test(python: Path) -> None:
     """用 -I 启动打包后的解释器，确认后端可导入、核心依赖齐全、Milvus Lite 可用。"""
     code = (
         "import ka_server, kacore.app_initializer, web.server, aiohttp, pymupdf, pymilvus,"
-        " milvus_lite; print(ka_server.APP_VERSION)"
+        " milvus_lite; from kacore.agent_skill import skill_source_dir; skill_source_dir();"
+        " print(ka_server.APP_VERSION)"
     )
     log(f"smoke test ok, backend version {python_output(python, code)}")
     log(f"milvus lite round trip {python_output(python, _MILVUS_SMOKE)}")

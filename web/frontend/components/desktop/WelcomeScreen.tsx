@@ -1,6 +1,7 @@
 "use client";
 /**
- * 欢迎页：首次启动（空库）时选择「导入旧版插件数据」或「从空库开始」。
+ * 欢迎页：首次启动（空库）时依次「选择语言 → 导入旧版插件数据 / 从空库开始 → 用 AI 助手完成配置」。
+ * 导入在 AI 配置之前：导入会迁移并覆盖设置，放在后面会冲掉助手刚配好的内容。
  *
  * 导入流程：选旧安装的根目录 → 预览（文档数 / 大小 / 是否有配置）→ 开始 → 后台复制并准备，
  * 完成后服务自动重启换入 → 显示结果与「需要你确认」的事项。导入状态由后端结果文件接续，
@@ -9,8 +10,9 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { formatBytes } from "@/components/flow/SyncActions";
 import { inDesktopShell, pickFolder } from "@/lib/backend";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, type Lang } from "@/lib/i18n";
 import {
+  patchSetting,
   getLegacyImportState,
   inspectLegacyData,
   startLegacyImport,
@@ -18,10 +20,16 @@ import {
   type LegacyImportState,
   type LegacyPreview,
 } from "@/lib/settingsApi";
+import { AgentSetupStep } from "./AgentSetup";
 import { landing, LandingShell } from "./LandingShell";
 
 const WELCOME_DONE_KEY = "ka-welcome-done";
 const RESULT_SEEN_KEY = "ka-import-result-seen";
+const LANG_CHOSEN_KEY = "ka-lang-chosen";
+const LANGS: { value: Lang; label: string; desc: "welcome_lang_zh_desc" | "welcome_lang_en_desc" }[] = [
+  { value: "zh", label: "中文", desc: "welcome_lang_zh_desc" },
+  { value: "en", label: "English", desc: "welcome_lang_en_desc" },
+];
 
 function readFlag(key: string): string {
   try { return localStorage.getItem(key) ?? ""; } catch { return ""; }
@@ -61,14 +69,18 @@ function Arrow() {
 }
 
 type Step =
+  | { kind: "language" }
   | { kind: "choose" }
   | { kind: "select"; path: string; preview: LegacyPreview | null; error: string; busy: boolean }
   | { kind: "importing"; stage: string; done: number; total: number }
-  | { kind: "result"; result: LegacyImportResult };
+  | { kind: "result"; result: LegacyImportResult }
+  | { kind: "assistant" };
 
 export function WelcomeScreen({ onDone }: { onDone: () => void }) {
-  const { t } = useI18n();
-  const [step, setStep] = useState<Step>({ kind: "choose" });
+  const { t, setLang } = useI18n();
+  const [step, setStep] = useState<Step>(() => (
+    readFlag(LANG_CHOSEN_KEY) === "1" ? { kind: "choose" } : { kind: "language" }
+  ));
   const polling = useRef(false);
 
   const finish = useCallback((result?: LegacyImportResult) => {
@@ -118,6 +130,19 @@ export function WelcomeScreen({ onDone }: { onDone: () => void }) {
     getLegacyImportState().then((s) => { if (applyState(s)) void poll(); }).catch(() => undefined);
   }, [applyState, poll]);
 
+  const chooseLanguage = (value: Lang) => {
+    setLang(value);
+    writeFlag(LANG_CHOSEN_KEY, "1");
+    // 以后端 settings.json 为准（随 R2 快照换机）；写失败不挡住欢迎页，本机界面已切换。
+    void patchSetting("prefs.general.language", value).catch(() => undefined);
+    setStep({ kind: "choose" });
+  };
+
+  const toAssistant = (result?: LegacyImportResult) => {
+    if (result) writeFlag(RESULT_SEEN_KEY, result.finished_at ?? "");
+    setStep({ kind: "assistant" });
+  };
+
   const inspect = async (path: string) => {
     setStep({ kind: "select", path, preview: null, error: "", busy: true });
     try {
@@ -144,10 +169,33 @@ export function WelcomeScreen({ onDone }: { onDone: () => void }) {
   };
 
   return (
-    <LandingShell subtitle={t("landing_sub_welcome")}>
+    <LandingShell subtitle={t("landing_sub_welcome")} wide={step.kind === "assistant"}>
       <section className={landing.card}>
         <div className={landing.body}>
-          <h2 className={landing.heading}>{t("welcome_title")}</h2>
+          {step.kind === "assistant" && <AgentSetupStep onDone={() => finish()} />}
+
+          {step.kind === "language" && (
+            <>
+              <h2 className={landing.heading}>{t("welcome_lang_title")}</h2>
+              <p className={landing.text}>{t("welcome_lang_body")}</p>
+              <div className={landing.langOptions}>
+                {LANGS.map((item) => (
+                  <button key={item.value} type="button" className={landing.option} lang={item.value}
+                    onClick={() => chooseLanguage(item.value)}>
+                    <span className={landing.optionText}>
+                      <strong>{item.label}</strong>
+                      <span>{t(item.desc)}</span>
+                    </span>
+                    <Arrow />
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
+          {step.kind !== "assistant" && step.kind !== "language" && (
+            <h2 className={landing.heading}>{t("welcome_title")}</h2>
+          )}
 
           {step.kind === "choose" && (
             <>
@@ -161,7 +209,7 @@ export function WelcomeScreen({ onDone }: { onDone: () => void }) {
                   </span>
                   <Arrow />
                 </button>
-                <button type="button" className={landing.option} onClick={() => finish()}>
+                <button type="button" className={landing.option} onClick={() => toAssistant()}>
                   <span className={landing.optionText}>
                     <strong>{t("welcome_empty")}</strong>
                     <span>{t("welcome_empty_desc")}</span>
@@ -245,7 +293,10 @@ export function WelcomeScreen({ onDone }: { onDone: () => void }) {
               )}
               <div className={landing.divider} aria-hidden="true" />
               <div className={landing.actions}>
-                <button type="button" className={landing.primary} onClick={() => finish(step.result)}>{t("welcome_enter")}</button>
+                <button type="button" className={landing.primary}
+                  onClick={() => (step.result.status === "ok" ? toAssistant(step.result) : finish(step.result))}>
+                  {step.result.status === "ok" ? t("welcome_next") : t("welcome_enter")}
+                </button>
               </div>
             </>
           )}
