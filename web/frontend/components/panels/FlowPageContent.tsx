@@ -24,6 +24,7 @@ import {
 } from "@/lib/api";
 import {
   getSettingsSchema,
+  installFailureText,
   listProviders,
   patchSetting,
   worstConsequence,
@@ -216,7 +217,7 @@ export function FlowPageContent({ onClose }: { onClose?: () => void } = {}) {
         setBanner({ kind: "install", msg: t("flow_deps_restart_hint") });
         toast(t("flow_deps_restart_hint"), "ok");
       } else {
-        toast(result.message || t("flow_save_failed"), "error");
+        toast(installFailureText(result, t) || t("flow_save_failed"), "error");
       }
       await refreshFlow({ recheck: true, includeZotero: true });
     } catch (err: unknown) {

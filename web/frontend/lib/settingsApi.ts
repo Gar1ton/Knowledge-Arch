@@ -5,7 +5,8 @@
  * 写入一律 `PATCH /api/settings {key, value}`，按返回的 consequence 提示重启服务 / 重建索引。
  */
 
-import { apiFetch } from "@/lib/api";
+import { apiFetch, installResultOf } from "@/lib/api";
+import type { TFunc } from "@/lib/i18n";
 
 // ─── 设置 ──────────────────────────────────────────────────────
 
@@ -191,12 +192,28 @@ export interface ComponentsStatus {
   components: ComponentStatus[];
 }
 
+/** 组件安装失败的归类（后端 kacore/extras/failure.py）。 */
+export type InstallFailureReason =
+  | "disk_full" | "permission" | "network" | "no_wheel" | "conflict" | "build" | "unknown";
+
 export interface ComponentActionResult {
   status: "ok" | "error";
   key: string;
   message: string;
   restart_required: boolean;
   returncode?: number | null;
+  reason?: InstallFailureReason;
+  /** 最相关的几行安装器原文，供展开查看。 */
+  detail?: string[];
+}
+
+/** 失败说明按界面语言显示；没有归类（旧后端 / 非安装错误）时用后端原文。 */
+export function installFailureText(
+  result: { reason?: InstallFailureReason; message?: string },
+  t: TFunc,
+): string {
+  if (result.reason) return t(`install_fail_${result.reason}` as Parameters<TFunc>[0]);
+  return result.message ?? "";
 }
 
 export async function listComponents(): Promise<ComponentsStatus> {
@@ -204,10 +221,10 @@ export async function listComponents(): Promise<ComponentsStatus> {
 }
 
 export async function installComponent(key: string): Promise<ComponentActionResult> {
-  return apiFetch<ComponentActionResult>(`/api/components/${encodeURIComponent(key)}/install`, {
+  return installResultOf(apiFetch<ComponentActionResult>(`/api/components/${encodeURIComponent(key)}/install`, {
     method: "POST",
     timeoutMs: 1_800_000, // torch 等大包可能下载很久
-  });
+  }));
 }
 
 export async function uninstallComponent(key: string): Promise<ComponentActionResult> {

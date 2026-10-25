@@ -35,6 +35,7 @@ import { useTheme } from "@/lib/theme";
 import { cachedScale, onUiScaleChange, setUiScale, UI_SCALES } from "@/lib/uiScale";
 import {
   installComponent,
+  installFailureText,
   listComponents,
   uninstallComponent,
   type ComponentStatus,
@@ -275,6 +276,7 @@ export function ComponentsGroup({ onRestart }: { onRestart: () => void }) {
   const [status, setStatus] = useState<ComponentsStatus | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [needsRestart, setNeedsRestart] = useState(false);
+  const [failure, setFailure] = useState<{ key: string; text: string; detail: string[] } | null>(null);
 
   const refresh = useCallback(() => {
     listComponents().then(setStatus).catch(() => setStatus(null));
@@ -286,7 +288,9 @@ export function ComponentsGroup({ onRestart }: { onRestart: () => void }) {
     if (action === "install") toast(t("comp_installing_hint"), "info");
     try {
       const res = action === "install" ? await installComponent(key) : await uninstallComponent(key);
-      toast(res.message, res.status === "ok" ? "ok" : "error");
+      const text = res.status === "ok" ? res.message : installFailureText(res, t);
+      toast(text, res.status === "ok" ? "ok" : "error");
+      setFailure(res.status === "ok" ? null : { key, text, detail: res.detail ?? [] });
       if (res.status === "ok" && res.restart_required) setNeedsRestart(true);
     } catch (err) {
       toast(err instanceof Error ? err.message : String(err), "error");
@@ -305,8 +309,8 @@ export function ComponentsGroup({ onRestart }: { onRestart: () => void }) {
         <div role="alert" style={{ fontSize: 12, color: "var(--danger)", padding: "6px 0" }}>{t("comp_installer_missing")}</div>
       )}
       {(status?.components ?? []).map((c) => (
+        <React.Fragment key={c.key}>
         <Field
-          key={c.key}
           label={t(`comp_${c.key}` as Parameters<typeof t>[0])}
           hint={`${t(`comp_${c.key}_desc` as Parameters<typeof t>[0])}${c.size_bytes ? ` · ${formatBytes(c.size_bytes)}` : ""}`}
         >
@@ -325,6 +329,20 @@ export function ComponentsGroup({ onRestart }: { onRestart: () => void }) {
             )}
           </div>
         </Field>
+          {failure?.key === c.key && (
+            <div role="alert" style={{ fontSize: 12, color: "var(--danger)", lineHeight: 1.5, padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
+              {failure.text}
+              {failure.detail.length > 0 && (
+                <details style={{ color: "var(--fg-muted)", marginTop: 4 }}>
+                  <summary style={{ cursor: "pointer" }}>{t("install_fail_details")}</summary>
+                  <pre style={{ margin: "4px 0 0", fontFamily: "var(--font-mono)", fontSize: 11, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+                    {failure.detail.join("\n")}
+                  </pre>
+                </details>
+              )}
+            </div>
+          )}
+        </React.Fragment>
       ))}
       {needsRestart && (
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 10 }}>
