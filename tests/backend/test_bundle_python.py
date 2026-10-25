@@ -135,3 +135,33 @@ def test_slim_interpreter_keeps_libpython_when_linked(tmp_path: Path, monkeypatc
     bundle.slim_interpreter(python_dir)
 
     assert lib.exists()
+
+
+def test_slim_interpreter_windows_keeps_stdlib(tmp_path: Path, monkeypatch) -> None:
+    """Windows 的 glob 不区分大小写：POSIX 的 `lib/thread*` 曾命中 `Lib/threading.py`。
+
+    rc.3 前的 CI 因此出现过解释器无法启动。
+    """
+    monkeypatch.setattr(bundle, "IS_WINDOWS", True)
+    python_dir = tmp_path / "python"
+    keep = [
+        _touch(python_dir / "python.exe"),
+        _touch(python_dir / "python312.dll"),  # Windows 的 python.exe 动态链接，必须保留
+        _touch(python_dir / "Lib" / "threading.py"),
+        _touch(python_dir / "Lib" / "tomllib" / "__init__.py"),
+        _touch(python_dir / "Lib" / "site-packages" / "pkgconfig_stub.py"),
+        _touch(python_dir / "DLLs" / "_ssl.pyd"),
+    ]
+    drop = [
+        _touch(python_dir / "Lib" / "tkinter" / "__init__.py"),
+        _touch(python_dir / "Lib" / "idlelib" / "idle.py"),
+        _touch(python_dir / "tcl" / "tcl8.6" / "init.tcl"),
+        _touch(python_dir / "DLLs" / "_tkinter.pyd"),
+        _touch(python_dir / "DLLs" / "tcl86t.dll"),
+        _touch(python_dir / "DLLs" / "tk86t.dll"),
+    ]
+
+    bundle.slim_interpreter(python_dir)
+
+    assert all(p.exists() for p in keep), [p for p in keep if not p.exists()]
+    assert not any(p.exists() for p in drop), [p for p in drop if p.exists()]

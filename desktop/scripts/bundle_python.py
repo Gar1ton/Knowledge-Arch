@@ -47,12 +47,13 @@ _SITE_PRUNE_DIRS = frozenset({"tests", "include"})
 _PYARROW_UNUSED = ("flight", "s3fs", "arrow_s3", "_pyarrow_cpp_tests")
 # 标准库里后端用不到的部分（GUI、IDE、pip 引导、2to3、示例）；venv / sysconfig 保留给 uv。
 _STDLIB_UNUSED = ("tkinter", "idlelib", "ensurepip", "lib2to3", "turtledemo")
-# 解释器目录里 Tk 运行库（POSIX 在 lib/，Windows 在根目录 tcl/ 与 DLLs/）与编译期文件。
-_RUNTIME_UNUSED_GLOBS = (
+# 解释器目录里 Tk 运行库与编译期文件，按平台分开：Windows 的 glob 不区分大小写，
+# POSIX 的 `lib/thread*`（Tcl 的 thread 扩展）在 Windows 上会命中标准库 `Lib/threading.py`。
+_POSIX_UNUSED_GLOBS = (
     "lib/libtcl*", "lib/libtk*", "lib/tcl*", "lib/tk*", "lib/itcl*", "lib/thread*",
     "lib/pkgconfig", "lib/python3.*/config-3.*", "lib/python3.*/lib-dynload/_tkinter*",
-    "tcl", "DLLs/_tkinter*", "DLLs/tcl*", "DLLs/tk*",
 )
+_WINDOWS_UNUSED_GLOBS = ("tcl", "DLLs/_tkinter*", "DLLs/tcl*", "DLLs/tk*")
 
 
 def log(message: str) -> None:
@@ -158,7 +159,7 @@ def slim_interpreter(python_dir: Path) -> int:
     for name in _STDLIB_UNUSED:
         if (stdlib / name).exists():
             freed += _delete(stdlib / name)
-    for pattern in _RUNTIME_UNUSED_GLOBS:
+    for pattern in _WINDOWS_UNUSED_GLOBS if IS_WINDOWS else _POSIX_UNUSED_GLOBS:
         for path in sorted(python_dir.glob(pattern)):
             freed += _delete(path)
     if IS_WINDOWS:
