@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 改进 (Changed) — rc.3 反馈：main 精简
+
+- **README 默认英文**：英文版改为 `README.md`，中文版改名 `README_ZH.md`；两份的版本记录链接改指 GitHub Releases。
+- **main 不带 CHANGELOG**：`CHANGELOG.md` 加入 `.release-exclude` 与 `.gitattributes` 的 `export-ignore`，
+  `.github/scripts/build_main.py` 去掉精简 CHANGELOG 的逻辑；发布说明在 GitHub Release 草稿里用英文补写（`docs/RELEASE.md`）。
+- **根目录精简**：`logo.svg` 移到 `desktop/assets/`（`npm run icons` 与 README 同步改路径），删去未被引用的 `logo.png`
+  与不含任何包的 `uv.lock`。
+
 ### 改进 (Changed)
 
 - **Linux AppImage 自动更新**：`.github/workflows/desktop-release.yml` 新增 `updater-manifest` 作业（全部平台出包后运行），

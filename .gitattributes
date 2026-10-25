@@ -9,6 +9,7 @@
 /CONVENTIONS.md export-ignore
 /TODO.md export-ignore
 /ARCHITECTURE.md export-ignore
+/CHANGELOG.md export-ignore
 /docs/** export-ignore
 /docs/RELEASE.md -export-ignore
 /docs/NOTION_SYNC.md -export-ignore

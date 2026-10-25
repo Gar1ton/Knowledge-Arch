@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 _NEEDLE = ("astr" + "bot").encode()
 _ALLOWED_PREFIXES = ("kacore/legacy_import/",)
 # README 的「项目来源」注明本项目承接自旧插件 v1.2.0（附插件仓库链接）。
-_ALLOWED_FILES = frozenset({"README.md", "README_EN.md"})
+_ALLOWED_FILES = frozenset({"README.md", "README_ZH.md"})
 
 
 def _repo_files() -> list[str]:

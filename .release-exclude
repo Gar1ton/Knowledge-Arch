@@ -11,6 +11,9 @@
 /TODO.md
 /ARCHITECTURE.md
 
+# 开发期变更记录（中文、逐文件）；发布说明写在 GitHub Release
+/CHANGELOG.md
+
 # 内部设计文档（发布与 Notion 说明保留）
 /docs/*
 !/docs/RELEASE.md

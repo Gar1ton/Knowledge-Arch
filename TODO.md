@@ -266,6 +266,9 @@
   - [x] P14.4 README 拆为 `README.md`（中文）/ `README_EN.md`（英文），注明来源为旧插件 v1.2.0；
     贡献与 issue 走 developer。
   - [x] P14.5 `CLAUDE.md` §1.1、`docs/GIT_WORKFLOW.md`、`docs/RELEASE.md`：批准推 `v*` 标签即批准自动更新 main。
+  - [x] P14.6 rc.3 反馈：main 默认英文、不带开发期 CHANGELOG、根目录精简。`README.md` 改为英文、中文版改名
+    `README_ZH.md`；`CHANGELOG.md` 加入 `.release-exclude` / `export-ignore`，`build_main.py` 去掉精简 CHANGELOG，
+    发布说明改为在 GitHub Release 用英文写；`logo.svg` 移到 `desktop/assets/`，删去未引用的 `logo.png` 与空的 `uv.lock`。
   - 保留：`.agents/skills/operate-knowledge-arch` 与 `requirements-codex-skill.txt` 是 Codex Skill 功能（有测试），
     不属于 agent 规范，留在 main。子 README 指向 ARCHITECTURE / dev 的链接改为 developer 分支的绝对链接；
     `test_no_legacy_host_references.py` 放行两份 README 的来源说明。

@@ -7,8 +7,8 @@
 - 新功能可从 developer 创建 `feature/*`，完成后合回 developer。
 - `main`：发布分支，**只由 CI 写入**。在 developer 的提交上推 `v*` 标签后，`desktop-release.yml` 的
   publish-main 作业运行 `.github/scripts/build_main.py`：按 `.release-exclude` 删去治理文档（CLAUDE / AGENTS /
-  CONVENTIONS / TODO / ARCHITECTURE）、内部设计稿、`dev/`、`tools/` 与仅 developer 使用的 CI，把 CHANGELOG
-  换成精简版，检查 README 等文档没有指向被删文件的链接，再以现有 main 为父提交生成一个提交并推送（线性、不 force）。
+  CONVENTIONS / TODO / ARCHITECTURE）、开发期 CHANGELOG、内部设计稿、`dev/`、`tools/` 与仅 developer 使用的 CI，
+  检查 README 等文档没有指向被删文件的链接，再以现有 main 为父提交生成一个提交并推送（线性、不 force）。
   安装包从这个 main 提交构建；tag 的源码包由 `.gitattributes` 的 `export-ignore` 剔除同一批文件。
 - 外部贡献者的 issue 与 PR 都提到 developer；main 只放调试好的发布版本。
 

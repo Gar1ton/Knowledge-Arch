@@ -4,9 +4,8 @@
 
 1. 读入源提交的树，删去 `.release-exclude` 列出的路径（gitignore 语法，
    由 `git ls-files --ignored` 匹配）；
-2. 把 CHANGELOG.md 换成精简版：只留正式版本（不含 `-dev.`），每条只留加粗的那句或首个分句；
-3. 检查剩余 Markdown 的相对链接，指向被删文件即失败；
-4. `git commit-tree` 生成提交，父提交是现有 main（线性接在后面，不需要 force push）。
+2. 检查剩余 Markdown 的相对链接，指向被删文件即失败；
+3. `git commit-tree` 生成提交，父提交是现有 main（线性接在后面，不需要 force push）。
 
 只输出新提交的 sha，不 push；推送由流水线（或本地人工）另行执行。
 
@@ -29,11 +28,6 @@ from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ".release-exclude"
-CHANGELOG = "CHANGELOG.md"
-_VERSION_HEADING = re.compile(r"^## \[(?P<version>[^\]]+)\](?P<rest>.*)$")
-_BULLET = re.compile(r"^- (?P<body>.+)$")
-_BOLD_LEAD = re.compile(r"^\*\*(?P<lead>.+?)\*\*")
-_LABEL_MAX = 4  # 加粗部分不超过这么多字（如「前端」「桌面壳」）时视为标签
 # Markdown 相对链接：[text](target)；跳过 http(s)、mailto、纯锚点。
 _LINK = re.compile(r"\]\((?P<target>[^)\s]+)\)")
 
@@ -43,97 +37,6 @@ def git(*args: str, env: dict[str, str] | None = None, stdin: str | None = None)
         ["git", *args], cwd=ROOT, check=True, capture_output=True, text=True, env=env, input=stdin
     )
     return out.stdout
-
-
-# ── CHANGELOG 精简 ────────────────────────────────────────────────────────────────
-
-
-def _balanced(text: str) -> bool:
-    return (text.count("（") == text.count("）") and text.count("(") == text.count(")")
-            and text.count("`") % 2 == 0)
-
-
-def _first_clause(text: str, limit: int = 90) -> str:
-    """首个分句（中文分号 / 句号之前）。
-
-    太长时退到括号与代码标记都闭合的最后一个逗号，找不到就保留整句。
-    """
-    clause = re.split(r"[；。]|; ", text, maxsplit=1)[0].strip()
-    if len(clause) > limit:
-        cuts = [
-            m.start() for m in re.finditer(r"，|, ", clause[:limit])
-            if _balanced(clause[:m.start()])
-        ]
-        if cuts:
-            clause = clause[:cuts[-1]]
-    return clause.rstrip("，,：: ")
-
-
-def _join(lines: list[str]) -> str:
-    """续行拼接：两侧都是 ASCII 时补空格，中文断行直接相连。"""
-    joined = lines[0]
-    for line in lines[1:]:
-        sep = " " if joined[-1:].isascii() and line[:1].isascii() else ""
-        joined += sep + line
-    return joined
-
-
-def _summarize_bullet(body: str) -> str:
-    """加粗的描述句直接用；加粗的只是标签或路径（如「前端」「`kacore/x.py`」）时补上冒号后的首个分句。"""
-    bold = _BOLD_LEAD.match(body)
-    if not bold:  # 无加粗：冒号前是要点，冒号后是细节
-        return _first_clause(re.split(r"：|: ", body, maxsplit=1)[0])
-    lead = bold.group("lead")
-    rest = body[bold.end():].lstrip("：: ")
-    if rest and ("`" in lead or len(lead) <= _LABEL_MAX):
-        return f"{lead}：{_first_clause(rest)}"
-    return lead
-
-
-def slim_changelog(text: str, tag: str | None = None) -> str:
-    """只留正式版本的标题、小节与每条首句；`tag` 没有对应小节时，把 [Unreleased] 当作该版本。"""
-    tagged = tag is not None and any(
-        (m := _VERSION_HEADING.match(line)) and m.group("version") == tag
-        for line in text.splitlines()
-    )
-    out = [
-        "# CHANGELOG",
-        "",
-        "> 精简版，只列正式发布的版本。逐条细节见 `developer` 分支的 CHANGELOG.md。",
-    ]
-    keep = False
-    bullet: list[str] | None = None  # 当前条目（含缩进续行）
-
-    def flush() -> None:
-        nonlocal bullet
-        if bullet is not None:
-            out.append(f"- {_summarize_bullet(_join(bullet))}")
-            bullet = None
-
-    for line in text.splitlines():
-        if bullet is not None and line.startswith("  ") and line.strip():
-            bullet.append(line.strip())
-            continue
-        flush()
-        heading = _VERSION_HEADING.match(line)
-        if heading:
-            version = heading.group("version")
-            if version == "Unreleased" and tag and not tagged:
-                version, keep = tag, True
-                line = f"## [{tag}]"
-            else:
-                keep = version != "Unreleased" and "-dev." not in version
-            if keep:
-                out += ["", line]
-            continue
-        if not keep:
-            continue
-        if line.startswith("### "):
-            out += ["", line, ""]
-        elif match := _BULLET.match(line):
-            bullet = [match.group("body")]
-    flush()
-    return "\n".join(out).rstrip() + "\n"
 
 
 # ── 树的生成与检查 ────────────────────────────────────────────────────────────────
@@ -183,9 +86,6 @@ def build(
         if removed:
             git("rm", "--cached", "--quiet", "--pathspec-from-file=-", "--pathspec-file-nul",
                 env=env, stdin="\0".join(removed))
-        changelog = slim_changelog(git("show", f"{source_sha}:{CHANGELOG}"), tag)
-        blob = git("hash-object", "-w", "--stdin", stdin=changelog).strip()
-        git("update-index", "--cacheinfo", f"100644,{blob},{CHANGELOG}", env=env)
         problems = dead_links(env)
         if problems:
             raise SystemExit("dead links in the main tree:\n  " + "\n  ".join(problems))

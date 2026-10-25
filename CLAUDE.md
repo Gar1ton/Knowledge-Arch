@@ -27,8 +27,8 @@
 ### 1.1 Git 远端变更（绝对规则）
 
 - `developer` 是唯一开发真相源；正式 `main` 是由指定 developer commit 生成的发布分支，禁止手改。
-  推送 `v*` 标签后，CI（`desktop-release.yml` 的 publish-main）按 `.release-exclude` 删去治理文档、内部设计稿
-  与开发脚本，精简 CHANGELOG，生成新的 main 提交并推送；**批准推送 `v*` 标签即同时批准这次 main 更新**。
+  推送 `v*` 标签后，CI（`desktop-release.yml` 的 publish-main）按 `.release-exclude` 删去治理文档、开发期 CHANGELOG、
+  内部设计稿与开发脚本，生成新的 main 提交并推送；**批准推送 `v*` 标签即同时批准这次 main 更新**。
   不要手动 push main。新增只在开发期使用的文件时，同步更新 `.release-exclude` 与 `.gitattributes`。
 - 任何 `git push`、tag push、远端分支创建/删除、force push、PR 创建或 GitHub Release 发布，
   **执行前必须单独向用户报告 remote、源分支、目标分支与提交范围，并取得本轮明确批准**。
@@ -91,5 +91,5 @@ cd desktop/src-tauri && cargo test && cargo clippy && cargo fmt --check
 ## 6. 语言约定
 
 - 文档正文、设计讨论、注释：**中文**。
-- README 分两份：`README.md`（中文）与 `README_EN.md`（英文），内容同步修改。
+- README 分两份：`README.md`（英文，默认）与 `README_ZH.md`（中文），内容同步修改。
 - 代码标识符、命令、`TODO.md` 状态值、`CHANGELOG.md` 版本号：**英文**。
