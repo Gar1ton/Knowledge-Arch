@@ -62,7 +62,8 @@ class ZotmoovResolver:
             if len(narrowed) == 1:
                 return narrowed[0], ""
             return None, (
-                f"zotmoov_root 下存在 {len(hits)} 个同名文件 '{filename}'，无法唯一定位，已跳过"
+                f"zotmoov_root has {len(hits)} files named '{filename}', so it cannot be resolved "
+                "uniquely; skipped"
             )
         return None, ""
 

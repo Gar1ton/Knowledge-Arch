@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 
 import pytest
 
-from kacore.domain.conversation import ConversationSession
 from kacore.domain.models import (
     Collection,
     ConsoleScopeState,
@@ -166,37 +165,6 @@ async def test_scoped_notes_chat_lock_and_console_state(
     assert state.payload == {"right": "notes"}
 
 
-async def test_chat_session_crud_and_message_metadata(
-    store: InMemorySourceDocumentStore,
-) -> None:
-    session = ConversationSession(
-        "discord-session",
-        channel="discord",
-        external_key="user-1:channel-2",
-        research_enabled=True,
-        persona_enabled=True,
-    )
-    await store.upsert_chat_session(session)
-    by_id = await store.get_chat_session("discord-session")
-    by_external = await store.get_chat_session_by_external_key(
-        "discord", "user-1:channel-2"
-    )
-    assert by_id is not None and by_id.context_enabled is True
-    assert by_external is not None and by_external.conversation_id == "discord-session"
-
-    await store.add_chat_message(
-        "discord-session",
-        "assistant",
-        "answer",
-        metadata={"turn_kind": "research", "retrieval_scope": {"kind": "global"}},
-    )
-    messages = await store.get_chat_messages("discord-session")
-    assert messages[0]["metadata"]["turn_kind"] == "research"
-
-    await store.delete_chat_session("discord-session")
-    assert await store.get_chat_session("discord-session") is None
-
-
 async def test_purge_zotero_mirror_keeps_local_state(
     store: InMemorySourceDocumentStore,
 ) -> None:
@@ -243,6 +211,24 @@ async def test_purge_zotero_mirror_keeps_local_state(
     await store.upsert_build_job(
         {"job_id": "zotero-job", "collection": "zotero-old", "status": "success"}
     )
+    for job_id, collection, doc_id in (
+        ("local-job", "local", "local-doc"),
+        ("zotero-job", "zotero-old", "zotero-doc"),
+    ):
+        await store.replace_codex_graph_tasks(
+            job_id,
+            [
+                {
+                    "task_id": f"{job_id}-task",
+                    "job_id": job_id,
+                    "collection": collection,
+                    "doc_id": doc_id,
+                    "chunk_index": 0,
+                    "chunk_hash": f"{job_id}-hash",
+                    "content": "bounded chunk",
+                }
+            ],
+        )
     await store.upsert_console_scope_state(
         ConsoleScopeState("document", "local-doc", selected_doc_id="local-doc")
     )
@@ -258,12 +244,52 @@ async def test_purge_zotero_mirror_keeps_local_state(
     assert await store.get_scoped_note("local-note") is not None
     assert await store.get_scoped_note("zotero-note") is None
     assert [job["job_id"] for job in await store.list_build_jobs()] == ["local-job"]
+    assert len(await store.list_codex_graph_tasks("local-job")) == 1
+    assert await store.list_codex_graph_tasks("zotero-job") == []
     assert await store.get_console_scope_state("document", "local-doc") is not None
     assert await store.get_console_scope_state("document", "zotero-doc") is None
     assert await store.get_source_account_binding("zotero_server") == {
         "account_id": "123",
         "account_name": "old",
     }
+
+
+async def test_codex_graph_task_ledger_memory() -> None:
+    store = InMemorySourceDocumentStore()
+    await store.upsert_build_job(
+        {
+            "job_id": "codex-job",
+            "collection": "papers",
+            "status": "waiting_agent",
+            "stage": "waiting_agent",
+        }
+    )
+    await store.replace_codex_graph_tasks(
+        "codex-job",
+        [
+            {
+                "task_id": "task-1",
+                "job_id": "codex-job",
+                "collection": "papers",
+                "doc_id": "doc-1",
+                "chunk_index": 0,
+                "chunk_hash": "hash",
+                "content": "bounded chunk",
+            }
+        ],
+    )
+
+    pending = await store.list_codex_graph_tasks("codex-job", status="pending")
+    assert [task["task_id"] for task in pending] == ["task-1"]
+    latest = await store.get_latest_codex_graph_build_job()
+    assert latest is not None
+    assert latest["job_id"] == "codex-job"
+    assert await store.update_codex_graph_task("task-1", "error", "retry me") is True
+    task = await store.get_codex_graph_task("task-1")
+    assert task is not None
+    assert task["status"] == "error"
+    assert task["last_error"] == "retry me"
+    assert await store.update_codex_graph_task("missing", "pending") is False
 
 
 # ── 统一多归属集合树（v0.26.3）────────────────────────────────────

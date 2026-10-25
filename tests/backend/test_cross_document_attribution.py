@@ -11,11 +11,11 @@ import pytest
 
 from kacore.config import Config
 from kacore.domain.deep_thinking import Checklist, ChecklistItem, EvidenceItem
+from kacore.domain.llm_generation import GenerationResult
 from kacore.domain.models import DocumentChunk, SourceDocument
 from kacore.pipelines.answer_synthesis import source_tag, synthesize_answer
 from kacore.pipelines.deep_thinking_prompts import build_sea_prompt, build_verify_prompt
 from kacore.pipelines.retrieval_orchestrator import RetrievalOrchestrator
-from kacore.repository.kb_reader.base import KnowledgeBaseReader
 from kacore.repository.source_store.memory import InMemorySourceDocumentStore
 
 # 两篇相似论文的证据，doc_id 即来源标签的解析键。
@@ -24,28 +24,17 @@ _CHUNK_B = DocumentChunk("b_c0", "LeanMarathon", 0, "goal drift 与 lost-in-the-
 _LABELS = {"Lean4Agent": "Lean4Agent", "LeanMarathon": "LeanMarathon"}
 
 
-class _EmptyKB(KnowledgeBaseReader):
-    async def list_collections(self) -> list[str]:
-        return []
-
-    async def list_chunks(self, collection: str) -> list[DocumentChunk]:
-        return []
-
-    async def search(self, collection: str, query: str, top_k: int) -> list[DocumentChunk]:
-        return []
-
-
 class _CaptureLLM:
     """记录最后一次 generate 的 user prompt，返回固定答案（不依赖真实模型输出）。"""
 
     def __init__(self) -> None:
         self.last_user = ""
 
-    async def generate(
+    async def generate_result(
         self, prompt: str, *, system_prompt: str = "", allow_mock: bool = True
-    ) -> str:
+    ) -> GenerationResult:
         self.last_user = prompt
-        return "answer [1] [2]"
+        return GenerationResult(text="answer [1] [2]")
 
 
 def _evidence() -> list[EvidenceItem]:
@@ -113,7 +102,7 @@ async def test_document_labels_resolves_titles_and_falls_back() -> None:
     await store.add_document(_doc("Lean4Agent", "Lean4Agent: 论文标题"))
     await store.add_document(_doc("BlankTitle", ""))
     orch = RetrievalOrchestrator(
-        source_store=store, kb_reader=_EmptyKB(), config=Config({"vector_db": {"backend": "astr"}})
+        source_store=store, config=Config({"vector_db": {"backend": "lexical"}})
     )
     labels = await orch.document_labels(["Lean4Agent", "BlankTitle", "Missing"])
     assert labels["Lean4Agent"] == "Lean4Agent: 论文标题"

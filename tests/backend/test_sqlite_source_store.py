@@ -3,6 +3,7 @@
 使用 aiosqlite 在内存数据库（:memory:）中运行，通过 migration runner 跑迁移，
 并对 SQLiteSourceDocumentStore 执行与内存实现完全一致的契约校验。
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -11,11 +12,11 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from kacore.domain.conversation import ConversationSession
 from kacore.domain.models import (
     Collection,
     ConsoleScopeState,
     DocumentChunk,
+    DocumentLifecycle,
     DocumentOrigin,
     ScopedNote,
     SourceDocument,
@@ -72,36 +73,6 @@ async def test_add_and_get_document(sqlite_store: SQLiteSourceDocumentStore) -> 
     assert await sqlite_store.get_document("missing") is None
 
 
-async def test_chat_session_crud_and_metadata_roundtrip(
-    sqlite_store: SQLiteSourceDocumentStore,
-) -> None:
-    session = ConversationSession(
-        "web-session",
-        channel="web",
-        external_key="browser-profile",
-        research_enabled=True,
-        context_enabled=False,
-    )
-    await sqlite_store.upsert_chat_session(session)
-    by_external = await sqlite_store.get_chat_session_by_external_key(
-        "web", "browser-profile"
-    )
-    assert by_external is not None
-    assert by_external.research_enabled is True and by_external.context_enabled is False
-
-    await sqlite_store.add_chat_message(
-        "web-session",
-        "assistant",
-        "answer",
-        metadata={"context_applied": True, "retrieval_scope": {"kind": "collection"}},
-    )
-    messages = await sqlite_store.get_chat_messages("web-session")
-    assert messages[0]["metadata"]["context_applied"] is True
-
-    await sqlite_store.delete_chat_session("web-session")
-    assert await sqlite_store.get_chat_session("web-session") is None
-
-
 async def test_graph_build_job_pause_migration_defaults_and_cleanup() -> None:
     conn = await aiosqlite.connect(":memory:")
     await run_migrations(conn)
@@ -132,6 +103,50 @@ async def test_graph_build_job_pause_migration_defaults_and_cleanup() -> None:
     resumable = await store.get_latest_resumable_build_job()
     assert resumable and resumable["job_id"] == "job-paused"
     await conn.close()
+
+
+async def test_codex_graph_task_ledger_sqlite(
+    sqlite_store: SQLiteSourceDocumentStore,
+) -> None:
+    await sqlite_store.upsert_build_job(
+        {
+            "job_id": "codex-job",
+            "collection": "papers",
+            "status": "waiting_agent",
+            "stage": "waiting_agent",
+            "started_at": "2026-01-01T00:00:00Z",
+        }
+    )
+    await sqlite_store.replace_codex_graph_tasks(
+        "codex-job",
+        [
+            {
+                "task_id": "task-1",
+                "job_id": "codex-job",
+                "collection": "papers",
+                "doc_id": "doc-1",
+                "chunk_index": 0,
+                "chunk_hash": "hash",
+                "content": "bounded chunk",
+            }
+        ],
+    )
+
+    pending = await sqlite_store.list_codex_graph_tasks(
+        "codex-job", status="pending"
+    )
+    assert [task["task_id"] for task in pending] == ["task-1"]
+    latest = await sqlite_store.get_latest_codex_graph_build_job()
+    assert latest is not None and latest["job_id"] == "codex-job"
+    assert (
+        await sqlite_store.update_codex_graph_task("task-1", "error", "retry me")
+        is True
+    )
+    task = await sqlite_store.get_codex_graph_task("task-1")
+    assert task is not None
+    assert task["status"] == "error"
+    assert task["last_error"] == "retry me"
+    assert await sqlite_store.update_codex_graph_task("missing", "pending") is False
 
 
 async def test_add_duplicate_raises(sqlite_store: SQLiteSourceDocumentStore) -> None:
@@ -419,6 +434,23 @@ async def test_purge_zotero_mirror_keeps_local_state(
             "started_at": "2026-01-01T00:00:00Z",
         }
     )
+    for job_id, collection, doc_id in (
+        ("local-job", "default", "local-doc"),
+        ("zotero-job", "zotero-old", "zotero-doc"),
+    ):
+        await sqlite_store.replace_codex_graph_tasks(
+            job_id,
+            [
+                {
+                    "task_id": f"{job_id}-task",
+                    "collection": collection,
+                    "doc_id": doc_id,
+                    "chunk_index": 0,
+                    "chunk_hash": f"{job_id}-hash",
+                    "content": "bounded chunk",
+                }
+            ],
+        )
     await sqlite_store.upsert_console_scope_state(
         ConsoleScopeState("document", "local-doc", selected_doc_id="local-doc")
     )
@@ -434,6 +466,8 @@ async def test_purge_zotero_mirror_keeps_local_state(
     assert await sqlite_store.get_scoped_note("local-note") is not None
     assert await sqlite_store.get_scoped_note("zotero-note") is None
     assert [job["job_id"] for job in await sqlite_store.list_build_jobs()] == ["local-job"]
+    assert len(await sqlite_store.list_codex_graph_tasks("local-job")) == 1
+    assert await sqlite_store.list_codex_graph_tasks("zotero-job") == []
     assert await sqlite_store.get_console_scope_state("document", "local-doc") is not None
     assert await sqlite_store.get_console_scope_state("document", "zotero-doc") is None
     assert await sqlite_store.get_source_account_binding("zotero_server") == {
@@ -664,3 +698,74 @@ async def test_notion_outbox_lifecycle(sqlite_store: SQLiteSourceDocumentStore) 
     assert [i.id for i in await sqlite_store.list_notion_outbox()] == ["ob2", "ob3", "ob1"]
 
     assert await sqlite_store.update_notion_outbox(NotionOutboxItem(id="missing")) is False
+
+
+async def test_corpus_stats_excludes_detached_documents(
+    sqlite_store: SQLiteSourceDocumentStore,
+) -> None:
+    active = _doc("active")
+    active.needs_reindex = True
+    detached = _doc("detached")
+    detached.lifecycle_state = DocumentLifecycle.DETACHED
+    detached.needs_reindex = True
+    await sqlite_store.add_document(active)
+    await sqlite_store.add_document(detached)
+    await sqlite_store.replace_chunks(
+        "active",
+        [
+            DocumentChunk("active-0", "active", 0, "first", "h0"),
+            DocumentChunk("active-1", "active", 1, "second", "h1"),
+        ],
+    )
+    await sqlite_store.replace_chunks(
+        "detached",
+        [
+            DocumentChunk("detached-0", "detached", 0, "old", "h2"),
+            DocumentChunk("detached-1", "detached", 1, "old", "h3"),
+        ],
+    )
+
+    assert await sqlite_store.get_corpus_stats() == {
+        "document_count": 1,
+        "pending_reindex_count": 1,
+        "chunk_count": 2,
+    }
+
+
+async def test_notion_revision_tracks_local_changes_but_not_scan_or_ledger(
+    sqlite_store: SQLiteSourceDocumentStore,
+) -> None:
+    from kacore.domain.models import NotionEntityRecord
+
+    baseline = await sqlite_store.get_notion_local_revision()
+    await sqlite_store.add_document(_doc("notion-revision"))
+    revision = await sqlite_store.get_notion_local_revision()
+    assert int(revision) > int(baseline)
+    await sqlite_store.set_notion_scan_cursor("notes:db:ds", "2026-10-02T00:00:00+00:00")
+    await sqlite_store.upsert_notion_entity(
+        NotionEntityRecord(
+            entity_type="document",
+            entity_key="notion-revision",
+            page_id="page",
+        )
+    )
+    assert await sqlite_store.get_notion_local_revision() == revision
+    assert await sqlite_store.get_notion_scan_cursor("notes:other:ds") == ""
+    assert await sqlite_store.get_notion_scan_cursor("notes:db:ds") == "2026-10-02T00:00:00+00:00"
+    # A fresh store over the same connection reads the persisted checkpoint.
+    reopened = SQLiteSourceDocumentStore(sqlite_store._db)
+    assert await reopened.get_notion_scan_cursor("notes:db:ds") == "2026-10-02T00:00:00+00:00"
+    await sqlite_store.set_document_collections("notion-revision", ["x"])
+    assert int(await sqlite_store.get_notion_local_revision()) > int(revision)
+
+
+async def test_notion_revision_waits_for_local_transaction_commit(
+    sqlite_store: SQLiteSourceDocumentStore,
+) -> None:
+    import asyncio
+
+    async with sqlite_store._write_lock:
+        task = asyncio.create_task(sqlite_store.get_notion_local_revision())
+        await asyncio.sleep(0)
+        assert not task.done()
+    assert await task == await sqlite_store.get_notion_local_revision()

@@ -25,8 +25,9 @@ venv/
 .agents/skills/*
 !.agents/skills/operate-knowledge-arch/
 !.agents/skills/operate-knowledge-arch/**
+# 上面的 ** 会把顶部的 __pycache__/ 规则一并推翻（后匹配者胜），这里再排除一次：
+# 否则 skill 脚本每被 import 一次，字节码缓存就会以二进制形式脏一次工作区。
 .agents/skills/operate-knowledge-arch/**/__pycache__/
-.agents/skills/operate-knowledge-arch/**/*.py[cod]
 
 # ── 测试 / 类型 / lint 缓存 ─────────────────────────────
 .pytest_cache/
@@ -42,6 +43,8 @@ run_config.py          # 由 dev/run_config.example.py 复制而来，含本地�
 *.sqlite
 *.log
 /data/                 # 运行态数据/原件目录（含知识内容，不入库）
+# 私有论文 PDF + 抽取全文，仅本地核对切片用，见该目录 README
+/docs/chunk_preview_samples/
 
 # ── 前端（仅当存在 web/frontend/）───────────────────────
 web/frontend/node_modules/
@@ -68,3 +71,9 @@ tests/mock_data/**/__pycache__/
 
 # ── 本地临时研究目录（防止误把嵌套 git 仓库 add 成孤儿 gitlink）──
 _tmp_*/
+
+# ── 桌面壳（desktop/）─────────────────────────────────────
+/desktop/src-tauri/target/
+/desktop/src-tauri/resources/
+/desktop/src-tauri/gen/
+/desktop/node_modules/

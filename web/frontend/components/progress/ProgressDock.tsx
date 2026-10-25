@@ -8,9 +8,11 @@
 
 import React, { useCallback, useContext, useEffect, useRef, useState } from "react";
 import {
+  cancelBuildJob,
   getActiveBuildJob,
   getActiveIngestJob,
   getActiveMilvusBuildJob,
+  getActiveNotionSyncJob,
   getActiveZoteroSyncJob,
   pauseBuildJob,
   resumeBuildJob,
@@ -19,10 +21,11 @@ import { I18nContext } from "@/lib/i18n";
 import { useConsole } from "@/lib/ConsoleContext";
 import { Z } from "@/lib/zLayers";
 import { useToast } from "@/components/ui/Toast";
+import { notifyDesktop } from "@/lib/backend";
 
 // ─── 归一化模型 ───────────────────────────────────────────────
 
-type DockKind = "zotero_sync" | "milvus_build" | "graph_build" | "ingest";
+type DockKind = "zotero_sync" | "notion_sync" | "milvus_build" | "graph_build" | "ingest";
 
 interface DockJob {
   key: string;
@@ -51,31 +54,43 @@ function pctOf(percent: number | null | undefined): number | null {
 function useProgressJobs(): DockJob[] {
   const { t } = useContext(I18nContext);
   const { toast } = useToast();
+  // 后台任务的完成 / 失败提示：窗口内用 toast；窗口不在前台时另发系统通知（桌面壳）。
+  const announce = useCallback((message: string, kind: "ok" | "error" | "info") => {
+    toast(message, kind);
+    if (typeof document !== "undefined" && (document.hidden || !document.hasFocus())) {
+      void notifyDesktop("Knowledge Arch", message);
+    }
+  }, [toast]);
   const [jobs, setJobs] = useState<DockJob[]>([]);
   const anyActiveRef = useRef(false);
   const notifiedZoteroRef = useRef<Set<string>>(new Set());
+  const notifiedNotionRef = useRef<Set<string>>(new Set());
   // 单次轮询请求超时/网络抖动不代表任务已结束：失败的那一路沿用上次成功值，
   // 避免后端短暂阻塞（如同步期间的 PDF 解析）把整个面板闪没。
   const lastRef = useRef<{
     zotero: Awaited<ReturnType<typeof getActiveZoteroSyncJob>>;
+    notion: Awaited<ReturnType<typeof getActiveNotionSyncJob>>;
     milvus: Awaited<ReturnType<typeof getActiveMilvusBuildJob>>;
     graph: Awaited<ReturnType<typeof getActiveBuildJob>>;
     ingest: Awaited<ReturnType<typeof getActiveIngestJob>>;
-  }>({ zotero: null, milvus: null, graph: null, ingest: null });
+  }>({ zotero: null, notion: null, milvus: null, graph: null, ingest: null });
 
   const poll = useCallback(async () => {
-    const [zoteroResult, milvusResult, graphResult, ingestResult] = await Promise.allSettled([
-      getActiveZoteroSyncJob(),
-      getActiveMilvusBuildJob(),
-      getActiveBuildJob(),
-      getActiveIngestJob(),
-    ]);
+    const [zoteroResult, notionResult, milvusResult, graphResult, ingestResult] =
+      await Promise.allSettled([
+        getActiveZoteroSyncJob(),
+        getActiveNotionSyncJob(),
+        getActiveMilvusBuildJob(),
+        getActiveBuildJob(),
+        getActiveIngestJob(),
+      ]);
     const last = lastRef.current;
     const zotero = zoteroResult.status === "fulfilled" ? zoteroResult.value : last.zotero;
+    const notion = notionResult.status === "fulfilled" ? notionResult.value : last.notion;
     const milvus = milvusResult.status === "fulfilled" ? milvusResult.value : last.milvus;
     const graph = graphResult.status === "fulfilled" ? graphResult.value : last.graph;
     const ingest = ingestResult.status === "fulfilled" ? ingestResult.value : last.ingest;
-    lastRef.current = { zotero, milvus, graph, ingest };
+    lastRef.current = { zotero, notion, milvus, graph, ingest };
     const next: DockJob[] = [];
 
     if (zotero) {
@@ -83,11 +98,11 @@ function useProgressJobs(): DockJob[] {
         const notifyKey = `${zotero.job_id}:${zotero.status}`;
         if (!notifiedZoteroRef.current.has(notifyKey)) {
           notifiedZoteroRef.current.add(notifyKey);
-          if (zotero.status === "success") toast(t("zotero_sync_done"), "ok");
+          if (zotero.status === "success") announce(t("zotero_sync_done"), "ok");
           else if (zotero.status === "partial_failure") {
-            toast(zotero.recent_error || t("zotero_sync_partial"), "error");
+            announce(zotero.recent_error || t("zotero_sync_partial"), "error");
           } else if (zotero.status === "error") {
-            toast(zotero.recent_error || t("zotero_sync_failed"), "error");
+            announce(zotero.recent_error || t("zotero_sync_failed"), "error");
           }
         }
       }
@@ -107,6 +122,39 @@ function useProgressJobs(): DockJob[] {
         active: zotero.status === "running",
         paused: false,
         recentError: zotero.recent_error || "",
+        collection: "",
+      });
+    }
+    if (notion) {
+      if (notion.status !== "running") {
+        const notifyKey = `${notion.job_id}:${notion.status}`;
+        if (!notifiedNotionRef.current.has(notifyKey)) {
+          notifiedNotionRef.current.add(notifyKey);
+          if (notion.status === "success") announce(t("notion_sync_done"), "ok");
+          else if (notion.status === "partial_failure") {
+            announce(notion.recent_error || t("notion_sync_partial"), "error");
+          } else if (notion.status === "error") {
+            announce(notion.recent_error || t("notion_sync_failed"), "error");
+          }
+        }
+      }
+      const notionDone = notion.docs_processed ?? 0;
+      const prunedBits = notion.tags_pruned ? ` · ${notion.tags_pruned} tags` : "";
+      const notesBits = ` · ${notion.notes_marked ?? 0}/${notion.notes_scanned ?? 0} notes`;
+      const requestBits = ` · ${notion.request_count ?? 0} requests`;
+      const costBits = ` · ${(notion.elapsed_seconds ?? 0).toFixed(1)}s · ${notion.model_tokens ?? 0} tokens`;
+      next.push({
+        key: `notion_sync:${notion.job_id}`,
+        kind: "notion_sync",
+        jobId: notion.job_id,
+        label: t("progress_dock_notion"),
+        sub: notion.stage_label || notion.stage || "",
+        pct: pctOf(notion.progress_percent),
+        detail: `${notionDone}/${notion.docs_total ?? 0} docs · +${notion.docs_created ?? 0} ~${notion.docs_updated ?? 0} · ${notion.docs_archived ?? 0} arch${prunedBits}${notesBits}${requestBits}${costBits}`,
+        status: notion.status,
+        active: notion.status === "running",
+        paused: false,
+        recentError: notion.recent_error || "",
         collection: "",
       });
     }
@@ -144,7 +192,10 @@ function useProgressJobs(): DockJob[] {
             ? `${graph.processed_chunks}/${graph.total_chunks} chunks`
             : graph.collection || "",
         status: graph.status,
-        active: graph.status === "queued" || graph.status === "running" || !!graph.paused,
+        active:
+          ["queued", "running", "pause_requested", "paused", "waiting_agent"].includes(
+            graph.status
+          ) || !!graph.paused,
         paused: !!graph.paused,
         recentError: graph.recent_error || "",
         collection: graph.collection || "",
@@ -169,7 +220,7 @@ function useProgressJobs(): DockJob[] {
 
     anyActiveRef.current = next.some((j) => j.active);
     setJobs(next);
-  }, [t, toast]);
+  }, [announce, t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -198,7 +249,7 @@ function useProgressJobs(): DockJob[] {
 
 export function ProgressDock() {
   const { t } = useContext(I18nContext);
-  const { setWorkflowOpen } = useConsole();
+  const { setView } = useConsole();
   const jobs = useProgressJobs();
   const [collapsed, setCollapsed] = useState(false);
 
@@ -228,7 +279,7 @@ export function ProgressDock() {
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <button
           onClick={() => setCollapsed((v) => !v)}
-          aria-label={collapsed ? "展开" : "收起"}
+          aria-label={collapsed ? t("progress_dock_expand") : t("progress_dock_collapse")}
           style={{
             background: "none", border: "none", cursor: "pointer",
             color: "var(--fg-muted)", fontSize: 11, lineHeight: 1, padding: 0,
@@ -248,7 +299,7 @@ export function ProgressDock() {
       {/* rows */}
       {!collapsed &&
         jobs.map((job) => (
-          <ProgressRow key={job.key} job={job} onGotoGraph={() => setWorkflowOpen(true)} />
+          <ProgressRow key={job.key} job={job} onGotoGraph={() => setView("flow")} />
         ))}
 
       <style>{`
@@ -268,6 +319,9 @@ function ProgressRow({
   onGotoGraph: () => void;
 }) {
   const { t } = useContext(I18nContext);
+  const { toast } = useToast();
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const terminal = job.status === "error" || job.status === "partial_failure";
   const color = job.status === "error"
     ? "var(--danger)"
@@ -282,6 +336,18 @@ function ProgressRow({
   }
   async function handleResume() {
     try { await resumeBuildJob(job.jobId); } catch { /* ignore */ }
+  }
+  async function handleCancelConfirmed() {
+    setCancelling(true);
+    try {
+      await cancelBuildJob(job.jobId, true);
+      toast(t("build_widget_cancel_success"), "ok");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : t("build_widget_cancel_error"), "error");
+    } finally {
+      setCancelling(false);
+      setConfirmingCancel(false);
+    }
   }
 
   return (
@@ -329,16 +395,45 @@ function ProgressRow({
         </span>
       )}
 
-      {job.kind === "graph_build" && (
+      {job.kind === "graph_build" && job.active && confirmingCancel && (
+        <div
+          style={{
+            fontSize: 10, color: "var(--fg-muted)", background: "var(--surface)",
+            border: "1px solid var(--border)", borderRadius: 8, padding: "6px 8px",
+            display: "flex", flexDirection: "column", gap: 6,
+          }}
+        >
+          <span>{t("build_widget_cancel_confirm_body")}</span>
+          <div style={{ display: "flex", gap: 6 }}>
+            <RowButton
+              onClick={handleCancelConfirmed}
+              label={cancelling ? t("build_widget_cancelling") : t("build_widget_cancel_confirm_yes")}
+              disabled={cancelling}
+              primary
+            />
+            <RowButton
+              onClick={() => setConfirmingCancel(false)}
+              label={t("build_widget_cancel_confirm_no")}
+              disabled={cancelling}
+            />
+          </div>
+        </div>
+      )}
+
+      {job.kind === "graph_build" && !confirmingCancel && (
         <div style={{ display: "flex", gap: 6 }}>
-          {job.active && (
-            job.paused ? (
-              <RowButton onClick={handleResume} label={t("build_widget_resume")} primary />
-            ) : (
-              <RowButton onClick={handlePause} label={t("build_widget_pause")} />
-            )
+          {job.active ? (
+            <>
+              {job.paused ? (
+                <RowButton onClick={handleResume} label={t("build_widget_resume")} primary />
+              ) : (
+                <RowButton onClick={handlePause} label={t("build_widget_pause")} />
+              )}
+              <RowButton onClick={() => setConfirmingCancel(true)} label={t("build_widget_cancel")} />
+            </>
+          ) : (
+            <RowButton onClick={onGotoGraph} label={t("build_widget_goto_graph")} />
           )}
-          <RowButton onClick={onGotoGraph} label={t("build_widget_goto_graph")} />
         </div>
       )}
     </div>
@@ -349,20 +444,24 @@ function RowButton({
   onClick,
   label,
   primary,
+  disabled,
 }: {
   onClick: () => void;
   label: string;
   primary?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
+      disabled={disabled}
       style={{
         flex: 1, padding: "3px 0", fontSize: 11, fontWeight: primary ? 600 : 500,
         background: primary ? "var(--accent)" : "transparent",
         color: primary ? "var(--accent-fg)" : "var(--fg-muted)",
         border: primary ? "none" : "1px solid var(--border)",
-        borderRadius: 999, cursor: "pointer",
+        borderRadius: 999, cursor: disabled ? "default" : "pointer",
+        opacity: disabled ? 0.6 : 1,
       }}
     >
       {label}

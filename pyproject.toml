@@ -1,58 +1,14 @@
-# 工具链配置 + 独立应用打包。约定：测试绿是 TODO 标 [x] 的前提；domain 层启用严格类型检查。
-# [project] 为独立应用（standalone）版本线的版本源（tools/bump_version.py --target standalone）。
-# 安装模型：clone 仓库 + uv sync（项目以 editable 安装，pages/ 与 ka_migrations/*.sql 随源码树
-# 就位），不走 PyPI wheel 发布；参考 index-tts 的 uv + extras + .python-version 方案。
-
-[build-system]
-requires = ["hatchling>=1.27"]
-build-backend = "hatchling.build"
-
-[project]
-name = "knowledge-arch"
-version = "0.2.2"
-description = "原件中心的知识库系统：PDF 原件管理、五档检索/RAG、LightRAG 图谱、Zotero/R2/Notion 同步、对话 Agent"
-readme = "README.md"
-requires-python = ">=3.10,<3.13"
-dependencies = [
-    "aiosqlite",
-    "PyMuPDF>=1.24,<2.0",
-    "pymupdf4llm>=0.0.17,<0.1.0",
-    "aiohttp",
-    # 机密存储（EncryptedSecretStore）；插件模式由 AstrBot 核心提供，独立版必装。
-    "cryptography",
-    # Milvus Lite 无 Windows 原生 wheel：Windows 装纯客户端，向量检索走
-    # 外部 Milvus URI / WSL / SQLite 词法回落三条路（见 README 部署说明与 doctor 命令）。
-    'pymilvus[milvus_lite]>=2.5,<3.0; platform_system != "Windows"',
-    'pymilvus>=2.5,<3.0; platform_system == "Windows"',
-]
-
-[project.optional-dependencies]
-graph = ["lightrag-hku>=1.5.0rc1,<2.0.0"]
-local-embedding = ["sentence-transformers>=3,<6"]
-backup = ["boto3"]
-notion = ["mcp>=1.0,<2"]
-discord = ["discord.py>=2.7,<3"]
-all = ["knowledge-arch[graph,local-embedding,backup,notion,discord]"]
-
-[project.scripts]
-knowledge-arch = "standalone.cli:main"
-
-[project.urls]
-Repository = "https://github.com/Gar1ton/Knowledge-Arch"
-
-[tool.hatch.build.targets.wheel]
-packages = ["kacore", "web", "ka_migrations", "standalone"]
+# 工具链配置。约定：测试绿是 TODO 标 [x] 的前提；domain 层启用严格类型检查。
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"               # 异步测试免写事件循环样板
-# 让测试可 import kacore、测试替身，以及插件壳自有包 ka_plugin
-# （apps/plugin 上 path 镜像生产：AstrBot 会把插件目录加入 sys.path）。
-pythonpath = [".", "tests/mocks", "apps/plugin"]
+pythonpath = [".", "tests/mocks"]   # 让测试可 import kacore 与测试替身
 testpaths = ["tests"]
 
 [tool.ruff]
 target-version = "py310"
 line-length = 100
+extend-exclude = ["desktop/src-tauri"]   # 打包产物（含捆绑的 CPython 标准库）
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]      # 基础错误 + 未用 + import 排序 + 语法升级

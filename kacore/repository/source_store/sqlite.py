@@ -15,7 +15,6 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from kacore.domain.conversation import ConversationSession
 from kacore.domain.models import (
     Collection,
     ConsoleScopeState,
@@ -214,6 +213,23 @@ def _row_to_build_job(row: tuple) -> dict:
     }
 
 
+def _row_to_codex_graph_task(row: tuple) -> dict:
+    """将 codex_graph_tasks 查询行映射为任务字典。"""
+    return {
+        "task_id": row[0],
+        "job_id": row[1],
+        "collection": row[2],
+        "doc_id": row[3],
+        "chunk_index": row[4],
+        "chunk_hash": row[5],
+        "content": row[6],
+        "status": row[7],
+        "last_error": row[8],
+        "created_at": row[9],
+        "updated_at": row[10],
+    }
+
+
 def _row_to_chat_message(row: tuple) -> dict:
     """把 chat_history 一行映射成前端 API 字典。"""
     return {
@@ -226,22 +242,7 @@ def _row_to_chat_message(row: tuple) -> dict:
         "locked": bool(row[6]),
         "locked_at": row[7],
         "updated_at": row[8],
-        "metadata": _loads_dict(row[9]) if len(row) > 9 else {},
     }
-
-
-def _row_to_chat_session(row: tuple) -> ConversationSession:
-    """把 chat_sessions 一行映射为领域对象。"""
-    return ConversationSession(
-        conversation_id=str(row[0]),
-        channel=str(row[1]),
-        external_key=str(row[2]),
-        research_enabled=bool(row[3]),
-        context_enabled=bool(row[4]),
-        persona_enabled=bool(row[5]),
-        created_at=_parse_dt(row[6]),
-        updated_at=_parse_dt(row[7]),
-    )
 
 
 _T = TypeVar("_T")
@@ -259,7 +260,11 @@ def _locked_write(fn: Callable[..., Awaitable[_T]]) -> Callable[..., Awaitable[_
     @functools.wraps(fn)
     async def wrapper(self: SQLiteSourceDocumentStore, *args: Any, **kwargs: Any) -> _T:
         async with self._write_lock:
-            return await fn(self, *args, **kwargs)
+            try:
+                return await fn(self, *args, **kwargs)
+            except BaseException:
+                await self._db.rollback()
+                raise
 
     return wrapper
 
@@ -652,6 +657,14 @@ class SQLiteSourceDocumentStore(SourceDocumentStore):
     # ── 分块 ────────────────────────────────────────────────────
 
     @_locked_write
+    async def commit_document_processing(
+        self, document: SourceDocument, chunks: list[DocumentChunk], pages: list[PageChunk],
+    ) -> None:
+        from .processing import commit_processing
+
+        await commit_processing(self._db, document, chunks, pages)
+
+    @_locked_write
     async def replace_chunks(self, doc_id: str, chunks: list[DocumentChunk]) -> None:
         # 整体替换语义：先删该 doc 旧 chunks -> 再插入新 chunks。包裹在同一个事务内。
         try:
@@ -770,10 +783,15 @@ class SQLiteSourceDocumentStore(SourceDocumentStore):
         async with self._db.execute(
             """
             SELECT
-                (SELECT COUNT(*) FROM documents),
+                (SELECT COUNT(*) FROM documents
+                   WHERE lifecycle_state = 'active'),
                 (SELECT COALESCE(SUM(CASE WHEN needs_reindex != 0 THEN 1 ELSE 0 END), 0)
-                   FROM documents),
-                (SELECT COUNT(*) FROM chunks)
+                   FROM documents
+                   WHERE lifecycle_state = 'active'),
+                (SELECT COUNT(*)
+                   FROM chunks AS c
+                   JOIN documents AS d ON d.doc_id = c.doc_id
+                   WHERE d.lifecycle_state = 'active')
             """
         ) as cursor:
             row = await cursor.fetchone()
@@ -787,20 +805,36 @@ class SQLiteSourceDocumentStore(SourceDocumentStore):
 
     @_locked_write
     async def set_lightrag_index_status(
-        self, doc_id: str, collection: str, status: str, last_error: str = ""
+        self,
+        doc_id: str,
+        collection: str,
+        status: str,
+        last_error: str = "",
+        *,
+        job_id: str | None = None,
     ) -> None:
         updated_at = _format_dt(datetime.now(timezone.utc))
         await self._db.execute(
             """
-            INSERT INTO lightrag_index_status (doc_id, collection, status, last_error, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO lightrag_index_status
+                (doc_id, collection, status, last_error, updated_at, job_id)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(doc_id) DO UPDATE SET
                 collection = excluded.collection, status = excluded.status,
-                last_error = excluded.last_error, updated_at = excluded.updated_at
+                last_error = excluded.last_error, updated_at = excluded.updated_at,
+                job_id = excluded.job_id
             """,
-            (doc_id, collection, status, last_error, updated_at),
+            (doc_id, collection, status, last_error, updated_at, job_id),
         )
         await self._db.commit()
+
+    @_locked_write
+    async def delete_lightrag_index_status_by_job(self, job_id: str) -> int:
+        cursor = await self._db.execute(
+            "DELETE FROM lightrag_index_status WHERE job_id = ?", (job_id,)
+        )
+        await self._db.commit()
+        return cursor.rowcount if cursor.rowcount is not None else 0
 
     async def get_lightrag_index_status(self, doc_id: str) -> dict[str, str] | None:
         async with self._db.execute(
@@ -912,6 +946,86 @@ class SQLiteSourceDocumentStore(SourceDocumentStore):
         await self._db.commit()
         return cursor.rowcount
 
+    @_locked_write
+    async def replace_codex_graph_tasks(self, job_id: str, tasks: list[dict]) -> None:
+        await self._db.execute("DELETE FROM codex_graph_tasks WHERE job_id = ?", (job_id,))
+        await self._db.executemany(
+            """
+            INSERT INTO codex_graph_tasks
+                (task_id, job_id, collection, doc_id, chunk_index, chunk_hash,
+                 content, status, last_error)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    task["task_id"],
+                    job_id,
+                    task["collection"],
+                    task["doc_id"],
+                    int(task["chunk_index"]),
+                    task["chunk_hash"],
+                    task["content"],
+                    task.get("status", "pending"),
+                    task.get("last_error", ""),
+                )
+                for task in tasks
+            ],
+        )
+        await self._db.commit()
+
+    async def list_codex_graph_tasks(
+        self, job_id: str, status: str | None = None
+    ) -> list[dict]:
+        query = (
+            "SELECT task_id, job_id, collection, doc_id, chunk_index, chunk_hash, "
+            "content, status, last_error, created_at, updated_at "
+            "FROM codex_graph_tasks WHERE job_id = ?"
+        )
+        params: tuple[Any, ...] = (job_id,)
+        if status is not None:
+            query += " AND status = ?"
+            params = (job_id, status)
+        query += " ORDER BY doc_id, chunk_index"
+        async with self._db.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+        return [_row_to_codex_graph_task(row) for row in rows]
+
+    async def get_codex_graph_task(self, task_id: str) -> dict | None:
+        async with self._db.execute(
+            "SELECT task_id, job_id, collection, doc_id, chunk_index, chunk_hash, "
+            "content, status, last_error, created_at, updated_at "
+            "FROM codex_graph_tasks WHERE task_id = ?",
+            (task_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return _row_to_codex_graph_task(row) if row is not None else None
+
+    @_locked_write
+    async def update_codex_graph_task(
+        self, task_id: str, status: str, last_error: str = ""
+    ) -> bool:
+        cursor = await self._db.execute(
+            "UPDATE codex_graph_tasks SET status = ?, last_error = ?, "
+            "updated_at = CURRENT_TIMESTAMP WHERE task_id = ?",
+            (status, last_error, task_id),
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def get_latest_codex_graph_build_job(self) -> dict | None:
+        async with self._db.execute(
+            "SELECT j.job_id, j.collection, j.status, j.stage, j.processed_docs, "
+            "j.failed_docs, j.total_docs, j.processed_chunks, j.failed_chunks, "
+            "j.total_chunks, j.recent_error, j.started_at, j.finished_at, j.created_at, "
+            "j.pause_requested, j.paused_at, j.paused_seconds, j.progress_current, "
+            "j.progress_total FROM graph_build_jobs j "
+            "WHERE j.status = 'waiting_agent' AND EXISTS "
+            "(SELECT 1 FROM codex_graph_tasks t WHERE t.job_id = j.job_id) "
+            "ORDER BY j.created_at DESC LIMIT 1"
+        ) as cursor:
+            row = await cursor.fetchone()
+        return _row_to_build_job(row) if row is not None else None
+
     # ── 同步状态 ──────────────────────────────────────────────────
 
     async def get_sync_record(self, doc_id: str, target: SyncTargetKind) -> SyncRecord | None:
@@ -990,6 +1104,30 @@ class SQLiteSourceDocumentStore(SourceDocumentStore):
             ]
 
     # ── Notion 推送账本与暂存箱 ───────────────────────────────────
+
+    async def get_notion_local_revision(self) -> str:
+        # 与写事务共享连接；等待提交后再观察修订号。
+        async with self._write_lock:
+            async with self._db.execute(
+                "SELECT revision FROM notion_local_revision WHERE id = 1"
+            ) as cursor:
+                row = await cursor.fetchone()
+        return str(row[0]) if row else "0"
+
+    async def get_notion_scan_cursor(self, scope: str) -> str:
+        async with self._db.execute(
+            "SELECT cursor FROM notion_scan_state WHERE scope = ?", (scope,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return str(row[0]) if row else ""
+
+    @_locked_write
+    async def set_notion_scan_cursor(self, scope: str, cursor: str) -> None:
+        await self._db.execute(
+            "INSERT INTO notion_scan_state(scope, cursor) VALUES (?, ?) "
+            "ON CONFLICT(scope) DO UPDATE SET cursor = excluded.cursor", (scope, cursor)
+        )
+        await self._db.commit()
 
     async def get_notion_entity(
         self, entity_type: str, entity_key: str
@@ -1271,18 +1409,17 @@ class SQLiteSourceDocumentStore(SourceDocumentStore):
         conversation_id: str,
         role: str,
         content: str,
-        sources: list[dict[str, Any]] | None = None,
+        sources: list | None = None,
         retrieval_mode: str = "",
         locked: bool = False,
-        metadata: dict[str, Any] | None = None,
     ) -> None:
         now = _format_dt(datetime.now(timezone.utc))
         await self._db.execute(
             """
             INSERT INTO chat_history
                 (conversation_id, role, content, sources, retrieval_mode, created_at,
-                 locked, locked_at, updated_at, metadata)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 locked, locked_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 conversation_id,
@@ -1294,16 +1431,15 @@ class SQLiteSourceDocumentStore(SourceDocumentStore):
                 int(locked),
                 now if locked else None,
                 now,
-                json.dumps(metadata or {}, ensure_ascii=False),
             ),
         )
         await self._db.commit()
 
-    async def get_chat_messages(self, conversation_id: str) -> list[dict[str, Any]]:
+    async def get_chat_messages(self, conversation_id: str) -> list[dict]:
         async with self._db.execute(
             """
             SELECT id, role, content, sources, retrieval_mode, created_at,
-                   locked, locked_at, updated_at, metadata
+                   locked, locked_at, updated_at
               FROM chat_history WHERE conversation_id = ?
              ORDER BY id ASC
             """,
@@ -1315,7 +1451,7 @@ class SQLiteSourceDocumentStore(SourceDocumentStore):
     @_locked_write
     async def set_chat_message_locked(
         self, conversation_id: str, msg_idx: int, locked: bool
-    ) -> dict[str, Any] | None:
+    ) -> dict | None:
         if msg_idx < 0:
             return None
         async with self._db.execute(
@@ -1345,7 +1481,7 @@ class SQLiteSourceDocumentStore(SourceDocumentStore):
         async with self._db.execute(
             """
             SELECT id, role, content, sources, retrieval_mode, created_at,
-                   locked, locked_at, updated_at, metadata
+                   locked, locked_at, updated_at
               FROM chat_history
              WHERE id = ?
             """,
@@ -1368,70 +1504,6 @@ class SQLiteSourceDocumentStore(SourceDocumentStore):
                 "DELETE FROM chat_history WHERE conversation_id = ?",
                 (conversation_id,),
             )
-        await self._db.commit()
-
-    async def get_chat_session(self, conversation_id: str) -> ConversationSession | None:
-        async with self._db.execute(
-            """
-            SELECT conversation_id, channel, external_key, research_enabled,
-                   context_enabled, persona_enabled, created_at, updated_at
-              FROM chat_sessions WHERE conversation_id = ?
-            """,
-            (conversation_id,),
-        ) as cursor:
-            row = await cursor.fetchone()
-        return _row_to_chat_session(row) if row is not None else None
-
-    async def get_chat_session_by_external_key(
-        self, channel: str, external_key: str
-    ) -> ConversationSession | None:
-        async with self._db.execute(
-            """
-            SELECT conversation_id, channel, external_key, research_enabled,
-                   context_enabled, persona_enabled, created_at, updated_at
-              FROM chat_sessions WHERE channel = ? AND external_key = ?
-            """,
-            (channel, external_key),
-        ) as cursor:
-            row = await cursor.fetchone()
-        return _row_to_chat_session(row) if row is not None else None
-
-    @_locked_write
-    async def upsert_chat_session(self, session: ConversationSession) -> None:
-        now = _format_dt(datetime.now(timezone.utc))
-        created = _format_dt(session.created_at) if session.created_at else now
-        await self._db.execute(
-            """
-            INSERT INTO chat_sessions
-                (conversation_id, channel, external_key, research_enabled,
-                 context_enabled, persona_enabled, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(conversation_id) DO UPDATE SET
-                channel = excluded.channel,
-                external_key = excluded.external_key,
-                research_enabled = excluded.research_enabled,
-                context_enabled = excluded.context_enabled,
-                persona_enabled = excluded.persona_enabled,
-                updated_at = excluded.updated_at
-            """,
-            (
-                session.conversation_id,
-                session.channel,
-                session.external_key,
-                int(session.research_enabled),
-                int(session.context_enabled),
-                int(session.persona_enabled),
-                created,
-                now,
-            ),
-        )
-        await self._db.commit()
-
-    @_locked_write
-    async def delete_chat_session(self, conversation_id: str) -> None:
-        await self._db.execute(
-            "DELETE FROM chat_sessions WHERE conversation_id = ?", (conversation_id,)
-        )
         await self._db.commit()
 
     # ── 控制台上下文状态 ─────────────────────────────────────────
@@ -1821,10 +1893,55 @@ class SQLiteSourceDocumentStore(SourceDocumentStore):
         )
         await self._db.commit()
 
+    async def get_zotero_account_identity(self, namespace: str) -> dict[str, str] | None:
+        async with self._db.execute(
+            "SELECT account_key, library_id, access_mode "
+            "FROM zotero_account_identities WHERE namespace = ?",
+            (namespace,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            "account_key": str(row[0]),
+            "library_id": str(row[1]),
+            "access_mode": str(row[2]),
+        }
+
+    @_locked_write
+    async def link_zotero_account_identity(
+        self, namespace: str, account_key: str, library_id: str, access_mode: str
+    ) -> None:
+        await self._db.execute(
+            """
+            INSERT INTO zotero_account_identities
+                (namespace, account_key, library_id, access_mode, linked_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(namespace) DO UPDATE SET
+                account_key = excluded.account_key,
+                library_id = excluded.library_id,
+                access_mode = excluded.access_mode,
+                linked_at = excluded.linked_at
+            """,
+            (
+                namespace,
+                account_key,
+                library_id,
+                access_mode,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        await self._db.commit()
+
     @_locked_write
     async def purge_zotero_mirror(self) -> None:
         """单事务删除 Zotero 镜像；documents 外键级联清理 chunks/sync 等。"""
         try:
+            await self._db.execute(
+                "DELETE FROM codex_graph_tasks WHERE job_id IN "
+                "(SELECT job_id FROM graph_build_jobs WHERE collection IN "
+                "(SELECT name FROM collections WHERE origin = 'zotero'))"
+            )
             await self._db.execute(
                 "DELETE FROM graph_build_jobs WHERE collection IN "
                 "(SELECT name FROM collections WHERE origin = 'zotero')"

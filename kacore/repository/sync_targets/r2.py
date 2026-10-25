@@ -46,8 +46,8 @@ class R2SyncTarget(SyncTarget):
                 from botocore.config import Config as BotoConfig
             except ImportError as exc:
                 raise RuntimeError(
-                    "R2 sync requires optional dependencies. Install requirements-additional.txt "
-                    "into the AstrBot Python environment and restart."
+                    "R2 sync requires the optional R2 component (boto3). Install it from "
+                    "Preferences > Components and restart the service."
                 ) from exc
 
             self._s3_client = boto3.client(
@@ -221,16 +221,16 @@ class R2SyncTarget(SyncTarget):
                 used_bytes=0,
                 limit_bytes=self._config.free_tier_bytes,
                 pending_bytes=pending_bytes,
-                detail="R2 同步服务已关闭",
+                detail="R2 sync is turned off",
             )
 
         try:
             objects = await self.list_backup_objects()
             total_used_bytes = sum(int(obj.get("size") or 0) for obj in objects)
 
-            detail = "Cloudflare R2 对象存储"
+            detail = "Cloudflare R2 object storage"
             if self._config.cdn_domain:
-                detail += f" (自定义域名: {self._config.cdn_domain})"
+                detail += f" (custom domain: {self._config.cdn_domain})"
 
             return QuotaUsage(
                 target=self.kind,

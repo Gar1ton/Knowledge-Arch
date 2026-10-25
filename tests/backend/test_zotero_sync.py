@@ -1,7 +1,7 @@
 """Zotero 单向 Pull 集成测试：合成 zotero.sqlite → reader → pipeline（三种 sync_mode）。
 
 构造最小 Zotero schema 子集 + storage/<key>/paper.pdf，验证：
-镜像表、制品包生成、incremental 跳过、conservative 硬删除、strict 脱管(detached)、archive 只增不删、
+镜像表、制品包生成、incremental 跳过、conservative 脱管(detached)、strict 硬删除、archive 只增不删、
 linked 存储模式（原件留外部）、zotmoov 存储模式（ZotMoov 目录解析 + 文件名索引兜底）。
 """
 from __future__ import annotations
@@ -126,6 +126,27 @@ def _build_zotero_db(
     db.close()
 
 
+def _add_standalone_attachment(data_dir: Path, att_key: str, filename: str) -> None:
+    """追加一个无 parent item 的独立附件（模拟真实用户库里常见的「直接拖进去的 PDF」）。
+
+    `itemID` 用 900 起步，避开 `_build_zotero_db` 已用的 id 空间。独立附件不写任何
+    `items`/`itemCreators` 行——真实 Zotero 对这类附件本来就没有 creators 字段。
+    """
+    db = sqlite3.connect(data_dir / "zotero.sqlite")
+    db.execute(
+        "INSERT INTO items VALUES (900, 2, 1, ?, 1, '2026-06-01 10:00:00', "
+        "'2026-06-02 10:00:00')",
+        (att_key,),
+    )
+    db.execute(
+        "INSERT INTO itemAttachments VALUES (900, NULL, 0, 'application/pdf', ?, NULL)",
+        (f"storage:{filename}",),
+    )
+    db.commit()
+    db.close()
+    _make_pdf(data_dir / "storage" / att_key / filename)
+
+
 def _pipeline(
     tmp_path: Path,
     data_dir: Path,
@@ -219,6 +240,50 @@ async def test_pull_conservative_creates_artifact_bundle(tmp_path: Path) -> None
     assert result2.new_document_ids == []
 
 
+async def test_pull_standalone_attachment_falls_back_to_filename_biblio(tmp_path: Path) -> None:
+    """独立附件在 zotero_items 镜像表里查不到（这正是 Anon./n.d. 的查表 miss 根因），但文件名
+    长得像书目格式时应确定性提取出干净标题与作者/年份，写进 local_meta 供后续兜底使用。"""
+    data_dir = tmp_path / "Zotero"
+    data_dir.mkdir()
+    _build_zotero_db(data_dir)
+    solo_key = "SOLOAAAA"
+    _add_standalone_attachment(data_dir, solo_key, "Smith (2020) - A Standalone Paper.pdf")
+    store, pipeline, _, _ = _pipeline(tmp_path, data_dir, "conservative")
+
+    result = await pipeline.pull()
+
+    solo_doc_id = make_document_id(LIB, solo_key, solo_key)
+    assert solo_doc_id in result.new_document_ids
+    doc = await store.get_document(solo_doc_id)
+    assert doc is not None
+    assert doc.title == "A Standalone Paper"
+    assert doc.local_meta["creators"] == ["Smith"]
+    assert doc.local_meta["year"] == "2020"
+    # 独立附件确实查不到镜像行——这是 bug 的查表 miss 点，回归证据。
+    assert (await store.get_zotero_item(LIB, solo_key)) is None
+
+
+async def test_pull_prefers_real_zotero_title_over_filename_guess(tmp_path: Path) -> None:
+    """有 parent item 且 Zotero 自带 title 时，即便附件文件名恰好长得像书目格式，也绝不能被
+    文件名解析覆盖——权威数据永远优先，解析结果只用于填补权威数据缺失的空白。"""
+    data_dir = tmp_path / "Zotero"
+    data_dir.mkdir()
+    _build_zotero_db(data_dir)
+    decoy_name = "Someone (1999) - Wrong Title.pdf"
+    db = sqlite3.connect(data_dir / "zotero.sqlite")
+    db.execute("UPDATE itemAttachments SET path = ? WHERE itemID = 11", (f"storage:{decoy_name}",))
+    db.commit()
+    db.close()
+    _make_pdf(data_dir / "storage" / ATT / decoy_name)
+    store, pipeline, _, _ = _pipeline(tmp_path, data_dir, "conservative")
+
+    await pipeline.pull()
+
+    doc = await store.get_document(DOC_ID)
+    assert doc is not None
+    assert doc.title == "Ecological Value"
+
+
 # ── pipeline: server(web api) 模式惰性下载 ───────────────────────
 
 
@@ -308,40 +373,84 @@ async def test_pull_derives_unified_tree_and_membership(tmp_path: Path) -> None:
     assert [d.doc_id for d in listed] == [DOC_ID]
 
 
-async def test_pull_conservative_deletes_removed(tmp_path: Path) -> None:
-    data_dir = tmp_path / "Zotero"
-    data_dir.mkdir()
-    _build_zotero_db(data_dir)
-    store, pipeline, _, removed = _pipeline(tmp_path, data_dir, "conservative")
-    await pipeline.pull()
-    assert await store.get_document(DOC_ID) is not None
-
-    # 模拟 Zotero 删除附件：重建无附件的 DB
-    (data_dir / "zotero.sqlite").unlink()
-    _build_zotero_db(data_dir, with_attachment=False)
-    result = await pipeline.pull()
-    assert result.removed_document_ids == [DOC_ID]
-    assert await store.get_document(DOC_ID) is None
-    assert removed == [DOC_ID]
-
-
-# ── pipeline: strict (detached) ──────────────────────────────────
-
-
-async def test_pull_strict_detaches_removed_and_reattaches(tmp_path: Path) -> None:
+async def test_pull_strict_hard_deletes_removed(tmp_path: Path) -> None:
     data_dir = tmp_path / "Zotero"
     data_dir.mkdir()
     _build_zotero_db(data_dir)
     store, pipeline, _, removed = _pipeline(tmp_path, data_dir, "strict_mirror")
+    cleaned: list[str] = []
+
+    async def lightrag_cleanup(doc_id: str, collection: str) -> None:
+        cleaned.append(doc_id)
+
+    pipeline._lightrag_cleanup = lightrag_cleanup
     result1 = await pipeline.pull()
     assert result1.needs_milvus_rebuild is True
+    assert await store.get_document(DOC_ID) is not None
 
-    # Zotero 删除附件 → strict 应脱管（detached），不删除文档、不动 LRAG
+    # 模拟 Zotero 删除附件：重建无附件的 DB → strict 硬删除（文档记录 + Milvus + LRAG）
+    (data_dir / "zotero.sqlite").unlink()
+    _build_zotero_db(data_dir, with_attachment=False)
+    result2 = await pipeline.pull()
+    assert result2.removed_document_ids == [DOC_ID]
+    assert result2.detached_document_ids == []
+    assert result2.needs_milvus_rebuild is True
+    assert await store.get_document(DOC_ID) is None
+    assert removed == [DOC_ID]
+    assert cleaned == [DOC_ID]
+
+
+async def test_pull_strict_cleans_legacy_detached(tmp_path: Path) -> None:
+    """旧版 strict 遗留的 detached 文档，在新 strict 下 Zotero 侧仍缺失时被一并硬删。"""
+    data_dir = tmp_path / "Zotero"
+    data_dir.mkdir()
+    _build_zotero_db(data_dir)
+    store, pipeline, _, _ = _pipeline(tmp_path, data_dir, "conservative")
+    await pipeline.pull()
+    (data_dir / "zotero.sqlite").unlink()
+    _build_zotero_db(data_dir, with_attachment=False)
+    await pipeline.pull()
+    doc = await store.get_document(DOC_ID)
+    assert doc is not None and doc.lifecycle_state is DocumentLifecycle.DETACHED
+
+    pipeline._config = Config({
+        "zotero_sync": {
+            "enabled": True,
+            "zotero_data_dir": str(data_dir),
+            "sync_mode": "strict_mirror",
+        }
+    })
+    result = await pipeline.pull()
+    assert result.removed_document_ids == [DOC_ID]
+    assert await store.get_document(DOC_ID) is None
+
+
+# ── pipeline: conservative (detached) ────────────────────────────
+
+
+async def test_pull_conservative_detaches_removed_and_reattaches(tmp_path: Path) -> None:
+    data_dir = tmp_path / "Zotero"
+    data_dir.mkdir()
+    _build_zotero_db(data_dir)
+    store, pipeline, _, removed = _pipeline(tmp_path, data_dir, "conservative")
+    cleaned: list[str] = []
+
+    async def lightrag_cleanup(doc_id: str, collection: str) -> None:
+        cleaned.append(doc_id)
+
+    pipeline._lightrag_cleanup = lightrag_cleanup
+    result1 = await pipeline.pull()
+    assert result1.needs_milvus_rebuild is False
+
+    # Zotero 删除附件 → conservative 脱管（detached），不删文档、不动 LRAG，仅移除 Milvus
     (data_dir / "zotero.sqlite").unlink()
     _build_zotero_db(data_dir, with_attachment=False)
     result2 = await pipeline.pull()
     assert result2.detached_document_ids == [DOC_ID]
+    assert result2.removed_document_ids == []
+    assert result2.needs_milvus_rebuild is False
     assert DOC_ID in removed  # Milvus 移除
+    assert cleaned == []  # LRAG 保留
     doc = await store.get_document(DOC_ID)
     assert doc is not None and doc.lifecycle_state is DocumentLifecycle.DETACHED
 
@@ -485,7 +594,7 @@ async def test_pull_zotmoov_duplicate_filename_skipped_with_error(tmp_path: Path
     result = await pipeline.pull()
     assert result.new_document_ids == []
     assert await store.get_document(make_document_id(LIB, ITEM, "ATTLNK03")) is None
-    assert any("同名" in e for e in result.errors)
+    assert any("files named" in e for e in result.errors)
 
 
 async def test_pull_zotmoov_duplicate_disambiguated_by_parent_dir(tmp_path: Path) -> None:
@@ -640,9 +749,9 @@ def test_probe_zotmoov_root_branches(tmp_path: Path) -> None:
     from kacore.adapters.zotero import paths as zpaths
 
     unset = zpaths.probe_zotmoov_root("")
-    assert unset["valid"] is False and "未配置" in str(unset["reason"])
+    assert unset["valid"] is False and "not configured" in str(unset["reason"])
     missing = zpaths.probe_zotmoov_root(str(tmp_path / "nope"))
-    assert missing["valid"] is False and "不存在" in str(missing["reason"])
+    assert missing["valid"] is False and "not found" in str(missing["reason"])
     ok = zpaths.probe_zotmoov_root(str(tmp_path))
     assert ok["valid"] is True and ok["resolved"] == str(tmp_path)
 
@@ -746,4 +855,4 @@ def test_probe_local_read_server_mode_is_skipped(tmp_path: Path) -> None:
 
     probe = pipeline.probe_local_read()
     assert probe["available"] is False
-    assert "本地" in str(probe["reason"])
+    assert "local mode" in str(probe["reason"])

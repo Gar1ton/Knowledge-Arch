@@ -11,7 +11,6 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from kacore.domain.conversation import ConversationSession
     from kacore.domain.models import (
         Collection,
         ConsoleScopeState,
@@ -166,6 +165,18 @@ class SourceDocumentStore(ABC):
     # ── 分块 ────────────────────────────────────────────────────
 
     @abstractmethod
+    async def commit_document_processing(
+        self, document: SourceDocument, chunks: list[DocumentChunk], pages: list[PageChunk],
+    ) -> None:
+        """原子替换正文块、页映射与处理元数据，标记 needs_reindex=True。
+
+        成功清除 processing_pending，更新 converter/version、chunk_schema/processing_version；
+        保留其他文档字段。异常或取消须回滚整个操作，保留先前持久化的待恢复标记。
+        文档不存在抛 FileNotFoundError。文件制品由调用方先发布，本接口不操作文件/向量。
+        """
+        ...
+
+    @abstractmethod
     async def replace_chunks(self, doc_id: str, chunks: list[DocumentChunk]) -> None:
         """以新分块整体替换某文档的旧分块。同步顺序：先删该 doc 旧 chunks → 再插入新 chunks。"""
         ...
@@ -223,18 +234,24 @@ class SourceDocumentStore(ABC):
         return hits[:limit]
 
     async def get_corpus_stats(self) -> dict[str, int]:
-        """Return aggregate corpus counts used by hot status endpoints.
+        """Return aggregate counts for documents eligible for retrieval.
 
-        Production stores should override this with database-native aggregate queries. The fallback
-        preserves compatibility for small in-memory/fake stores without changing their contracts.
+        Only documents whose lifecycle is ``active`` contribute to the document, chunk, and pending
+        reindex counts. Production stores should override this with database-native aggregate
+        queries; the fallback preserves that contract for small in-memory/fake stores.
         """
+        from kacore.domain.models import DocumentLifecycle
+
         docs = await self.list_documents()
+        active_docs = [doc for doc in docs if doc.lifecycle_state is DocumentLifecycle.ACTIVE]
         chunk_count = 0
-        for doc in docs:
+        for doc in active_docs:
             chunk_count += len(await self.list_chunks(doc.doc_id))
         return {
-            "document_count": len(docs),
-            "pending_reindex_count": sum(1 for doc in docs if getattr(doc, "needs_reindex", False)),
+            "document_count": len(active_docs),
+            "pending_reindex_count": sum(
+                1 for doc in active_docs if getattr(doc, "needs_reindex", False)
+            ),
             "chunk_count": chunk_count,
         }
 
@@ -242,14 +259,29 @@ class SourceDocumentStore(ABC):
 
     @abstractmethod
     async def set_lightrag_index_status(
-        self, doc_id: str, collection: str, status: str, last_error: str = ""
+        self,
+        doc_id: str,
+        collection: str,
+        status: str,
+        last_error: str = "",
+        *,
+        job_id: str | None = None,
     ) -> None:
-        """设置独立 LightRAG 索引状态；不得复用 needs_reindex。"""
+        """设置独立 LightRAG 索引状态；不得复用 needs_reindex。
+
+        job_id 记录本次写入来自哪个构建任务，供 cancel_build_job() 精确清理该任务写入的
+        状态行，不牵连其他任务/其他构建轮次对同一文档的记录。
+        """
         ...
 
     @abstractmethod
     async def get_lightrag_index_status(self, doc_id: str) -> dict[str, str] | None:
         """读取文档的独立 LightRAG 索引状态。"""
+        ...
+
+    @abstractmethod
+    async def delete_lightrag_index_status_by_job(self, job_id: str) -> int:
+        """删除某构建任务写入的全部索引状态行，返回删除行数。"""
         ...
 
     # ── 文档/集合笔记 ───────────────────────────────────────────
@@ -282,26 +314,22 @@ class SourceDocumentStore(ABC):
         conversation_id: str,
         role: str,
         content: str,
-        sources: list[dict[str, Any]] | None = None,
+        sources: list | None = None,
         retrieval_mode: str = "",
         locked: bool = False,
-        metadata: dict[str, Any] | None = None,
     ) -> None:
-        """追加一条聊天记录（role='user'|'assistant'）。
-
-        metadata 是该消息生成时的不可变快照；旧记录或调用方未提供时返回空字典。
-        """
+        """追加一条聊天记录（role='user'|'assistant'）。"""
         ...
 
     @abstractmethod
-    async def get_chat_messages(self, conversation_id: str) -> list[dict[str, Any]]:
+    async def get_chat_messages(self, conversation_id: str) -> list[dict]:
         """返回某会话的全部消息，按 id 升序。"""
         ...
 
     @abstractmethod
     async def set_chat_message_locked(
         self, conversation_id: str, msg_idx: int, locked: bool
-    ) -> dict[str, Any] | None:
+    ) -> dict | None:
         """按前端消息序号设置锁定状态；不存在返回 None。"""
         ...
 
@@ -310,28 +338,6 @@ class SourceDocumentStore(ABC):
         self, conversation_id: str, preserve_locked: bool = False
     ) -> None:
         """删除某会话消息；preserve_locked=True 时保留已锁定消息。"""
-        ...
-
-    @abstractmethod
-    async def get_chat_session(self, conversation_id: str) -> ConversationSession | None:
-        """按内部 ID 获取会话设置；不存在返回 None。"""
-        ...
-
-    @abstractmethod
-    async def get_chat_session_by_external_key(
-        self, channel: str, external_key: str
-    ) -> ConversationSession | None:
-        """按渠道外部键获取稳定会话；不存在返回 None。"""
-        ...
-
-    @abstractmethod
-    async def upsert_chat_session(self, session: ConversationSession) -> None:
-        """按 conversation_id 新建或整体更新会话设置。"""
-        ...
-
-    @abstractmethod
-    async def delete_chat_session(self, conversation_id: str) -> None:
-        """删除会话设置但不删除消息；不存在时幂等成功。"""
         ...
 
     # ── 控制台上下文状态 ─────────────────────────────────────────
@@ -366,6 +372,21 @@ class SourceDocumentStore(ABC):
         ...
 
     # ── Notion 推送账本与暂存箱 ───────────────────────────────────
+
+    @abstractmethod
+    async def get_notion_local_revision(self) -> str:
+        """读取已提交文档/集合/归属变化的版本；Notion 账本写入不得改变该版本。"""
+        ...
+
+    @abstractmethod
+    async def get_notion_scan_cursor(self, scope: str) -> str:
+        """读取指定 database/data source 的成功笔记检查水位；尚未扫描返回空串。"""
+        ...
+
+    @abstractmethod
+    async def set_notion_scan_cursor(self, scope: str, cursor: str) -> None:
+        """仅在完整扫描成功后持久化 ISO 时间水位，失败时调用方保持原水位。"""
+        ...
 
     @abstractmethod
     async def get_notion_entity(
@@ -441,6 +462,35 @@ class SourceDocumentStore(ABC):
     @abstractmethod
     async def mark_interrupted_build_jobs(self) -> int:
         """将启动时遗留的 queued/running/pause_requested 标为 interrupted；paused 保留可恢复。"""
+        ...
+
+    @abstractmethod
+    async def replace_codex_graph_tasks(self, job_id: str, tasks: list[dict]) -> None:
+        """原子替换一个构建任务的 Codex 切片账本；task_id 为稳定主键。"""
+        ...
+
+    @abstractmethod
+    async def list_codex_graph_tasks(
+        self, job_id: str, status: str | None = None
+    ) -> list[dict]:
+        """按文档与切片顺序列出任务；可按状态过滤。"""
+        ...
+
+    @abstractmethod
+    async def get_codex_graph_task(self, task_id: str) -> dict | None:
+        """读取单个 Codex 图谱任务；不存在返回 None。"""
+        ...
+
+    @abstractmethod
+    async def update_codex_graph_task(
+        self, task_id: str, status: str, last_error: str = ""
+    ) -> bool:
+        """更新任务状态与最近错误；任务不存在返回 False。"""
+        ...
+
+    @abstractmethod
+    async def get_latest_codex_graph_build_job(self) -> dict | None:
+        """读取仍在等待 Codex 的最新构建任务；不存在返回 None。"""
         ...
 
     # ── Zotero 逻辑镜像（单向 Pull）───────────────────────────────
@@ -546,6 +596,18 @@ class SourceDocumentStore(ABC):
     @abstractmethod
     async def purge_zotero_mirror(self) -> None:
         """删除全部 Zotero-origin 镜像与统一集合；LOCAL 数据必须保留。"""
+        ...
+
+    @abstractmethod
+    async def get_zotero_account_identity(self, namespace: str) -> dict[str, str] | None:
+        """读取 `{access_mode}:{library_id}` 命名空间关联的逻辑账号身份；未链接返回 None。"""
+        ...
+
+    @abstractmethod
+    async def link_zotero_account_identity(
+        self, namespace: str, account_key: str, library_id: str, access_mode: str
+    ) -> None:
+        """把命名空间链接到某逻辑账号身份（同一 account_key 的多个命名空间视为同一账号）。"""
         ...
 
     # ── 页面级 provenance（clean.md 字符偏移）────────────────────

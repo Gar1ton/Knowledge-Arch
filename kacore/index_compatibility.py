@@ -18,7 +18,12 @@ logger = logging.getLogger("IndexCompatibilityStore")
 
 
 def embedding_fingerprint(config: EmbeddingConfig, dimension: int) -> str:
-    payload = {
+    """索引兼容指纹：任一成分变化，旧索引即被判不兼容并走既有重建流程。
+
+    载荷与历史版本逐字节一致（既有 local/external 索引不因升级被误判为不兼容）。
+    全部为非机密信息，不含 API Key。
+    """
+    payload: dict[str, Any] = {
         "provider": config.provider,
         "model": config.model,
         "base_url": config.base_url,

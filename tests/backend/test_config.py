@@ -1,46 +1,24 @@
 """Config 解析契约测试：默认值、字段覆盖、机密环境变量优先、派生量。"""
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pytest
 
 from kacore.config import (
-    ENV_DEEP_THINKING_LLM_API_KEY,
     ENV_EMBEDDING_API_KEY,
     ENV_R2_SECRET_ACCESS_KEY,
-    ENV_WEB_PASSWORD,
+    NOTION_SYNC_PRESERVE,
+    NOTION_SYNC_STRICT,
     Config,
 )
-from kacore.runtime_config import RuntimeConfigStore
-
-
-def test_astrbot_conf_schema_only_keeps_core_sections() -> None:
-    # 双布局兼容：monorepo 中位于 apps/plugin/，同步到旧仓 developer 树后位于根。
-    root = Path(__file__).resolve().parents[2]
-    schema_path = root / "apps" / "plugin" / "_conf_schema.json"
-    if not schema_path.exists():
-        schema_path = root / "_conf_schema.json"
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
-
-    # v0.28.0：移除 ask 段（原仅含已废弃的 conversation_enhancement_mode）。
-    assert list(schema.keys()) == [
-        "web_console",
-        "r2_sync",
-        "notion_sync",
-        "embedding",
-    ]
+from kacore.settings.schema import CONSEQUENCE_NONE, CONSEQUENCE_REBUILD, SPECS_BY_TARGET
 
 
 def test_defaults_when_empty() -> None:
     cfg = Config({})
     assert cfg.get_source_store_config().db_filename == "knowledge_repository.db"
     assert cfg.get_r2_sync_config().free_tier_gb == 10
-    assert cfg.get_notion_sync_config().mcp_server_name == "notion"
-    assert cfg.get_web_console_config().port == 26618
+    assert cfg.get_notion_sync_config().sync_mode == NOTION_SYNC_PRESERVE
     assert cfg.get_graph_config().query_mode == "mix"
-    assert cfg.get_graph_config().lightrag_llm_provider == "main"
     assert cfg.get_vector_db_config().backend == "milvus"
     assert cfg.get_embedding_config().model == "intfloat/multilingual-e5-small"
     assert cfg.get_embedding_config().max_token_size == 512
@@ -68,13 +46,50 @@ def test_zotero_invalid_storage_mode_falls_back_to_default() -> None:
     assert z.storage_mode == "managed_copy"
 
 
-def test_zotero_zotmoov_root_key_policy_registered() -> None:
-    from kacore.config import CONFIG_KEY_POLICY, CONSEQUENCE_REBUILD
+def test_zotero_zotmoov_root_setting_registered() -> None:
+    spec = SPECS_BY_TARGET[("zotero_sync", "zotmoov_root")]
+    assert spec.key == "flow.zotero.zotmoov_root"
+    assert spec.kind == "path" and spec.consequence == CONSEQUENCE_REBUILD
 
-    policy = CONFIG_KEY_POLICY["zotero_sync"]["zotmoov_root"]
-    assert policy.api_writable is True
-    assert policy.runtime_persistable is True
-    assert policy.consequence == CONSEQUENCE_REBUILD
+
+def test_vector_db_auto_rebuild_defaults() -> None:
+    vdb = Config({}).get_vector_db_config()
+    assert vdb.auto_rebuild_enabled is True  # 默认开：新文件进来后无需手动重建
+    assert vdb.auto_rebuild_delay_seconds == 30
+    public = Config({}).to_public_dict()["vector_db"]
+    assert public["auto_rebuild_enabled"] is True
+    assert public["auto_rebuild_delay_seconds"] == 30
+
+
+def test_vector_db_auto_rebuild_delay_is_floored() -> None:
+    """防抖窗口过短会让 Zotero 批量同步每来一篇就重跑一次重建，故夹到 ≥5 秒。"""
+    from kacore.config import MIN_AUTO_REBUILD_DELAY_SECONDS
+
+    assert (
+        Config({"vector_db": {"auto_rebuild_delay_seconds": 0}})
+        .get_vector_db_config()
+        .auto_rebuild_delay_seconds
+        == MIN_AUTO_REBUILD_DELAY_SECONDS
+    )
+    # 非法输入回退默认值而不是抛错。
+    assert (
+        Config({"vector_db": {"auto_rebuild_delay_seconds": "abc"}})
+        .get_vector_db_config()
+        .auto_rebuild_delay_seconds
+        == 30
+    )
+    assert (
+        Config({"vector_db": {"auto_rebuild_delay_seconds": 120}})
+        .get_vector_db_config()
+        .auto_rebuild_delay_seconds
+        == 120
+    )
+
+
+def test_vector_db_auto_rebuild_keys_are_hot_runtime_writable() -> None:
+    """调度器每轮重读配置，故这两个键改完即生效——后果必须是 none 而非 restart。"""
+    for key in ("auto_rebuild_enabled", "auto_rebuild_delay_seconds"):
+        assert SPECS_BY_TARGET[("vector_db", key)].consequence == CONSEQUENCE_NONE
 
 
 def test_r2_endpoint_and_free_tier_bytes() -> None:
@@ -97,6 +112,20 @@ def test_notion_max_upload_bytes() -> None:
     assert n.database_title == "KR"
 
 
+def test_notion_sync_mode_parsing_and_invalid_fallback() -> None:
+    strict = Config({"notion_sync": {"sync_mode": " STRICT "}})
+    invalid = Config({"notion_sync": {"sync_mode": "mirror"}})
+
+    assert strict.get_notion_sync_config().sync_mode == NOTION_SYNC_STRICT
+    assert strict.to_public_dict()["notion_sync"]["sync_mode"] == NOTION_SYNC_STRICT
+    assert invalid.get_notion_sync_config().sync_mode == NOTION_SYNC_PRESERVE
+
+
+def test_notion_sync_mode_is_hot_runtime_writable() -> None:
+    spec = SPECS_BY_TARGET[("notion_sync", "sync_mode")]
+    assert spec.kind == "enum" and spec.consequence == CONSEQUENCE_NONE
+
+
 def test_secret_env_takes_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(ENV_R2_SECRET_ACCESS_KEY, "from-env")
     cfg = Config({"r2_sync": {"secret_access_key": "from-config"}})
@@ -109,69 +138,28 @@ def test_secret_falls_back_to_config(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.get_r2_sync_config().secret_access_key == "from-config"
 
 
-def test_web_password_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(ENV_WEB_PASSWORD, "pw")
-    assert Config({}).get_web_console_config().password == "pw"
-
-
 def test_malformed_section_falls_back_to_defaults() -> None:
     # 子配置类型不符（非 dict）时应安全回退默认值
     cfg = Config({"graph": "not-a-dict"})
     assert cfg.get_graph_config().query_mode == "mix"
 
-def test_graph_lightrag_llm_provider_modes_and_legacy_endpoint() -> None:
-    explicit = Config(
-        {
-            "graph": {
-                "lightrag_llm_provider": "api",
-                "lightrag_llm_base_url": "https://llm.example/v1",
-                "lightrag_llm_model": "model-a",
-            }
-        }
-    ).get_graph_config()
-    assert explicit.lightrag_llm_provider == "api"
-
-    legacy = Config(
-        {
-            "graph": {
-                "lightrag_llm_base_url": "http://localhost:1234/v1",
-                "lightrag_llm_model": "phi4",
-            }
-        }
-    ).get_graph_config()
-    assert legacy.lightrag_llm_provider == "local"
-
-    invalid = Config({"graph": {"lightrag_llm_provider": "bad"}}).get_graph_config()
-    assert invalid.lightrag_llm_provider == "main"
-
-
-
 def test_public_config_masks_secrets() -> None:
     cfg = Config({
         "r2_sync": {"access_key_id": "abcdef", "secret_access_key": "secret123"},
-        "web_console": {"password": "password123"},
         "notion_sync": {"database_id": "db1", "parent_page_id": "parent1"},
     })
     public = cfg.to_public_dict()
     assert public["r2_sync"]["access_key_id"] == "ab****ef"
     assert public["r2_sync"]["secret_access_key"] == "se****23"
-    assert public["web_console"]["password"] == "pa****23"
+    assert "web_console" not in public
     assert public["notion_sync"]["database_id"] == "db1"
 
 
-def test_public_config_exposes_webui_migrated_advanced_fields(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(ENV_DEEP_THINKING_LLM_API_KEY, "deep-secret")
+def test_public_config_exposes_advanced_fields_and_model_assignments() -> None:
     cfg = Config(
         {
             "source_store": {"default_collection": "papers"},
-            "graph": {
-                "working_dir": "graphs",
-                "lightrag_llm_provider": "api",
-                "lightrag_llm_base_url": "https://llm.example/v1",
-                "lightrag_llm_model": "model-a",
-            },
+            "graph": {"working_dir": "graphs"},
             "deep_thinking": {
                 "max_rounds": 5,
                 "max_sub_queries": 6,
@@ -179,18 +167,15 @@ def test_public_config_exposes_webui_migrated_advanced_fields(
                 "rerank_weight": 0.4,
                 "verify_enabled": False,
                 "max_verify_rounds": 2,
-                "llm_base_url": "https://deep.example/v1",
-                "llm_model": "deep-model",
             },
+            "models": {"chat": "deepseek:deepseek-chat", "research": "", "graph": ""},
         }
     )
 
     public = cfg.to_public_dict()
     assert public["source_store"]["default_collection"] == "papers"
     assert public["graph"]["working_dir"] == "graphs"
-    assert public["graph"]["lightrag_llm_provider"] == "api"
-    assert public["graph"]["lightrag_llm_base_url"] == "https://llm.example/v1"
-    assert public["graph"]["lightrag_llm_model"] == "model-a"
+    assert "lightrag_llm_base_url" not in public["graph"]
     assert public["deep_thinking"] == {
         "max_rounds": 5,
         "max_sub_queries": 6,
@@ -198,10 +183,8 @@ def test_public_config_exposes_webui_migrated_advanced_fields(
         "rerank_weight": 0.4,
         "verify_enabled": False,
         "max_verify_rounds": 2,
-        "llm_base_url": "https://deep.example/v1",
-        "llm_model": "deep-model",
-        "llm_api_key": "de****et",
     }
+    assert public["models"] == {"chat": "deepseek:deepseek-chat", "research": "", "graph": ""}
 
 
 def test_embedding_config_new_values_override_legacy_and_api_key_is_env_only(
@@ -244,18 +227,18 @@ def test_embedding_diagnostics_report_unsupported_or_unconfigured_provider(
 ) -> None:
     monkeypatch.delenv(ENV_EMBEDDING_API_KEY, raising=False)
 
-    assert (
-        "embedding.provider=astr is not implemented; choose local or external."
-        in Config({"embedding": {"provider": "astr"}}).get_diagnostics()
-    )
-    assert (
-        "KR_EMBEDDING_API_KEY is required when embedding.provider=external."
-        in Config({"embedding": {"provider": "external"}}).get_diagnostics()
+    # 已移除的旧来源归一为 local：不要求 KR_EMBEDDING_API_KEY。
+    legacy_diagnostics = Config({"embedding": {"provider": "astr"}}).get_diagnostics()
+    assert not any("KR_EMBEDDING_API_KEY" in item for item in legacy_diagnostics)
+    # 本机服务可以没有密钥：external 只在连接地址丢失时才诊断。
+    assert not Config({"embedding": {"provider": "external"}}).get_diagnostics() or not any(
+        "provider connection" in item
+        for item in Config({"embedding": {"provider": "external"}}).get_diagnostics()
     )
     assert any(
-        "graph.lightrag_llm_base_url and graph.lightrag_llm_model are required" in item
+        "provider connection that no longer exists" in item
         for item in Config(
-            {"graph": {"enabled": True, "lightrag_llm_provider": "api"}}
+            {"embedding": {"provider": "external", "base_url": ""}}
         ).get_diagnostics()
     )
 
@@ -264,6 +247,8 @@ def test_diagnostics_report_missing_optional_feature_dependencies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("kacore.config._module_available", lambda name: False)
+    # Milvus 就绪度收口在 capabilities（pymilvus ∧ milvus_lite），须一并置为「都没装」。
+    monkeypatch.setattr("kacore.capabilities.module_available", lambda name: False)
     diagnostics = Config(
         {
             "r2_sync": {"enabled": True},
@@ -275,67 +260,6 @@ def test_diagnostics_report_missing_optional_feature_dependencies(
 
     assert sum("requirements-additional.txt" in item for item in diagnostics) == 3
     assert any("Milvus Lite is a required dependency" in item for item in diagnostics)
-
-
-def test_runtime_config_store_only_persists_generated_notion_values(tmp_path: Path) -> None:
-    path = tmp_path / "runtime_config.json"
-    persisted = []
-    store = RuntimeConfigStore(path, framework_persist_cb=persisted.append)
-
-    store.save({
-        "notion_sync": {"database_id": "db1", "secret": "drop-me"},
-        "r2_sync": {"secret_access_key": "drop-me"},
-    })
-
-    assert json.loads(path.read_text()) == {"notion_sync": {"database_id": "db1"}}
-    assert persisted == [{"notion_sync": {"database_id": "db1"}}]
-    with pytest.raises(ValueError, match="runtime config key is not allowed"):
-        store.set_value("r2_sync", "secret_access_key", "forbidden")
-
-
-def test_runtime_config_store_permits_vector_db_and_ask_keys(tmp_path: Path) -> None:
-    path = tmp_path / "runtime_config.json"
-    store = RuntimeConfigStore(path)
-
-    # These should pass successfully without raising ValueError
-    store.set_value("vector_db", "backend", "milvus")
-    store.set_value("embedding", "provider", "local")
-    store.set_value("embedding", "model", "BAAI/bge-m3")
-    store.set_value("ask", "persona_enabled", True)
-    store.set_value("source_store", "default_collection", "papers")
-    store.set_value("deep_thinking", "verify_enabled", False)
-    store.set_value("deep_thinking", "max_verify_rounds", 2)
-
-    data = store.load()
-    assert data["vector_db"]["backend"] == "milvus"
-    assert data["embedding"]["provider"] == "local"
-    assert data["embedding"]["model"] == "BAAI/bge-m3"
-    assert data["ask"]["persona_enabled"] is True
-    assert data["source_store"]["default_collection"] == "papers"
-    assert data["deep_thinking"]["verify_enabled"] is False
-    assert data["deep_thinking"]["max_verify_rounds"] == 2
-
-
-def test_runtime_config_store_persists_ka_toggle_keys(tmp_path: Path) -> None:
-    """/ka 的四个运行时开关键均可持久化并经 get_ask_agent_config 读回。"""
-    path = tmp_path / "runtime_config.json"
-    store = RuntimeConfigStore(path)
-
-    store.set_value("ask", "agent_enabled", True)
-    store.set_value("ask", "research_enabled", True)
-    store.set_value("ask", "persona_enabled", True)
-    store.set_value("web_console", "enabled", False)
-
-    data = store.load()
-    assert data["ask"]["agent_enabled"] is True
-    assert data["ask"]["research_enabled"] is True
-    assert data["ask"]["persona_enabled"] is True
-    assert data["web_console"]["enabled"] is False
-
-    ask_cfg = Config(data).get_ask_agent_config()
-    assert ask_cfg.agent_enabled is True
-    assert ask_cfg.research_enabled is True
-    assert ask_cfg.persona_enabled is True
 
 
 # ── Deep Thinking / Rerank config ───────────────────────────
@@ -417,3 +341,12 @@ def test_rerank_overrides_are_parsed() -> None:
     assert r.provider == "noop"
     assert r.model == "BAAI/bge-reranker-base"
     assert r.keep == 5
+
+
+def test_notion_auto_sync_defaults_and_explicit_legacy_zero() -> None:
+    default = Config({}).get_notion_sync_config()
+    assert default.auto_sync_enabled is True
+    assert default.auto_sync_interval_sec == 300
+    explicit = Config({"notion_sync": {"auto_sync_interval_sec": 0}}).get_notion_sync_config()
+    assert explicit.auto_sync_enabled is True
+    assert explicit.auto_sync_interval_sec == 0

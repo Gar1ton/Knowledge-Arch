@@ -1,14 +1,12 @@
 """类型化配置（见 config.README.md 与 ../ARCHITECTURE.md §5）。
 
-唯一解析原始配置（AstrBot 注入的 dict）的地方：原始 dict → Config → get_xxx_config() → XxxConfig。
-键名、默认值、类型集中于此，与 `_conf_schema.json` 同源（改配置项须两处同步）。
+唯一解析原始配置（启动配置与 runtime_config.json 合并后的 dict）的地方：
+原始 dict → Config → get_xxx_config() → XxxConfig。键名、默认值、类型集中于此。
 
-机密约定：密钥/密码优先从环境变量读取，原始 dict 仅作回退，且密钥不应提交进仓库。
+机密约定：密钥优先从环境变量读取，原始 dict 仅作回退，且密钥不应提交进仓库。
     - R2 Secret Access Key：env `KR_R2_SECRET_ACCESS_KEY`
-    - Web 控制台密码：env `KR_WEB_PASSWORD`
-    - Embedding API Key：env `KR_EMBEDDING_API_KEY`
+    - Embedding API Key：env `KR_EMBEDDING_API_KEY`（仅 provider=external）
     - LightRAG 专用 LLM API Key：env `KR_LIGHTRAG_LLM_API_KEY`
-    Notion 不在此持有 token——同步经 AstrBot 已配置的 notion MCP server，token 由 MCP 侧管理。
 """
 
 from __future__ import annotations
@@ -18,19 +16,24 @@ from dataclasses import dataclass, field
 from typing import Any
 
 # 依赖探测收口至能力注册表；保留模块内 _module_available 名以兼容既有测试的 monkeypatch。
+from kacore.capabilities import milvus_runtime_status
 from kacore.capabilities import module_available as _module_available
 
 # ── 环境变量名（机密来源）────────────────────────────────────────
 
 ENV_R2_SECRET_ACCESS_KEY = "KR_R2_SECRET_ACCESS_KEY"
-ENV_WEB_PASSWORD = "KR_WEB_PASSWORD"
 ENV_EMBEDDING_API_KEY = "KR_EMBEDDING_API_KEY"
 ENV_LIGHTRAG_LLM_API_KEY = "KR_LIGHTRAG_LLM_API_KEY"
 ENV_DEEP_THINKING_LLM_API_KEY = "KR_DEEP_THINKING_LLM_API_KEY"
 ENV_ZOTERO_API_KEY = "KR_ZOTERO_API_KEY"
-ENV_MAIN_LLM_API_KEY = "KR_MAIN_LLM_API_KEY"
-ENV_DISCORD_BOT_TOKEN = "KR_DISCORD_BOT_TOKEN"
 DEFAULT_RERANK_MODEL = "Alibaba-NLP/gte-reranker-modernbert-base"
+
+# 向量后端与 embedding 来源（杜绝魔法字面量散落）。
+VECTOR_BACKEND_MILVUS = "milvus"
+VECTOR_BACKEND_LEXICAL = "lexical"
+# 旧版「知识库回退」后端的写法，读取时归一为 lexical（完整的旧键翻译见 legacy_import）。
+LEGACY_LEXICAL_BACKENDS = frozenset({"astr"})
+EMBEDDING_PROVIDERS = frozenset({"local", "external"})
 
 
 def _section(raw: dict[str, Any], name: str) -> dict[str, Any]:
@@ -47,15 +50,33 @@ def _secret(raw_value: Any, env_name: str) -> str:
     return raw_value if isinstance(raw_value, str) else ""
 
 
-def _string_tuple(value: Any) -> tuple[str, ...]:
-    """把 JSON 数组或逗号分隔文本规范化为去重字符串元组。"""
-    if isinstance(value, str):
-        items: tuple[Any, ...] = tuple(value.split(","))
-    elif isinstance(value, (list, tuple)):
-        items = tuple(value)
-    else:
-        return ()
-    return tuple(dict.fromkeys(str(item).strip() for item in items if str(item).strip()))
+# embedding.load_timeout_seconds 的取值边界：0 = 不限（保留旧的裸等待行为）；
+# 其余值钳到 [30, 3600]——低于 30s 会把「已缓存模型的正常加载」误判为卡死。
+_LOAD_TIMEOUT_MIN_SECONDS: int = 30
+_LOAD_TIMEOUT_MAX_SECONDS: int = 3600
+
+
+def _clamp_load_timeout(value: Any) -> int:
+    """把配置值归一化为合法的加载超时秒数；非法输入回退默认值。"""
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return EmbeddingConfig.load_timeout_seconds
+    if seconds <= 0:
+        return 0
+    return max(_LOAD_TIMEOUT_MIN_SECONDS, min(_LOAD_TIMEOUT_MAX_SECONDS, seconds))
+
+
+# 自动重建防抖窗口下限：低于此值时，Zotero 批量同步会每来一篇就重跑一次全量重建。
+MIN_AUTO_REBUILD_DELAY_SECONDS: int = 5
+
+
+def _int_or_default(value: Any, default: int) -> int:
+    """把配置值转成 int；None/空串/非数字一律回退默认值（不抛错）。"""
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
 
 
 # ── 各子系统专属 typed config ────────────────────────────────────
@@ -103,23 +124,28 @@ class R2SyncConfig:
 
 # Notion API 平台硬上限，不暴露给用户配置。
 _NOTION_RATE_LIMIT_RPS: int = 3
+NOTION_SYNC_PRESERVE = "preserve"
+NOTION_SYNC_STRICT = "strict"
 
 
 @dataclass
 class NotionSyncConfig:
-    """Notion 单向镜像配置。经 mcp_server_name 指向的 MCP server 调用，本侧不持 token。
+    """Notion 单向镜像配置。
 
-    max_upload_mib 固定为 Notion API 限制（5 MiB），不暴露给用户配置。
-    rate_limit_rps 固定为平台限速（3 req/s），不暴露给用户配置（改高会触发 429）。
+    max_upload_mib 保留旧配置/诊断接口；Articles 不上传正文或二进制文件。
+    rate_limit_rps 保留保守的客户端频控（3 req/s），不暴露给用户配置。
     """
 
     enabled: bool = False
-    mcp_server_name: str = "notion"
     database_id: str = ""
     qa_database_id: str = ""
+    data_source_id: str = ""
+    qa_data_source_id: str = ""
     parent_page_id: str = ""
     database_title: str = "Knowledge Arch"
-    auto_sync_interval_sec: int = 0
+    auto_sync_enabled: bool = True
+    auto_sync_interval_sec: int = 300
+    sync_mode: str = NOTION_SYNC_PRESERVE
     max_upload_mib: int = 5
     rate_limit_rps: int = _NOTION_RATE_LIMIT_RPS
 
@@ -127,38 +153,6 @@ class NotionSyncConfig:
     def max_upload_bytes(self) -> int:
         """单文件上传上限的字节数。"""
         return self.max_upload_mib * 1024 * 1024
-
-
-@dataclass
-class WebConsoleConfig:
-    """独立 Web 控制台配置。password 仅经环境变量注入；为空时控制台应拒绝启动。"""
-
-    enabled: bool = False
-    host: str = "0.0.0.0"
-    port: int = 26618
-    username: str = "admin"
-    password: str = ""
-
-
-@dataclass
-class MainLLMConfig:
-    """独立应用主 LLM（OpenAI-compatible endpoint）配置。
-
-    插件模式不读取本节——主 LLM 走 AstrBot context；独立壳（standalone）在
-    base_url 与 model 均非空时构造 LMStudioLLMAdapter 注入组合根，承担回答合成等
-    主 LLM 职责。API key 优先读环境变量 KR_MAIN_LLM_API_KEY，其次读本节字段。
-    """
-
-    base_url: str = ""
-    model: str = ""
-    api_key: str = ""
-    timeout_seconds: int = 300
-    max_retries: int = 2
-
-    @property
-    def configured(self) -> bool:
-        """endpoint 与 model 均已配置时视为可用。"""
-        return bool(self.base_url.strip() and self.model.strip())
 
 
 # LightRAG 图谱构建内部固定参数（不暴露给用户）。
@@ -181,12 +175,7 @@ class GraphConfig:
     # LightRAG 以内部 ~2000 chars/chunk 分块并为每块调用 LLM，限制此值可直接控制 LLM 调用次数。
     # 默认 30000 chars ≈ 15 次 LLM 调用/文档；设为 0 表示不限制。
     max_doc_chars: int = 30000
-    # 图谱构建专用 LLM（可选）。main 复用 AstrBot 主 LLM；local/api 使用下方 endpoint，
-    # 与答案生成所用的主 LLM（AstrBot context）完全独立。
-    # 支持任意 OpenAI-compatible endpoint，例如 LM Studio: http://localhost:1234/v1
-    lightrag_llm_provider: str = "main"
-    lightrag_llm_base_url: str = ""
-    lightrag_llm_model: str = ""
+    # 图谱构建所用模型由「模型分配」的 graph 角色决定（空则跟随 chat）。
     # 本地 phi4/LM Studio 推理慢，图谱构建必须给足时间并允许有限重试。
     lightrag_llm_timeout_seconds: int = 900
     # 内部参数（固定值，不从配置读取）。
@@ -199,51 +188,66 @@ class GraphConfig:
 
 @dataclass
 class VectorDbConfig:
-    """向量数据库与检索后端配置。"""
+    """向量数据库与检索后端配置。backend：milvus（默认）| lexical（只用 SQLite 词法/锚点召回）。
 
-    backend: str = "milvus"
+    `auto_index_enabled` 与 `auto_rebuild_enabled` 是**正交**的两件事：前者管「上传/同步的
+    瞬间是否同步写 Milvus」，后者管「已排进 `needs_reindex` 队列的文档是否由后台自动排空」。
+    前者失败或被兼容门跳过时，后者是兜底网。
+    """
+
+    backend: str = VECTOR_BACKEND_MILVUS
     db_filename: str = "vector_store.db"
     auto_index_enabled: bool = True
+    auto_rebuild_enabled: bool = True
+    # 防抖静默期：Zotero 批量同步会连打上百次信号，静默这么久没有新信号才真正开跑。
+    auto_rebuild_delay_seconds: int = 30
 
 
 @dataclass
 class EmbeddingConfig:
     """Shared embedding configuration for Milvus and LightRAG."""
 
+    # local | external。
     provider: str = "local"
     model: str = "intfloat/multilingual-e5-small"
+    # 仅 external 使用。
     base_url: str = "https://api.openai.com/v1"
     max_token_size: int = 512
     # 本地模型空闲卸载超时（秒），0 = 永不自动卸载；仅对 provider=local 生效
     local_idle_timeout_seconds: int = 420
+    # 本地模型运行设备：auto（有 CUDA 则用 CUDA，否则 CPU）| cpu | cuda | cuda:N。
+    # 仅对 provider=local 生效。与 rerank.device 的「不可用静默回退」刻意不同：这里是
+    # 主向量索引路径，用户显式选 cuda 但环境不支持时必须报错，不能悄悄退化到 CPU 拖慢批量
+    # embedding 而不被察觉。
+    device: str = "auto"
+    # 「模型就绪」的最长等待时间（秒），0 = 不限。覆盖两处：组合根的维度探针，以及本地
+    # provider 首次调用触发的模型下载/加载。超时不会中止后台下载线程（to_thread 不可取消），
+    # 只放弃等待让启动流程走完——否则 HuggingFace 卡住会让 Web 控制台永远起不来。
+    load_timeout_seconds: int = 180
+    # 磁盘向量缓存上限（MiB），0 = 不限；超出时按写入顺序淘汰最旧条目。
+    cache_mb: int = 0
+    # 仅 external：来自「模型供应商」连接的密钥（由设置桥从加密库注入，不写进任何文件）。
+    api_key: str = ""
 
 
 @dataclass
 class AskAgentConfig:
-    """Ask Agent 的运行时开关配置（均由 /ka 命令切换并持久化，重启保留）。
+    """Ask 页的回答配置（超时与回答语言）。"""
 
-    v0.28.0：移除 conversation_enhancement_mode——agent 开启时只有「inject 注入」一种行为，
-    主动检索改由 knowledge_research skill 承担（原 query_agent 会静默吞掉 research，已删）。
-    """
+    # 单次主 LLM 调用上限（秒），0 = 不限。模型端点挂死时，没有这道闸整条 ask
+    # 会永不返回；前端只看到「请求超时」，服务端却仍在等。
+    llm_timeout_seconds: int = 300
+    # 整条 ask() 任务（检索 + Deep Thinking/Enhanced 多轮编排 + 最终答案合成）的总上限
+    # （秒），0 = 不限。Deep Thinking 允许多次 LLM 调用，即便每次都在 llm_timeout_seconds
+    # 内完成，累计仍可能远超前端的 ASK_TIMEOUT_MS——这道闸保证后端自己也会放弃，而不是
+    # 一直跑到用户早已断开连接之后。
+    task_timeout_seconds: int = 900
 
-    agent_enabled: bool = False  # ka↔astrbot 回复关联（RAG 上下文注入）总开关。
-    research_enabled: bool = False  # knowledge_research skill 是否响应自然语言调用。
-    persona_enabled: bool = False  # 是否在 ask 中启用 astrbot 人格 prompt（off=不污染 research）。
-    context_enabled: bool = True  # 新会话默认是否用有界历史改写召回意图。
-    persona_prompt: str = ""  # 独立版单一全局 Persona；按会话开关决定是否注入。
-    # research 答案语言（与前端 askAI 的 answer_language 同一参数）：auto=跟随提问语言 / zh / en。
-    # 召回恒英文，本项只决定回答语言；/ka research_language cn|en|cn&en → zh|en|auto。
+    # 回答语言（与前端 askAI 的 answer_language 同一参数）：auto=跟随提问语言 / zh / en。
+    # 召回恒英文，本项只决定回答语言。
     answer_language: str = "auto"
-
-
-@dataclass
-class DiscordConfig:
-    """独立版 Discord 渠道配置；bot token 只从 env/EncryptedSecretStore 解析。"""
-
-    enabled: bool = False
-    allowed_user_ids: tuple[str, ...] = ()
-    allowed_guild_ids: tuple[str, ...] = ()
-    allowed_channel_ids: tuple[str, ...] = ()
+    # 「回答」节点的系统提示词；空 = 不加人格，只用 RAG 约束。
+    system_prompt: str = ""
 
 
 @dataclass
@@ -256,6 +260,9 @@ class RerankConfig:
     batch_size: int = 32
     max_candidates: int = 30
     keep: int = 8
+    # 仅 remote：来自「模型供应商」连接（由设置桥注入，密钥不写进任何文件）。
+    base_url: str = ""
+    api_key: str = ""
 
 
 @dataclass
@@ -283,12 +290,7 @@ class DeepThinkingConfig:
     # 开放式发现护栏：每轮新增 aspect 上限与累计上限，防止 checklist 无限膨胀、循环不收敛。
     max_discovered_per_round: int = 3
     max_discovered_total: int = 8
-    # 独立 LLM 配置（OpenAI-compatible endpoint）。
-    # 若 llm_base_url 与 llm_model 均非空，深度思考使用此 endpoint 而非 AstrBot 主 LLM。
-    # API key 优先读取环境变量 KR_DEEP_THINKING_LLM_API_KEY，其次读此字段。
-    llm_base_url: str = ""
-    llm_model: str = ""
-    llm_api_key: str = ""
+    # 深度思考 / 增强召回所用模型由「模型分配」的 research 角色决定（空则跟随 chat）。
 
 
 @dataclass
@@ -298,8 +300,8 @@ class EnhancedRecallConfig:
     介于 default 与 deep_thinking 之间的中间档：PLAN-lite 一次规划（改写+拆解）→
     并行混合检索 + 本地 cross-encoder 重排（0 次 LLM）→ 一次综合内嵌 CRAG 式充分性
     自检 → 不足才补一轮纠正检索 + 重合成。典型 2 次 LLM 调用、最坏 3–4 次。
-    LLM 端点复用 deep_thinking 的独立 endpoint 决策（同为研究型内部 agent，
-    对 JSON 纪律与模型档位需求一致，不重复膨胀配置面），故不设 llm_* 键。
+    与 deep_thinking 共用「模型分配」的 research 角色（同为研究型内部 agent，
+    对 JSON 纪律与模型档位需求一致，不重复膨胀配置面）。
     """
 
     max_sub_queries: int = 3  # PLAN-lite 拆解上限（不含改写后的主查询）。
@@ -311,6 +313,8 @@ class EnhancedRecallConfig:
     corrective_enabled: bool = True  # 首轮自检不充分时的一轮纠正检索 + 重合成。
     max_corrective_queries: int = 3
     json_max_retries: int = 1
+    token_budget: int = 24000  # 纠偏前的消费安全阀，未知模型时为估计。
+    output_reserve: int = 4000  # 开始下一次合成前预留输出预算。
 
 
 # Zotero 同步模式常量（杜绝魔法字面量散落）。
@@ -333,8 +337,10 @@ class ZoteroSyncConfig:
           仅 clean.md/pages.json 在插件内）/ zotmoov（PDF 留 ZotMoov 移动后的目录：
           `attachments:` 相对路径拼 zotmoov_root，绝对路径失效时按文件名索引兜底）。
           linked 模式须配 linked_root、zotmoov 模式须配 zotmoov_root，均经探针校验。
-        - sync_mode: strict_mirror（强制覆盖 + collection 增删 + Milvus rebuild + 禁用 LRAG）
-          / conservative（默认；删本地 doc 但 collection 只增不减 + 轻量 LRAG 重建）
+        - sync_mode: strict_mirror（强制覆盖 + 删除的文档硬删除 + collection 增删
+          + Milvus rebuild + 禁用 LRAG）
+          / conservative（默认；删除的文档标 detached 保留数据、仅移除 Milvus 索引，
+          collection 只增不减 + 轻量 LRAG 重建）
           / archive（只增不删，最不触发 rebuild）。
     cloud_api_key 仅经环境变量注入；本轮不走云端拉取。
     """
@@ -350,6 +356,17 @@ class ZoteroSyncConfig:
     auto_sync_enabled: bool = False
     auto_sync_interval_sec: int = 3600
     cloud_api_key: str = ""  # 预留：云端 api key（env 注入）
+
+
+@dataclass
+class ModelAssignments:
+    """「模型分配」的只读摘要（标签形如 `连接:模型`；空串 = 未分配）。只用于展示与估算。"""
+
+    chat: str = ""
+    research: str = ""
+    graph: str = ""
+    # graph 角色落在本机端点（localhost / 127.0.0.1）上：图谱构建耗时按本地推理估算。
+    graph_is_local: bool = False
 
 
 # ── 解析门面 ────────────────────────────────────────────────────
@@ -382,12 +399,16 @@ class Config:
     def set_embedding_dimension(self, dimension: int) -> None:
         self.runtime_embedding_dimension = dimension
 
+    def describe_embedding(self) -> str:
+        """人类可读的 embedding 标识 `provider:model`（日志与状态页共用），不含任何机密。"""
+        embedding = self.get_embedding_config()
+        return f"{embedding.provider}:{embedding.model}"
+
     def to_public_dict(self) -> dict[str, Any]:
         """返回前端可展示的有效配置；敏感字段脱敏。"""
         source = self.get_source_store_config()
         r2 = self.get_r2_sync_config()
         notion = self.get_notion_sync_config()
-        web = self.get_web_console_config()
         graph = self.get_graph_config()
         vector_db = self.get_vector_db_config()
         embedding = self.get_embedding_config()
@@ -396,20 +417,14 @@ class Config:
         enhanced = self.get_enhanced_recall_config()
         zotero = self.get_zotero_sync_config()
         ask = self.get_ask_agent_config()
-        discord = self.get_discord_config()
-        main_llm = self.get_main_llm_config()
+        models = self.get_model_assignments()
         return {
             "ask": {
                 # 与前端 askAI 的 answer_language 同一参数；召回恒英文，仅决定回答语言。
                 "answer_language": ask.answer_language,
-                "context_enabled": ask.context_enabled,
-                "persona_prompt": ask.persona_prompt,
-            },
-            "discord": {
-                "enabled": discord.enabled,
-                "allowed_user_ids": list(discord.allowed_user_ids),
-                "allowed_guild_ids": list(discord.allowed_guild_ids),
-                "allowed_channel_ids": list(discord.allowed_channel_ids),
+                "llm_timeout_seconds": ask.llm_timeout_seconds,
+                "task_timeout_seconds": ask.task_timeout_seconds,
+                "system_prompt": ask.system_prompt,
             },
             "source_store": {
                 "db_filename": source.db_filename,
@@ -428,26 +443,15 @@ class Config:
             },
             "notion_sync": {
                 "enabled": notion.enabled,
-                "mcp_server_name": notion.mcp_server_name,
                 "database_id": notion.database_id,
                 "qa_database_id": notion.qa_database_id,
+                "data_source_id": notion.data_source_id,
+                "qa_data_source_id": notion.qa_data_source_id,
+                "auto_sync_enabled": notion.auto_sync_enabled,
                 "parent_page_id": notion.parent_page_id,
                 "database_title": notion.database_title,
                 "auto_sync_interval_sec": notion.auto_sync_interval_sec,
-            },
-            "web_console": {
-                "enabled": web.enabled,
-                "host": web.host,
-                "port": web.port,
-                "username": web.username,
-                "password": _mask(web.password),
-            },
-            "main_llm": {
-                "base_url": main_llm.base_url,
-                "model": main_llm.model,
-                "api_key": _mask(main_llm.api_key),
-                "timeout_seconds": main_llm.timeout_seconds,
-                "max_retries": main_llm.max_retries,
+                "sync_mode": notion.sync_mode,
             },
             "graph": {
                 "enabled": graph.enabled,
@@ -456,23 +460,24 @@ class Config:
                 "embedding_max_async": graph.embedding_max_async,
                 "working_dir": graph.working_dir,
                 "max_doc_chars": graph.max_doc_chars,
-                "lightrag_llm_provider": graph.lightrag_llm_provider,
-                "lightrag_llm_base_url": graph.lightrag_llm_base_url,
-                "lightrag_llm_model": graph.lightrag_llm_model,
                 "lightrag_llm_timeout_seconds": graph.lightrag_llm_timeout_seconds,
             },
             "vector_db": {
                 "backend": vector_db.backend,
                 "db_filename": vector_db.db_filename,
                 "auto_index_enabled": vector_db.auto_index_enabled,
+                "auto_rebuild_enabled": vector_db.auto_rebuild_enabled,
+                "auto_rebuild_delay_seconds": vector_db.auto_rebuild_delay_seconds,
             },
             "embedding": {
                 "provider": embedding.provider,
                 "model": embedding.model,
                 "base_url": embedding.base_url,
                 "max_token_size": embedding.max_token_size,
+                "load_timeout_seconds": embedding.load_timeout_seconds,
+                "device": embedding.device,
                 "actual_dimension": self.runtime_embedding_dimension,
-                "api_key": _mask(_secret("", ENV_EMBEDDING_API_KEY)),
+                "api_key": _mask(embedding.api_key or _secret("", ENV_EMBEDDING_API_KEY)),
             },
             "rerank": {
                 "provider": rerank.provider,
@@ -489,11 +494,6 @@ class Config:
                 "rerank_weight": deep_thinking.rerank_weight,
                 "verify_enabled": deep_thinking.verify_enabled,
                 "max_verify_rounds": deep_thinking.max_verify_rounds,
-                "llm_base_url": deep_thinking.llm_base_url,
-                "llm_model": deep_thinking.llm_model,
-                "llm_api_key": _mask(
-                    _secret(deep_thinking.llm_api_key, ENV_DEEP_THINKING_LLM_API_KEY)
-                ),
             },
             "enhanced_recall": {
                 "max_sub_queries": enhanced.max_sub_queries,
@@ -513,6 +513,11 @@ class Config:
                 "sync_mode": zotero.sync_mode,
                 "auto_sync_enabled": zotero.auto_sync_enabled,
                 "auto_sync_interval_sec": zotero.auto_sync_interval_sec,
+            },
+            "models": {
+                "chat": models.chat,
+                "research": models.research,
+                "graph": models.graph,
             },
             "diagnostics": self.get_diagnostics(),
         }
@@ -540,10 +545,6 @@ class Config:
 
         notion = self.get_notion_sync_config()
         if notion.enabled:
-            if not notion.mcp_server_name:
-                diagnostics.append(
-                    "notion_sync.mcp_server_name is required when notion_sync.enabled=true"
-                )
             if not notion.database_id and not notion.parent_page_id:
                 diagnostics.append(
                     "notion_sync.database_id or notion_sync.parent_page_id is required "
@@ -563,35 +564,29 @@ class Config:
                 "embedding section."
             )
         embedding = self.get_embedding_config()
-        if embedding.provider == "astr":
-            diagnostics.append(
-                "embedding.provider=astr is not implemented; choose local or external."
-            )
-        elif embedding.provider == "local" and not _module_available("sentence_transformers"):
+        if embedding.provider == "local" and not _module_available("sentence_transformers"):
             diagnostics.append(
                 "Local embedding requires optional dependencies from "
                 "requirements-additional.txt."
             )
-        elif embedding.provider == "external" and not _secret("", ENV_EMBEDDING_API_KEY):
+        elif embedding.provider == "external" and not embedding.base_url:
             diagnostics.append(
-                "KR_EMBEDDING_API_KEY is required when embedding.provider=external."
+                "The embedding source refers to a provider connection that no longer exists."
             )
-        if self.get_vector_db_config().backend == "milvus" and not _module_available("pymilvus"):
-            diagnostics.append(
-                "Milvus Lite is a required dependency from requirements.txt; "
-                "AstrBot fallback remains available until it is installed."
-            )
+        if self.get_vector_db_config().backend == "milvus":
+            # 就绪 = pymilvus ∧ milvus_lite。缺哪个、怎么修由 capabilities 统一给文案，
+            # 避免此处再复述一份可能过期的说法。
+            milvus_runtime = milvus_runtime_status()
+            if not milvus_runtime["ready"]:
+                diagnostics.append(
+                    "Milvus Lite is a required dependency from requirements.txt; "
+                    "SQLite lexical retrieval remains available until it is installed. "
+                    f"{milvus_runtime['hint']}"
+                )
         graph = self.get_graph_config()
         if graph.enabled and not _module_available("lightrag"):
             diagnostics.append(
                 "LightRAG requires optional dependencies from requirements-additional.txt."
-            )
-        if graph.enabled and graph.lightrag_llm_provider in {"local", "api"} and not (
-            graph.lightrag_llm_base_url and graph.lightrag_llm_model
-        ):
-            diagnostics.append(
-                "graph.lightrag_llm_base_url and graph.lightrag_llm_model are required "
-                f"when graph.lightrag_llm_provider={graph.lightrag_llm_provider}."
             )
         return diagnostics + list(self.runtime_diagnostics)
 
@@ -618,39 +613,23 @@ class Config:
 
     def get_notion_sync_config(self) -> NotionSyncConfig:
         s = _section(self.raw, "notion_sync")
+        sync_mode = str(s.get("sync_mode", NotionSyncConfig.sync_mode)).strip().lower()
+        if sync_mode not in {NOTION_SYNC_PRESERVE, NOTION_SYNC_STRICT}:
+            sync_mode = NotionSyncConfig.sync_mode
         return NotionSyncConfig(
             enabled=bool(s.get("enabled", NotionSyncConfig.enabled)),
-            mcp_server_name=s.get("mcp_server_name", NotionSyncConfig.mcp_server_name),
             database_id=s.get("database_id", NotionSyncConfig.database_id),
             qa_database_id=s.get("qa_database_id", NotionSyncConfig.qa_database_id),
+            data_source_id=s.get("data_source_id", NotionSyncConfig.data_source_id),
+            qa_data_source_id=s.get("qa_data_source_id", NotionSyncConfig.qa_data_source_id),
+            auto_sync_enabled=bool(s.get("auto_sync_enabled", NotionSyncConfig.auto_sync_enabled)),
             parent_page_id=s.get("parent_page_id", NotionSyncConfig.parent_page_id),
             database_title=s.get("database_title", NotionSyncConfig.database_title),
             auto_sync_interval_sec=int(
                 s.get("auto_sync_interval_sec", NotionSyncConfig.auto_sync_interval_sec)
             ),
+            sync_mode=sync_mode,
             # rate_limit_rps 固定为平台上限，不从配置读取。
-        )
-
-    def get_web_console_config(self) -> WebConsoleConfig:
-        s = _section(self.raw, "web_console")
-        return WebConsoleConfig(
-            enabled=bool(s.get("enabled", WebConsoleConfig.enabled)),
-            host=s.get("host", WebConsoleConfig.host),
-            port=int(s.get("port", WebConsoleConfig.port)),
-            username=s.get("username", WebConsoleConfig.username),
-            password=_secret(s.get("password"), ENV_WEB_PASSWORD),
-        )
-
-    def get_main_llm_config(self) -> MainLLMConfig:
-        s = _section(self.raw, "main_llm")
-        return MainLLMConfig(
-            base_url=str(s.get("base_url", MainLLMConfig.base_url)),
-            model=str(s.get("model", MainLLMConfig.model)),
-            api_key=_secret(s.get("api_key"), ENV_MAIN_LLM_API_KEY),
-            timeout_seconds=max(
-                1, int(s.get("timeout_seconds", MainLLMConfig.timeout_seconds))
-            ),
-            max_retries=max(0, int(s.get("max_retries", MainLLMConfig.max_retries))),
         )
 
     def get_graph_config(self) -> GraphConfig:
@@ -658,13 +637,6 @@ class Config:
         query_mode = str(s.get("query_mode", GraphConfig.query_mode))
         if query_mode not in {"local", "global", "hybrid", "naive", "mix", "bypass"}:
             query_mode = GraphConfig.query_mode
-        raw_llm_provider = str(s.get("lightrag_llm_provider", "")).strip().lower()
-        if raw_llm_provider not in {"main", "local", "api"}:
-            has_legacy_endpoint = bool(
-                str(s.get("lightrag_llm_base_url", "")).strip()
-                and str(s.get("lightrag_llm_model", "")).strip()
-            )
-            raw_llm_provider = "local" if has_legacy_endpoint else GraphConfig.lightrag_llm_provider
         return GraphConfig(
             enabled=bool(s.get("enabled", GraphConfig.enabled)),
             query_mode=query_mode,
@@ -672,13 +644,6 @@ class Config:
             embedding_max_async=int(s.get("embedding_max_async", GraphConfig.embedding_max_async)),
             working_dir=str(s.get("working_dir", GraphConfig.working_dir)),
             max_doc_chars=max(0, int(s.get("max_doc_chars", GraphConfig.max_doc_chars))),
-            lightrag_llm_provider=raw_llm_provider,
-            lightrag_llm_base_url=str(
-                s.get("lightrag_llm_base_url", GraphConfig.lightrag_llm_base_url)
-            ),
-            lightrag_llm_model=str(
-                s.get("lightrag_llm_model", GraphConfig.lightrag_llm_model)
-            ),
             lightrag_llm_timeout_seconds=max(
                 1,
                 int(
@@ -726,28 +691,44 @@ class Config:
         s = _section(self.raw, "vector_db")
         raw_auto = s.get("auto_index_enabled", VectorDbConfig.auto_index_enabled)
         auto_index = bool(raw_auto) if not isinstance(raw_auto, bool) else raw_auto
-        backend = str(s.get("backend", VectorDbConfig.backend))
-        if backend == "astrbot":
-            backend = "astr"
-        if backend not in {"milvus", "astr"}:
+        raw_rebuild = s.get("auto_rebuild_enabled", VectorDbConfig.auto_rebuild_enabled)
+        auto_rebuild = bool(raw_rebuild) if not isinstance(raw_rebuild, bool) else raw_rebuild
+        backend = str(s.get("backend", VectorDbConfig.backend)).strip().lower()
+        if backend in LEGACY_LEXICAL_BACKENDS:
+            backend = VECTOR_BACKEND_LEXICAL
+        if backend not in {VECTOR_BACKEND_MILVUS, VECTOR_BACKEND_LEXICAL}:
             backend = VectorDbConfig.backend
         return VectorDbConfig(
             backend=backend,
             db_filename=s.get("db_filename", VectorDbConfig.db_filename),
             auto_index_enabled=auto_index,
+            auto_rebuild_enabled=auto_rebuild,
+            # 下限 5 秒：防抖窗口过短会让 Zotero 批量同步每来一篇就重跑一次重建。
+            auto_rebuild_delay_seconds=max(
+                MIN_AUTO_REBUILD_DELAY_SECONDS,
+                _int_or_default(
+                    s.get("auto_rebuild_delay_seconds"),
+                    VectorDbConfig.auto_rebuild_delay_seconds,
+                ),
+            ),
         )
 
     def get_embedding_config(self) -> EmbeddingConfig:
         current = _section(self.raw, "embedding")
         legacy_vector = _section(self.raw, "vector_db")
         legacy_graph = _section(self.raw, "graph")
+        provider = str(
+            current.get(
+                "provider",
+                legacy_vector.get("embedding_provider", EmbeddingConfig.provider),
+            )
+        ).strip().lower()
+        if provider not in EMBEDDING_PROVIDERS:
+            # 已移除的旧来源（如宿主托管的 embedding）归一为 local：指纹随之变化，
+            # 既有 Milvus/LightRAG 索引走「不兼容 → 重建」路径，而不是静默混用向量空间。
+            provider = EmbeddingConfig.provider
         return EmbeddingConfig(
-            provider=str(
-                current.get(
-                    "provider",
-                    legacy_vector.get("embedding_provider", EmbeddingConfig.provider),
-                )
-            ),
+            provider=provider,
             model=str(
                 current.get(
                     "model",
@@ -772,6 +753,12 @@ class Config:
                     EmbeddingConfig.local_idle_timeout_seconds,
                 )
             ),
+            load_timeout_seconds=_clamp_load_timeout(
+                current.get("load_timeout_seconds", EmbeddingConfig.load_timeout_seconds)
+            ),
+            device=str(current.get("device", EmbeddingConfig.device)).strip() or "auto",
+            cache_mb=max(0, _int_or_default(current.get("cache_mb"), EmbeddingConfig.cache_mb)),
+            api_key=str(current.get("api_key") or ""),
         )
 
     def get_ask_agent_config(self) -> AskAgentConfig:
@@ -780,21 +767,14 @@ class Config:
         if answer_language not in {"auto", "zh", "en"}:
             answer_language = AskAgentConfig.answer_language
         return AskAgentConfig(
-            agent_enabled=bool(s.get("agent_enabled", AskAgentConfig.agent_enabled)),
-            research_enabled=bool(s.get("research_enabled", AskAgentConfig.research_enabled)),
-            persona_enabled=bool(s.get("persona_enabled", AskAgentConfig.persona_enabled)),
-            context_enabled=bool(s.get("context_enabled", AskAgentConfig.context_enabled)),
-            persona_prompt=str(s.get("persona_prompt", AskAgentConfig.persona_prompt))[:4000],
+            llm_timeout_seconds=max(
+                0, int(s.get("llm_timeout_seconds", AskAgentConfig.llm_timeout_seconds))
+            ),
+            task_timeout_seconds=max(
+                0, int(s.get("task_timeout_seconds", AskAgentConfig.task_timeout_seconds))
+            ),
             answer_language=answer_language,
-        )
-
-    def get_discord_config(self) -> DiscordConfig:
-        s = _section(self.raw, "discord")
-        return DiscordConfig(
-            enabled=bool(s.get("enabled", DiscordConfig.enabled)),
-            allowed_user_ids=_string_tuple(s.get("allowed_user_ids")),
-            allowed_guild_ids=_string_tuple(s.get("allowed_guild_ids")),
-            allowed_channel_ids=_string_tuple(s.get("allowed_channel_ids")),
+            system_prompt=str(s.get("system_prompt") or ""),
         )
 
     def get_rerank_config(self) -> RerankConfig:
@@ -809,7 +789,10 @@ class Config:
         elif provider == "mmr":
             # 历史值归一：不做 MMR provider，显式旧值保持关闭。
             provider = "noop"
-        if provider not in {"noop", "cross_encoder"}:
+        base_url = str(s.get("base_url", "") or "").strip()
+        if provider == "remote" and not base_url:
+            provider = "noop"  # 选了线上但连接已删除：不重排，而不是报错
+        if provider not in {"noop", "cross_encoder", "remote"}:
             provider = "noop"
         return RerankConfig(
             provider=provider,
@@ -818,6 +801,8 @@ class Config:
             batch_size=max(1, int(s.get("batch_size", RerankConfig.batch_size))),
             max_candidates=max(1, int(s.get("max_candidates", RerankConfig.max_candidates))),
             keep=max(1, int(s.get("keep", RerankConfig.keep))),
+            base_url=base_url,
+            api_key=str(s.get("api_key", "") or ""),
         )
 
     def get_deep_thinking_config(self) -> DeepThinkingConfig:
@@ -865,9 +850,15 @@ class Config:
             max_discovered_total=max(
                 0, int(s.get("max_discovered_total", DeepThinkingConfig.max_discovered_total))
             ),
-            llm_base_url=str(s.get("llm_base_url", "")),
-            llm_model=str(s.get("llm_model", "")),
-            llm_api_key=str(s.get("llm_api_key", "")),
+        )
+
+    def get_model_assignments(self) -> ModelAssignments:
+        s = _section(self.raw, "models")
+        return ModelAssignments(
+            chat=str(s.get("chat") or ""),
+            research=str(s.get("research") or ""),
+            graph=str(s.get("graph") or ""),
+            graph_is_local=bool(s.get("graph_is_local", False)),
         )
 
     def get_enhanced_recall_config(self) -> EnhancedRecallConfig:
@@ -902,222 +893,6 @@ class Config:
         )
 
 
-# ── 可写配置键登记（API 写入 / 运行时持久化的唯一真相源）────────────
-#
-# 此前「允许写入的键」散落三处：api 的 _CONFIG_UPDATE_KEYS、_STRUCTURAL_KEYS 与
-# runtime_config 的 _ALLOWED_RUNTIME_KEYS。在此收口为单一登记表，两个消费者各自派生其
-# 子集（见 api.py / runtime_config.py）。新增项须与 _conf_schema.json 同步（CLAUDE.md §6）。
-
-# 切换某键后的后果标识：none 即时生效 / restart 需重启插件 / rebuild 需重建索引（且隐含重启）。
-CONSEQUENCE_NONE = "none"
-CONSEQUENCE_RESTART = "restart"
-CONSEQUENCE_REBUILD = "rebuild"
-
-
-@dataclass(frozen=True)
-class ConfigKeyPolicy:
-    """单个配置键的写入策略。
-
-    api_writable        可经 /api/config/update 写入（机密与结构键不可）。
-    runtime_persistable 可写入 data_dir/runtime_config.json 持久化。
-    structural          结构性参数：禁止运行时 API 写，改后须重建/重启（防静默破坏数据）。
-    consequence         改动后果，用于计算 restart_required / rebuild_required 与前端提示。
-    standalone_writable 仅独立壳（shell=standalone）可经 API 写——插件模式下这些键由
-                        AstrBot 面板管辖保持只读；独立壳没有面板，须在设置页可编辑。
-    """
-
-    api_writable: bool = False
-    runtime_persistable: bool = False
-    structural: bool = False
-    consequence: str = CONSEQUENCE_NONE
-    standalone_writable: bool = False
-
-
-# 注：r2_sync.enabled / notion_sync.enabled / source_store.ocr_enabled 为新纳入的非机密开关，
-# 让数据流向导可「按需切换」更多环节；机密（secret_access_key/password/api_key）始终不可写。
-CONFIG_KEY_POLICY: dict[str, dict[str, ConfigKeyPolicy]] = {
-    "vector_db": {
-        "backend": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "auto_index_enabled": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-    },
-    "embedding": {
-        "provider": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_REBUILD),
-        "model": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_REBUILD),
-        "base_url": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_REBUILD),
-    },
-    "ask": {
-        "persona_enabled": ConfigKeyPolicy(False, True),
-        # /ka 运行时开关：仅持久化（不开放 API 写），由命令切换、重启保留。
-        "agent_enabled": ConfigKeyPolicy(False, True),
-        "research_enabled": ConfigKeyPolicy(False, True),
-        # 召回语言（回答语言）：开放 API 写，使前端 askAI 与配置项共享同一参数。
-        "answer_language": ConfigKeyPolicy(True, True),
-        "context_enabled": ConfigKeyPolicy(True, True),
-        "persona_prompt": ConfigKeyPolicy(True, True),
-    },
-    "discord": {
-        "enabled": ConfigKeyPolicy(
-            False, True, consequence=CONSEQUENCE_RESTART, standalone_writable=True
-        ),
-        "allowed_user_ids": ConfigKeyPolicy(
-            False, True, consequence=CONSEQUENCE_RESTART, standalone_writable=True
-        ),
-        "allowed_guild_ids": ConfigKeyPolicy(
-            False, True, consequence=CONSEQUENCE_RESTART, standalone_writable=True
-        ),
-        "allowed_channel_ids": ConfigKeyPolicy(
-            False, True, consequence=CONSEQUENCE_RESTART, standalone_writable=True
-        ),
-    },
-    "web_console": {
-        # /ka webui on|off 实时启停并持久化；不走 update_config（避免 RESTART 后果误判）。
-        "enabled": ConfigKeyPolicy(False, True),
-        # 独立壳可在设置页改服务参数；插件模式由 AstrBot 面板管辖（只读）。
-        "host": ConfigKeyPolicy(
-            False, True, consequence=CONSEQUENCE_RESTART, standalone_writable=True
-        ),
-        "port": ConfigKeyPolicy(
-            False, True, consequence=CONSEQUENCE_RESTART, standalone_writable=True
-        ),
-        "username": ConfigKeyPolicy(
-            False, True, consequence=CONSEQUENCE_RESTART, standalone_writable=True
-        ),
-    },
-    "main_llm": {
-        # 独立应用主 LLM（OpenAI-compatible）；插件模式不读取本节。api_key 为机密不可 API 写。
-        "base_url": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "model": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "timeout_seconds": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "max_retries": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-    },
-    "graph": {
-        "enabled": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "query_mode": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "llm_max_async": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "embedding_max_async": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "working_dir": ConfigKeyPolicy(
-            False, False, structural=True, consequence=CONSEQUENCE_RESTART
-        ),
-        "max_doc_chars": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_REBUILD),
-        "lightrag_llm_provider": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "lightrag_llm_base_url": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "lightrag_llm_model": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "lightrag_llm_timeout_seconds": ConfigKeyPolicy(
-            True, True, consequence=CONSEQUENCE_RESTART
-        ),
-    },
-    "notion_sync": {
-        "enabled": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "database_id": ConfigKeyPolicy(False, True, standalone_writable=True),
-        "qa_database_id": ConfigKeyPolicy(False, True, standalone_writable=True),
-        "parent_page_id": ConfigKeyPolicy(False, True, standalone_writable=True),
-        "database_title": ConfigKeyPolicy(False, True, standalone_writable=True),
-        "auto_sync_interval_sec": ConfigKeyPolicy(True, True),
-        "mcp_server_name": ConfigKeyPolicy(
-            False, True, consequence=CONSEQUENCE_RESTART, standalone_writable=True
-        ),
-    },
-    "r2_sync": {
-        "enabled": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        # 独立壳无 AstrBot 面板：R2 连接参数在设置页可编辑（secret_access_key 仍走环境变量）。
-        "account_id": ConfigKeyPolicy(
-            False, True, consequence=CONSEQUENCE_RESTART, standalone_writable=True
-        ),
-        "access_key_id": ConfigKeyPolicy(
-            False, True, consequence=CONSEQUENCE_RESTART, standalone_writable=True
-        ),
-        "bucket": ConfigKeyPolicy(
-            False, True, consequence=CONSEQUENCE_RESTART, standalone_writable=True
-        ),
-        "warn_threshold": ConfigKeyPolicy(False, True, standalone_writable=True),
-        "backup_interval_sec": ConfigKeyPolicy(
-            False, True, consequence=CONSEQUENCE_RESTART, standalone_writable=True
-        ),
-    },
-    "source_store": {
-        "default_collection": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "ocr_enabled": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-    },
-    "zotero_sync": {
-        "enabled": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "access_mode": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "zotero_data_dir": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "api_port": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "storage_mode": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_REBUILD),
-        "linked_root": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_REBUILD),
-        "zotmoov_root": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_REBUILD),
-        "sync_mode": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_REBUILD),
-        "auto_sync_enabled": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "auto_sync_interval_sec": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-    },
-    "deep_thinking": {
-        "max_rounds": ConfigKeyPolicy(True, True),
-        "max_sub_queries": ConfigKeyPolicy(True, True),
-        "wide_top_k": ConfigKeyPolicy(True, True),
-        "rerank_weight": ConfigKeyPolicy(True, True),
-        "verify_enabled": ConfigKeyPolicy(True, True),
-        "max_verify_rounds": ConfigKeyPolicy(True, True),
-        "llm_base_url": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "llm_model": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-    },
-    "rerank": {
-        "provider": ConfigKeyPolicy(True, True),
-        "model": ConfigKeyPolicy(True, True),
-    },
-    "enhanced_recall": {
-        "max_sub_queries": ConfigKeyPolicy(True, True),
-        "wide_top_k": ConfigKeyPolicy(True, True),
-        "max_final_evidence": ConfigKeyPolicy(True, True),
-        "rerank_weight": ConfigKeyPolicy(True, True),
-        "corrective_enabled": ConfigKeyPolicy(True, True),
-    },
-}
-
-
-def api_writable_keys() -> dict[str, frozenset[str]]:
-    """可经 API 写入的键（排除机密与结构键）。供 api._CONFIG_UPDATE_KEYS 派生。"""
-    return {
-        section: frozenset(k for k, p in keys.items() if p.api_writable and not p.structural)
-        for section, keys in CONFIG_KEY_POLICY.items()
-        if any(p.api_writable and not p.structural for p in keys.values())
-    }
-
-
-def structural_keys() -> dict[str, frozenset[str]]:
-    """结构性键：禁止运行时 API 写。供 api._STRUCTURAL_KEYS 派生。"""
-    return {
-        section: frozenset(k for k, p in keys.items() if p.structural)
-        for section, keys in CONFIG_KEY_POLICY.items()
-        if any(p.structural for p in keys.values())
-    }
-
-
-def standalone_writable_keys() -> dict[str, frozenset[str]]:
-    """仅独立壳可经 API 写的键（排除结构键）。供 api 在 shell=standalone 时放行。"""
-    return {
-        section: frozenset(
-            k for k, p in keys.items() if p.standalone_writable and not p.structural
-        )
-        for section, keys in CONFIG_KEY_POLICY.items()
-        if any(p.standalone_writable and not p.structural for p in keys.values())
-    }
-
-
-def runtime_persistable_keys() -> dict[str, frozenset[str]]:
-    """可写入 runtime_config.json 的键。供 runtime_config._ALLOWED_RUNTIME_KEYS 派生。"""
-    return {
-        section: frozenset(k for k, p in keys.items() if p.runtime_persistable)
-        for section, keys in CONFIG_KEY_POLICY.items()
-        if any(p.runtime_persistable for p in keys.values())
-    }
-
-
-def change_consequence(section: str, key: str) -> str:
-    """返回改动该键的后果标识（none/restart/rebuild）；未登记键按 none 处理。"""
-    policy = CONFIG_KEY_POLICY.get(section, {}).get(key)
-    return policy.consequence if policy else CONSEQUENCE_NONE
-
-
 def merge_config_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """递归合并配置 dict，返回新对象。"""
     merged: dict[str, Any] = dict(base)
@@ -1140,12 +915,9 @@ def _mask(value: str) -> str:
 
 __all__ = [
     "ENV_R2_SECRET_ACCESS_KEY",
-    "ENV_WEB_PASSWORD",
     "ENV_EMBEDDING_API_KEY",
     "ENV_LIGHTRAG_LLM_API_KEY",
     "ENV_ZOTERO_API_KEY",
-    "ENV_MAIN_LLM_API_KEY",
-    "ENV_DISCORD_BOT_TOKEN",
     "ZOTERO_STORAGE_MANAGED",
     "ZOTERO_STORAGE_LINKED",
     "ZOTERO_SYNC_STRICT",
@@ -1153,27 +925,20 @@ __all__ = [
     "ZOTERO_SYNC_ARCHIVE",
     "ZOTERO_ACCESS_LOCAL",
     "ZOTERO_ACCESS_SERVER",
-    "CONSEQUENCE_NONE",
-    "CONSEQUENCE_RESTART",
-    "CONSEQUENCE_REBUILD",
-    "ConfigKeyPolicy",
-    "CONFIG_KEY_POLICY",
-    "api_writable_keys",
-    "standalone_writable_keys",
-    "structural_keys",
-    "runtime_persistable_keys",
-    "change_consequence",
+    "NOTION_SYNC_PRESERVE",
+    "NOTION_SYNC_STRICT",
+    "VECTOR_BACKEND_MILVUS",
+    "VECTOR_BACKEND_LEXICAL",
+    "EMBEDDING_PROVIDERS",
     "merge_config_dicts",
     "SourceStoreConfig",
     "R2SyncConfig",
     "NotionSyncConfig",
-    "MainLLMConfig",
-    "WebConsoleConfig",
     "GraphConfig",
     "VectorDbConfig",
     "EmbeddingConfig",
     "AskAgentConfig",
-    "DiscordConfig",
+    "ModelAssignments",
     "ZoteroSyncConfig",
     "Config",
 ]

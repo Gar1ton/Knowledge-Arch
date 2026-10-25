@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from kacore.adapters.zotero.sqlite_reader import ZoteroSnapshot
+from kacore.adapters.zotero.sqlite_reader import ZoteroSnapshot, excluded_collection_keys
 from kacore.domain.models import (
     DocumentOrigin,
     ZoteroAttachment,
@@ -23,7 +23,7 @@ from kacore.domain.models import (
     ZoteroTag,
 )
 
-logger = logging.getLogger("astrbot_plugin_knowledge_repository")
+logger = logging.getLogger("ZoteroSync")
 
 API_BASE_URL = "https://api.zotero.org"
 API_VERSION = "3"
@@ -168,17 +168,36 @@ class ZoteroWebApiReader:
         snapshot.collections = self._collections(collections_payload)
         snapshot.items = self._items(items_payload)
         snapshot.attachments = self._attachments(items_payload)
-        snapshot.collection_items = self._collection_items(items_payload)
+        excluded = self._excluded_collection_keys(collections_payload)
+        snapshot.collection_items = [
+            (ck, ik) for ck, ik in self._collection_items(items_payload) if ck not in excluded
+        ]
         snapshot.item_tags = self._item_tags(items_payload)
         snapshot.relations = self._relations(items_payload)
         return snapshot
 
-    def _collections(self, payload: list[dict[str, Any]]) -> list[ZoteroCollection]:
-        result = []
+    @staticmethod
+    def _excluded_collection_keys(payload: list[dict[str, Any]]) -> set[str]:
+        """回收站集合（data.deleted）及其子孙的 key；Web API 仍会返回这些集合。"""
+        parent_by_key: dict[str, str] = {}
+        deleted: set[str] = set()
         for entry in payload:
             data = _data(entry)
             key = str(data.get("key") or entry.get("key") or "")
             if not key:
+                continue
+            parent_by_key[key] = str(data.get("parentCollection") or "")
+            if data.get("deleted"):
+                deleted.add(key)
+        return excluded_collection_keys(parent_by_key, deleted)
+
+    def _collections(self, payload: list[dict[str, Any]]) -> list[ZoteroCollection]:
+        excluded = self._excluded_collection_keys(payload)
+        result = []
+        for entry in payload:
+            data = _data(entry)
+            key = str(data.get("key") or entry.get("key") or "")
+            if not key or key in excluded:
                 continue
             result.append(
                 ZoteroCollection(
@@ -270,10 +289,14 @@ class ZoteroWebApiReader:
             return None
 
     def _collection_items(self, payload: list[dict[str, Any]]) -> list[tuple[str, str]]:
+        # 注意：这里不能复用 _NON_REGULAR_TYPES（它把 attachment 也算作「非常规条目」）。
+        # 独立放入集合、无 parent item 的 PDF attachment 是靠自己的 data.collections
+        # 字段承载归属信息的——排除它会导致该附件的集合归属信息永久丢失，落入合成的
+        # __unfiled__ 桶。只有 note/annotation 在 Zotero 模型里确实不能作为集合成员。
         pairs: list[tuple[str, str]] = []
         for entry in payload:
             data = _data(entry)
-            if str(data.get("itemType") or "") in _NON_REGULAR_TYPES:
+            if str(data.get("itemType") or "") in ("note", "annotation"):
                 continue
             item_key = str(data.get("key") or entry.get("key") or "")
             for coll_key in data.get("collections") or []:

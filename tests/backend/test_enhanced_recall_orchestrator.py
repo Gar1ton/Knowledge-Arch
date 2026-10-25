@@ -33,6 +33,14 @@ SYNTH_INSUFFICIENT = (
     '"corrective_queries":["Paper Y Table 2"]}'
 )
 SYNTH_NO_VERDICT = "plain answer without verdict [1]"
+SYNTH_SUFFICIENT_AFTER_CORRECTION = (
+    "final answer [1]\n===VERDICT===\n"
+    '{"sufficient":true,"insufficiency_reasons":[],"corrective_queries":[]}'
+)
+SYNTH_STILL_INSUFFICIENT_AFTER_CORRECTION = (
+    "final answer [1]\n===VERDICT===\n"
+    '{"sufficient":false,"insufficiency_reasons":["仍缺权威来源"],"corrective_queries":[]}'
+)
 
 
 # ── 测试替身 ────────────────────────────────────────────────
@@ -52,12 +60,15 @@ class MockRetrieval:
     def __init__(self, outcome: RetrievalOutcome) -> None:
         self._outcome = outcome
         self.queries: list[str] = []
+        # 按 query 文本覆盖返回值（未命中退回默认 outcome）。按调用序号覆盖会踩坑：
+        # 首轮的 sub_queries 会发起多次检索，个数随 PLAN 脚本变化。
+        self.outcome_by_query: dict[str, RetrievalOutcome] = {}
 
     async def retrieve_with_outcome(
         self, collection, query, top_k, scope=None, candidate_k=None, reranker=None
     ):
         self.queries.append(query)
-        return self._outcome
+        return self.outcome_by_query.get(query, self._outcome)
 
     async def document_labels(self, doc_ids):
         return {d: d for d in doc_ids if d}
@@ -71,13 +82,19 @@ class ScriptedLLM:
         self.system_prompts: list[str] = []
 
     async def generate(self, prompt, system_prompt="", *, allow_mock=True):
+        result = await self.generate_result(prompt, system_prompt, allow_mock=allow_mock)
+        return result.text
+
+    async def generate_result(self, prompt, system_prompt="", *, allow_mock=True):
+        from kacore.domain.llm_generation import GenerationResult
+
         self.calls += 1
         self.prompts.append(prompt)
         self.system_prompts.append(system_prompt)
         item = self._responses.pop(0)
         if isinstance(item, Exception):
             raise item
-        return item
+        return GenerationResult(text=item)
 
 
 def _make(outcome, responses, **cfg_over):
@@ -117,10 +134,10 @@ def test_parse_synth_check_three_states():
     assert bad.sufficient is False
     assert bad.insufficiency_reasons == ["缺对比证据"]
     assert bad.corrective_queries == ["Paper Y Table 2"]
-    # 标记缺失 → fail-open：整段视为答案、sufficient=True（不浪费重试）。
+    # 标记缺失 → 保留答案，但不虚报 sufficient=True（不浪费重试）。
     open_ = parse_synth_check(SYNTH_NO_VERDICT)
     assert open_.answer == SYNTH_NO_VERDICT
-    assert open_.sufficient is True
+    assert open_.sufficient is False
 
 
 def test_parse_synth_check_empty_body_raises():
@@ -136,6 +153,11 @@ def test_synth_check_system_embeds_verdict_contract():
     assert '"sufficient"' in system
     assert "at most 3" in system
     assert "中文" in system  # answer_language 指令保留。
+    assert "moderately detailed" in system
+    assert "Begin with a concise, direct answer" in system
+    assert "do not force stock sections" in system
+    assert "do not repeat the same citation" in system
+    assert "COMPREHENSIVE" not in system  # enhanced 不再误用 deep 的穷尽式报告模板。
 
 
 # ── 编排流程 ────────────────────────────────────────────────
@@ -159,17 +181,33 @@ async def test_happy_path_exactly_two_llm_calls():
 async def test_insufficient_triggers_corrective_round_and_resynthesis():
     outcome = _outcome([_chunk("c1"), _chunk("c2")])
     orch, retrieval, llm = _make(
-        outcome, [PLAN_OK, SYNTH_INSUFFICIENT, "final answer [1]"]
+        outcome, [PLAN_OK, SYNTH_INSUFFICIENT, SYNTH_SUFFICIENT_AFTER_CORRECTION]
     )
     result = await orch.run("papers", "原始问题")
-    assert llm.calls == 3  # PLAN + SYNTH+CHECK + 重合成。
+    assert llm.calls == 3  # PLAN + SYNTH+CHECK + 重合成（复用同一 SYNTH+CHECK 契约）。
     assert retrieval.queries[-1] == "Paper Y Table 2"  # 纠偏 query 进入检索。
     assert result.answer == "final answer [1]"
-    assert result.verified is True  # 一轮纠偏即闭环。
-    assert result.verify_notes == ["缺对比证据"]  # 缺口透明进思考过程。
+    # verified 现在来自纠偏轮自己的 verdict，不是「跑完一轮纠偏」就直接置真。
+    assert result.verified is True
+    assert result.verify_notes == []  # 纠偏轮 verdict 报告缺口已清零。
     assert len(result.trace) == 2
     assert result.trace[1].queries == ["Paper Y Table 2"]
-    assert result.trace[1].gaps == ["缺对比证据"]
+    assert result.trace[1].gaps == []
+
+
+@pytest.mark.asyncio
+async def test_corrective_round_still_insufficient_does_not_force_verified_true():
+    """核心修正：纠偏轮完成不等于已验证。若纠偏轮自己的 verdict 仍判不充分，verified
+    必须如实为 False，不能像旧行为那样只因为跑完一轮纠偏就置 True。"""
+    outcome = _outcome([_chunk("c1"), _chunk("c2")])
+    orch, _retrieval, llm = _make(
+        outcome, [PLAN_OK, SYNTH_INSUFFICIENT, SYNTH_STILL_INSUFFICIENT_AFTER_CORRECTION]
+    )
+    result = await orch.run("papers", "原始问题")
+    assert llm.calls == 3
+    assert result.answer == "final answer [1]"
+    assert result.verified is False
+    assert result.verify_notes == ["仍缺权威来源"]
 
 
 @pytest.mark.asyncio
@@ -232,7 +270,30 @@ async def test_resynthesis_failure_keeps_first_answer():
     result = await orch.run("papers", "原始问题")
     assert llm.calls == 3
     assert result.answer == "draft answer [1]"  # 重合成挂 → 保留首轮答案。
-    assert result.verified is True
+    # 纠偏轮没能产出新 verdict，必须沿用首轮已知的「不充分」判定，不能虚报为已验证。
+    assert result.verified is False
+    assert result.verify_notes == ["缺对比证据"]
+
+
+@pytest.mark.asyncio
+async def test_resynthesis_failure_rolls_back_evidence_to_match_kept_answer():
+    """保留首轮答案就必须一并回滚证据池：`[n]` 是按纠正前池编号的。
+
+    v1.1.0 起 `[n]` 会被 `citation_rendering` 改写成含作者姓名的 Harvard 短引，错位不再只是
+    「点错来源卡片」，而是正文明文把 A 的结论归给 B。
+    """
+    outcome = _outcome([_chunk("c1")])
+    orch, retrieval, _llm = _make(
+        outcome, [PLAN_OK, SYNTH_INSUFFICIENT, RuntimeError("resynth down")]
+    )
+    # 纠正轮（SYNTH_INSUFFICIENT 指定的 query）引入一条全新证据；
+    # 它绝不能出现在与首轮答案一起返回的证据池里。
+    retrieval.outcome_by_query = {"Paper Y Table 2": _outcome([_chunk("c9")])}
+
+    result = await orch.run("papers", "原始问题")
+
+    assert result.answer == "draft answer [1]"
+    assert [c.chunk_id for c in result.evidence] == ["c1"]
 
 
 @pytest.mark.asyncio

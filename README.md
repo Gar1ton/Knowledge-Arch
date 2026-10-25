@@ -1,119 +1,172 @@
-# Knowledge Arch（Monorepo）
+<div align="center">
 
-[![standalone](https://img.shields.io/badge/standalone-v0.2.2-orange)](pyproject.toml)
-[![plugin](https://img.shields.io/badge/plugin-v1.0.3-blueviolet)](apps/plugin/metadata.yaml)
+<img src="./logo.svg" width="96" alt="Knowledge Arch Logo" />
 
-**一套核心，两个壳**：原件中心的知识库系统（PDF 原件管理、五档检索/RAG、LightRAG 知识图谱、
-Zotero/R2/Notion 同步备份、独立 Web 控制台），同一业务核心同时驱动——
+# Knowledge Arch
 
-- **AstrBot 插件**（v1.0.x）：发布于 [Astrbot_Knowledge_Repository](https://github.com/Gar1ton/Astrbot_Knowledge_Repository)，
-  在 AstrBot 中以 `/ka` 命令 + LLM 工具 + WebUI 使用；
-- **独立跨平台应用**（v0.2.x，开发中）：脱离 AstrBot 独立运行，Linux/Windows/macOS，
-  统一「向知识库提问」面板（普通 Ask、Research 自动编排、Persona 风格、历史与引用）、
-  OpenAI 兼容 LLM 接入与可选 Discord 直连渠道，一键安装脚本部署。
+**本地优先的学术知识库桌面应用（macOS / Windows / Linux）**
 
-## 仓库结构
+*PDF 原件库 · Zotero 同步 · 六档检索问答 · Harvard 引用 · LightRAG 图谱 · Notion / R2*
 
-```
-kacore/            共享业务核心（domain/repository/managers/pipelines/adapters/api）
-                    ★ 框架中立：不 import astrbot，也不 import 任何壳
-web/             Web 控制台：server.py（aiohttp）+ frontend/（Next.js 源码）
-ka_migrations/      SQLite 编号迁移
-pages/              前端构建产物（tools/sync_frontend.py 生成，勿手改）
-apps/plugin/        AstrBot 插件薄壳（main.py / metadata.yaml / _conf_schema.json）
-  └ ka_plugin/      ★ AstrBot 专属适配器（AstrBotLLMAdapter / AstrBotKnowledgeBaseReader）
-standalone/      独立应用薄壳（cli / bootstrap / doctor / notion_transport）
-tools/              构建与发布脚本（build_published_tree / publish_plugin / bump_version / sync_frontend）
-release/            发布 manifest（published-files.txt 等）
-scripts/            一键安装/启动脚本
-tests/  docs/       测试与文档
-```
+[![version](https://img.shields.io/badge/版本-v2.0.0-blueviolet)](https://github.com/Gar1ton/Knowledge-Arch/releases)
+[![license](https://img.shields.io/badge/license-AGPL--3.0-green)](LICENSE)
+[![en](https://img.shields.io/badge/English-README__EN.md-blue)](README_EN.md)
 
-**一核两壳的边界**：两个壳各自持有自己的适配器，经组合根 `PluginInitializer` 显式注入；
-`kacore` 只认中立接口（如 `kacore/adapters/llm.py` 的 `LLMAdapter` Protocol），
-既不 import `astrbot` 也不 import 任何壳。依赖方向只能 **壳 → 核心**，两壳互不相识。
+</div>
 
-## 部署独立应用（Linux / Windows / macOS）
+---
 
-安装模型：**clone 仓库 + uv 同步依赖**（不走 PyPI；`pages/` 前端产物与迁移文件随源码就位，
-部署全程无需 Node.js）。Python 版本由 `.python-version`（3.11）钉定，uv 会自动安装。
+> **项目来源**：Knowledge Arch 是 AstrBot 插件 [**AstrBot KA v1.2.0**](https://github.com/Gar1ton/Astrbot_Knowledge_Repository/tree/8e6f1af) 的独立桌面版。整体实现承接自该版本，并与聊天机器人宿主解耦；首次启动可直接导入旧版插件数据。
+
+Knowledge Arch 以 PDF 等原件为中心管理学术资料：上传与清洗、集合树与标签、Zotero 镜像、多档检索问答（答案附带由代码确定性生成的 Harvard 引用）、LightRAG 知识图谱，以及 Notion / Cloudflare R2 同步备份。安装一个独立桌面应用即可使用；文献原件、索引与加密保存的密钥均留在本机，只有你主动配置的模型供应商、Notion 与 R2 端点会收到对应请求。
+
+## 安装
+
+从 [Releases](https://github.com/Gar1ton/Knowledge-Arch/releases) 下载对应平台的安装包：
+
+| 平台 | 安装包 | 说明 |
+|------|--------|------|
+| macOS 11+（Apple Silicon / Intel） | `.dmg` | 拖入「应用程序」 |
+| Windows 10/11（x64） | NSIS `setup.exe` | 装在当前用户目录，**不需要管理员权限**（支持中英文安装界面）；缺少 WebView2 时自动下载 |
+| Linux（x64） | `.deb` / `.AppImage` | `.deb` 依赖 `libwebkit2gtk-4.1-0`、`libayatana-appindicator3-1` |
+
+安装包内置独立 Python 3.12 运行时与全部核心依赖，**无需另行安装 Python 或 Node.js**。未签名构建在 macOS 上首次打开需到「系统设置 › 隐私与安全性」放行，Windows 上 SmartScreen 会提示「更多信息 › 仍要运行」。
+
+## 首次启动与快速开始
+
+1. **启动本机服务**：应用启动本机后端（只监听 `127.0.0.1`、端口由系统分配、每次启动生成新的 256 位访问令牌），空库首次启动进入欢迎页。
+2. **选择界面语言**：中文或 English，之后可在「偏好设置 › 通用」更改。
+3. **欢迎页二选一**：
+   - **从空库开始**：新建空白知识库。
+   - **导入旧版插件数据**：选择旧版插件安装根目录（含 `data/plugin_data/`）。应用会**复制**（不修改、不删除旧目录）SQLite 数据库、原件库、向量索引、图谱 workspace 与密钥，自动改写文档路径并迁移设置：
+     - **保持本地 Embedding**：从旧版插件迁移时，Embedding 来源默认保持为**本地模型**（`local`，除非旧配置显式使用 `external` 外部接口）。导入后请到「偏好设置 › 组件」安装「本地 Embedding 与 Rerank」，或改选线上 Embedding API（改选后会重建向量索引）。
+     - **向量库统一为内置 Milvus Lite**：若旧配置为「仅 SQLite 词法召回」，导入时会自动改回内置 Milvus Lite，并在导入完成后的「需要你确认」列表中提示。
+4. **用 AI 助手完成配置（推荐）**：欢迎页最后一步给出一段 prompt，复制后粘贴到 Codex 或 Claude Code。
+   助手会逐项询问你用哪些模型服务、要不要接 Zotero / Notion / R2，然后替你配置整条数据流；页面上实时显示连接状态与各节点进度。
+   - 复制 prompt 即打开「偏好设置 › 通用 › 允许 AI 助手连接」：应用把本机地址与每次启动生成的 token 写进只有当前用户可读的连接文件，关闭开关或退出应用即删除。
+   - AI 助手只能使用配置、检索与问答相关的接口，**不能写入任何 API Key 或 token**：需要密钥时应用弹出输入框，由你直接填进应用，助手看不到。
+   - 也可以在偏好设置里一键把 skill 安装到 Codex / Claude Code，之后直接说「帮我配置 Knowledge Arch」即可。
+5. **或手动配置模型并开始使用**（在「数据流」页；在欢迎页选「跳过，自己配置」时会出现分步引导，偏好设置 › 通用可重新查看）：
+   - 点开「模型供应商」节点，添加至少一个 **OpenAI 兼容**连接（对话/研究/图谱也可添加 Anthropic）。
+   - 点开「模型分配」节点，选择**对话模型**（研究与图谱模型留空则自动跟随对话模型）。
+   - 点开「向量化」节点（及「检索编排」节点的 Rerank），选择刚添加的 OpenAI 兼容连接与模型；若使用本地模型，先到「偏好设置 › 组件」安装。
+   - 切回「工作台」上传 PDF 或同步 Zotero，即可在右侧 **Ask** 面板提问。
+
+若后端启动失败或意外退出，界面会切换到服务停止页：展示最后几行日志，可点击「重启服务」或「打开日志目录」。
+
+## 语言与输出说明
+
+| 范围 | 行为 |
+|------|------|
+| **界面语言** | 默认**英文（English）**，可在「偏好设置 › 通用」切换为**中文**。 |
+| **Terminal 日志与系统提示** | 后端 Terminal 与文件日志、桌面壳菜单/托盘/通知，以及后端返回的诊断与报错提示均为**英文**。 |
+| **回答语言** | 在「数据流 › 问答 Ask」节点可选 `auto`（随提问语言）/ `zh`（中文）/ `en`（英文）。中文回答完整支持；兜底说明与答案末尾的「参考文献 / References」标题随回答语言切换。由于目前的提示词系统是按中文设计的，深度思考过程中暴露的提示暂时都是中文。 |
+
+## 配置：数据流页
+
+主窗口顶栏可在「工作台」与「数据流」之间切换。数据流页将整条处理链路展示为节点图，点击节点即可在侧边面板修改配置；每项设置都会标明修改后果（立即生效 / 需重启服务 / 需重建索引）。
+
+| 节点 | 作用与默认行为 |
+|------|----------------|
+| **Zotero 文献库** | 镜像本地 Zotero 数据目录或 Web API（user ID + key），collection 树同步为集合树。 |
+| **上传 / 分块** | PDF 清洗（`pymupdf4llm`）、扫描件 OCR 开关、默认集合。 |
+| **向量化（Embedding）** | **默认使用线上 API**：需先在「模型供应商」添加 OpenAI 兼容连接，再在此选择连接与 Embedding 模型（如 `text-embedding-3-small`）。未选连接时 Embedding 不启用，检索退回 SQLite 关键词召回。本地模型为可选组件。 |
+| **向量库** | **只使用内置的 Milvus Lite**（随包内置，无需另装，界面不再切换其它后端）。**没配好 Embedding 前**，向量库节点显示等待 Embedding，**检索自动退回 SQLite 关键词召回**；配好 Embedding 后自动建库并维护索引。 |
+| **检索编排** | 自动将 Milvus Lite 向量召回与 SQLite 关键词召回做 RRF 融合。**Rerank 默认使用线上 API（`remote`）**：选择 OpenAI 兼容连接与模型，**兼容 Cohere / Jina / SiliconFlow / Voyage 的 `/rerank` 接口**（支持 `results` 与 `data` 两种响应格式）；未选连接时不重排；单次请求失败只对当次查询按序回退。 |
+| **LightRAG 图谱** | 按集合构建图谱 workspace 并执行图谱检索（需安装「知识图谱」可选组件且 Embedding 已就绪）。 |
+| **模型供应商** | 内置 OpenAI、Anthropic、DeepSeek、DashScope（通义）、Moonshot（Kimi）、智谱 GLM、SiliconFlow、OpenRouter、Ollama、LM Studio 预设及自定义 OpenAI 兼容端点；API Key 加密保存（仅显示后 4 位），支持测试连接与拉取模型列表。 |
+| **模型分配** | 为**对话（chat）**、**研究（research）**、**图谱（graph）**三个角色分配模型；研究与图谱留空时跟随对话模型。 |
+| **问答 Ask** | 设置回答语言（`auto` / `zh` / `en`）、自定义系统提示词与超时时间；点击「打开 Ask」进入对话。 |
+| **Notion** | 经 Notion REST API 单向同步文章元数据与问答记录（集成 token 加密保存，详见 [`docs/NOTION_SYNC.md`](./docs/NOTION_SYNC.md)）。 |
+| **R2 备份** | 将整个数据目录生成内容寻址快照并上传至 Cloudflare R2，可跨设备恢复（需安装「R2 备份」可选组件）。 |
+
+> **API Key 修改提示**：仅修改已有连接的 API Key 不会热切换已初始化的线上 Embedding 或线上 Rerank，修改后请点击「重启服务」使其生效。
+
+## 功能与六档检索模式
+
+- **原件优先**：保留 PDF 原件、逐页抽取与清洗后的 clean markdown，脚注单独保存并可按需回读；支持集合树、标签、批量入库与重新清洗。
+- **按证据作答与 Harvard 引用**：问答基于检索片段生成，正文短引与文末参考文献表由代码确定性渲染（杜绝模型编造作者与年份），点击短引即可跳回原件片段。
+- **索引自动维护**：新文档入库或更换 Embedding 后，Milvus Lite 向量索引自动按需重建。
+
+### 六档检索模式
+
+| 模式 | 适用场景 | 成本 | 范围要求 |
+|------|----------|------|----------|
+| `default` | 查证单点事实，最快（保留 6 条证据） | ★ | 可全局 |
+| `enhanced` | 分析、对比、机制类问题：一次拆解 + 宽召回 + 自检纠偏 | ★★ | 可全局 |
+| `deep_thinking` | 综述、系统梳理级任务：多轮迭代推演 + 校验 | ★★★★ | 需绑定集合 |
+| `graph_mixed` | 语义/词法证据 + LightRAG 图谱上下文混合 | ★★★ | 需绑定集合 |
+| `graph_only` | 纯图谱检索，只用实体关系上下文 | ★★ | 需绑定集合 |
+| `fulltext` | 单篇精读：整篇正文直接送入 LLM，不截断 | 随篇幅 | 需选定一篇文档 |
+
+## 偏好设置与可选组件
+
+通过菜单 **Preferences…**（macOS `⌘,`，Windows / Linux `Ctrl+,`）或顶栏按钮打开偏好设置：
+
+- **通用（General）**：界面语言（默认英文 `English`，可切换 `中文`）、关闭窗口时最小化到托盘、登录时启动、自动检查更新。
+- **外观（Appearance）**：明暗模式（默认深色，可选跟随系统 / 浅色）、主题配色、**界面缩放**（**80%–150%**，档位 `80% / 90% / 100% / 110% / 125% / 150%`，桌面端支持快捷键 `Ctrl`/`⌘` + `+` / `-` / `0`）。
+- **存储（Storage）**：数据目录位置（更改后下次启动应用生效）、向量缓存上限（MB）。
+- **本地模型（Local models）**：运行设备（`auto` / `cpu` / `cuda` / `mps`）、空闲卸载与加载超时、释放显存、管理已下载的模型缓存。
+- **组件（Components）**：按需安装的可选组件（见下表）。
+- **诊断（Diagnostics）**：日志级别与保留天数、运行环境信息、重启服务、打开日志目录。
+
+### 可选组件
+
+为控制安装包体积，以下依赖不随安装包分发，可在「偏好设置 › 组件」中经内置 `uv` 一键安装到数据目录的 `extras/`（不影响系统 Python，安装完成后重启服务生效）：
+
+| 组件 | 依赖包 | 用途 |
+|------|--------|------|
+| **本地 Embedding 与 Rerank** | `sentence-transformers` + `torch` | 本地离线向量化与重排（`uv` 会按本机显卡自动选择 CPU 或 CUDA 版 `torch`） |
+| **知识图谱（LightRAG）** | `lightrag-hku` | 图谱 workspace 构建与 `graph_mixed` / `graph_only` 检索模式 |
+| **R2 备份** | `boto3` | Cloudflare R2 快照上传与恢复 |
+
+若组件安装失败，界面会按原因归类说明（**磁盘空间不足**、**无写入权限**、**网络/代理错误**、**当前系统或 Python 版本无适用安装包**、**依赖版本冲突**、**源码编译失败**或**未知错误**），并附带可展开查看的原始报错摘录。
+
+## 数据位置
+
+| 平台 | 数据目录 | 日志目录 |
+|------|----------|----------|
+| macOS | `~/Library/Application Support/Knowledge Arch` | `~/Library/Logs/Knowledge Arch` |
+| Windows | `%LOCALAPPDATA%\Knowledge Arch` | `%LOCALAPPDATA%\Knowledge Arch\Logs` |
+| Linux | `~/.local/share/Knowledge Arch` | `~/.local/state/Knowledge Arch/log` |
+
+在「偏好设置 › 存储」修改数据目录后，日志写入 `<数据目录>/logs`。数据目录包含 SQLite 数据库、原件库、向量与图谱索引、`settings.json`、加密保存的密钥（主密钥优先存入系统钥匙串 keyring，不可用时回退文件）以及已安装的 `extras/` 组件；复制整个目录即可迁移或备份。桌面壳偏好（数据目录覆盖、托盘、开机启动、检查更新）保存在 `<系统配置目录>/Knowledge Arch/shell.json`。
+
+## 开发
 
 ```bash
-# Linux / macOS
-git clone https://github.com/Gar1ton/Knowledge-Arch.git && cd Knowledge-Arch
-bash scripts/install.sh          # 可加 --cn 用清华镜像；--minimal 跳过重型 extras
-bash scripts/start.sh            # = uv run knowledge-arch serve
+# 1. 后端环境与测试
+uv venv .venv --python 3.12 && uv pip install --python .venv/bin/python -r requirements-dev.txt
+.venv/bin/python -m pytest
+.venv/bin/ruff check . && .venv/bin/mypy
+
+# 2. 本地后端：token 只经环境变量传入；--port 0 = 系统分配
+# 必须加 --dev-origin http://localhost:3000 放行浏览器开发页的写请求（POST / PATCH），否则会被 CORS 拒绝为 403
+KA_TOKEN=dev .venv/bin/python -m ka_server serve --port 26618 --data-dir .dev_data \
+  --dev-origin http://localhost:3000
+
+# 3. 前端开发（next dev 把 /api/* 代理到 26618，token 取 NEXT_PUBLIC_KA_TOKEN）
+cd web/frontend && npm ci && NEXT_PUBLIC_KA_TOKEN=dev npm run dev
+
+# 4. 桌面壳（需 Rust stable；见 desktop/README.md）
+cd desktop && npm ci && npx tauri dev
 ```
 
-```bat
-:: Windows（PowerShell 或 cmd）
-git clone https://github.com/Gar1ton/Knowledge-Arch.git && cd Knowledge-Arch
-scripts\install.bat
-scripts\start.bat
-```
+- 前端与后端 HTTP 说明：[`web/frontend/README.md`](./web/frontend/README.md)、[`web/README.md`](./web/README.md)。
+- 桌面端打包与发布流程：[`desktop/README.md`](./desktop/README.md)、[`docs/RELEASE.md`](./docs/RELEASE.md)。
+- 版本记录：[`CHANGELOG.md`](./CHANGELOG.md)。
 
-- **首次启动**：在 `~/.knowledge-arch`（Windows 为 `%USERPROFILE%\.knowledge-arch`）生成
-  `standalone_config.json` 与**随机登录密码**（打印在控制台，`knowledge-arch passwd` 可改）。
-  默认 WebUI 地址 `http://127.0.0.1:26618`。
-- **主模型**：登录后在「设置 → 主模型」配置任意 OpenAI 兼容端点（OpenAI/DeepSeek/Ollama/
-  LM Studio/vLLM…）；API Key 经环境变量 `KR_MAIN_LLM_API_KEY` 注入。配置后即可在右侧
-  **「向知识库提问」** 面板对话——普通 Ask、`/ka` 命令、开启 Research 后自动探查范围与选择召回
-  模式；设置浮层可切换上下文参与召回、Persona 风格与回答语言（保存 main_llm 后免重启生效）。
-- **Windows 向量检索**：Milvus Lite 无 Windows 原生 wheel，三选一——① 连接外部 Milvus 服务；
-  ② 在 WSL 内运行本应用；③ 什么都不做，自动回落 SQLite 词法检索（功能降级）。
-  `uv run knowledge-arch doctor` 可随时体检。
-- **可选能力 extras**：`graph`（LightRAG 图谱）/ `local-embedding`（本地嵌入，含 PyTorch）/
-  `backup`（R2）/ `notion`（stdio MCP，另需 Node.js 提供 npx）。默认脚本全装，
-  `--minimal` 后可按需 `uv sync --extra <name>` 补装。
-- 常用命令：`knowledge-arch serve|status|doctor|passwd`（经 `uv run` 前缀执行）。
+## 参与贡献
 
-## Discord 渠道（独立版可选）
+`main` 只放调试好的发布版本，开发在 [`developer`](https://github.com/Gar1ton/Knowledge-Arch/tree/developer) 分支进行：issue 与 PR 请提到 `developer`。架构说明（[`ARCHITECTURE.md`](https://github.com/Gar1ton/Knowledge-Arch/blob/developer/ARCHITECTURE.md)）、代码规范（[`CONVENTIONS.md`](https://github.com/Gar1ton/Knowledge-Arch/blob/developer/CONVENTIONS.md)）、路线图（[`TODO.md`](https://github.com/Gar1ton/Knowledge-Arch/blob/developer/TODO.md)）与完整变更记录也都在 `developer` 上。
 
-独立版可把「向知识库提问」直连到 Discord，让 Bot 在私信、被提及或被回复时用知识库回答。
-首版仅支持文本，不涉及附件、语音、审核或 Slash Commands；配置变更后需重启生效。
+## 许可证
 
-1. **建 App 与 Bot**：在 [Discord Developer Portal](https://discord.com/developers/applications)
-   新建 Application → Bot，复制 **Bot Token**。
-2. **开启 Intents**：在 Bot 设置里打开 **MESSAGE CONTENT INTENT**（并保留 Server Members 之外的
-   默认项）。本应用启用 `GUILDS`/`GUILD_MESSAGES`/`DIRECT_MESSAGES`/`MESSAGE_CONTENT` 四个 intent，
-   以可靠支持「回复但未再次提及」的触发；缺 MESSAGE CONTENT 会导致读不到消息正文。
-3. **邀请到服务器**：OAuth2 → URL Generator 勾选 `bot` scope，Bot Permissions 至少给
-   **View Channels / Send Messages / Read Message History**，用生成的链接邀请进目标服务器。
-4. **注入 Token**：优先用环境变量 `KR_DISCORD_BOT_TOKEN`；也可经设置页写入加密 secret store。
-   API 只返回 `token_present`，**永不回显、记录或备份** token。
-5. **配置 allowlist 并启用**：在「设置 → Discord」填 `allowed_user_ids`（**至少一个**，否则禁止
-   启用）；`allowed_guild_ids` / `allowed_channel_ids` 非空时进一步收窄服务器与频道范围。私信必须
-   命中用户白名单。
-6. **触发方式**：仅响应私信、`@提及` Bot 或**回复** Bot 的消息；忽略自身与其他 Bot 的消息。
-   会话按 guild/thread/DM 隔离到「用户 × 频道」；长 Research 会先发一条可更新的进度消息，最终
-   答案按句切分为 ≤1,900 字符的多条消息并禁用所有意外 mentions。
+本项目以 [AGPL-3.0](./LICENSE) 授权。若你在网络服务中分发或提供本项目的修改版本，须同样以 AGPL-3.0 公开对应的完整源码。
 
-- **依赖**：需可选依赖 `discord.py`（`uv sync --extra discord`）；未安装或未配置 token/白名单时
-  独立版仍正常启动，仅 Discord 渠道保持诊断状态。
-- **故障排查**：`knowledge-arch doctor` 查看渠道状态；读不到消息→检查 MESSAGE CONTENT INTENT；
-  Bot 不回复→确认已被提及/回复且发送者/频道在 allowlist 内；启用被拒→确认 `allowed_user_ids` 非空。
+## 致谢
 
-## 开发快速上手
-
-```bash
-pip install -r requirements-dev.txt      # 后端测试工具链
-python -m pytest                         # 全量测试（标 [x] 前必须绿）
-ruff check . && mypy                     # 静态检查
-
-cd web/frontend && npm run build      # 前端构建（产物输出到 out/）
-python tools/sync_frontend.py            # out/ → pages/
-```
-
-首次进入本仓库的 agent/开发者请先读 `CLAUDE.md`（最高行为契约）→ `ARCHITECTURE.md` →
-`CONVENTIONS.md` → `TODO.md`。
-
-## 版本与发布
-
-- **双版本线**：插件版本源 = `apps/plugin/metadata.yaml`；独立版版本源 = 根 `pyproject.toml`。
-  统一经 `python tools/bump_version.py` 推进。
-- **插件同步**：`tools/publish_plugin.py` 从本仓生成插件仓库形态源码树，推送到
-  Astrbot_Knowledge_Repository 的 `developer` 分支；其 developer→main 发布机制保持不变。
-
-## 许可
-
-见 [LICENSE](LICENSE)。
+- [LightRAG](https://github.com/HKUDS/LightRAG)：图谱增强检索能力。
+- [Milvus Lite](https://github.com/milvus-io/milvus-lite)：内置本地向量库。
+- [Tauri](https://tauri.app/)：桌面壳；[uv](https://github.com/astral-sh/uv) 与 [python-build-standalone](https://github.com/astral-sh/python-build-standalone)：内置 Python 运行时与组件安装器。
+- Zotero、Notion、Cloudflare R2：资料管理与同步备份生态。

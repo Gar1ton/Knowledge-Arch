@@ -1,0 +1,332 @@
+name: Desktop build
+
+# 三平台出包。手动触发（workflow_dispatch）只构建并上传产物；推送 v* 标签（打在 developer 的提交上）时：
+# 先由 publish-main 按 .release-exclude 生成干净的 main 提交并推送，再从该提交出包、创建草稿 Release
+# （含 updater 的 latest.json）。签名、公证与 updater 都由仓库 secret / variable 驱动：
+# 缺哪一项就跳过哪一步，产出未签名的包（见 docs/RELEASE.md）。本流水线不生成任何证书或密钥。
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish-main:
+    name: Publish main
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.main.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # main 只由本作业写入：线性接在现有 main 之后（不 force）。用 GITHUB_TOKEN 推送不会再触发别的
+      # workflow，所以出包放在同一个 workflow 的 build 作业里。
+      - name: Build and push the release commit
+        id: main
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898333+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898333+github-actions[bot]@users.noreply.github.com
+        run: |
+          git fetch --no-tags origin main developer
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/developer; then
+            echo "::error::$GITHUB_REF_NAME is not on developer; main is only generated from developer commits"
+            exit 1
+          fi
+          # 重跑同一标签时沿用已发布的提交，不重复追加。
+          if git log -1 --format=%B origin/main | grep -q "Generated from developer $GITHUB_SHA"; then
+            sha=$(git rev-parse origin/main)
+          else
+            sha=$(python .github/scripts/build_main.py --source "$GITHUB_SHA" --parent origin/main \
+              --tag "$GITHUB_REF_NAME")
+            git push origin "$sha:refs/heads/main"
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "main -> $sha (from developer $GITHUB_SHA)"
+
+  build:
+    name: ${{ matrix.name }}
+    needs: publish-main
+    # 手动触发时 publish-main 被跳过，直接从所选提交出包。
+    if: ${{ !cancelled() && (needs.publish-main.result == 'success' || needs.publish-main.result == 'skipped') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (Apple Silicon)
+            os: macos-15
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+          - name: macOS (Intel)
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            bundles: app,dmg
+          - name: Windows
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+          - name: Linux
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            # AppImage 单独出（见下方「AppImage」两步），linuxdeploy 处理不了内置 Python。
+            bundles: deb
+    runs-on: ${{ matrix.os }}
+    env:
+      # 有这几个值才启用对应能力（configure_release.py / macos_sign_resources.sh 据此判断）。
+      TAURI_UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+      # secret 不能直接写在步骤的 if 里，先折成布尔标志。
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
+      HAS_WINDOWS_CERT: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.publish-main.outputs.sha || github.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            web/frontend/package-lock.json
+            desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+
+      - name: Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev patchelf file desktop-file-utils
+
+      - name: Build frontend
+        working-directory: web/frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Bundle Python backend
+        run: python desktop/scripts/bundle_python.py
+
+      - name: Import Apple signing certificate
+        if: runner.os == 'macOS' && env.HAS_APPLE_CERT == 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/ka-signing.keychain-db"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
+          rm "$RUNNER_TEMP/cert.p12"
+
+      - name: Sign bundled Python (macOS)
+        if: runner.os == 'macOS' && env.HAS_APPLE_CERT == 'true'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: bash desktop/scripts/macos_sign_resources.sh
+
+      - name: Import Windows signing certificate
+        id: wincert
+        if: runner.os == 'Windows' && env.HAS_WINDOWS_CERT == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "cert.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $password = ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          Remove-Item $pfx
+          "WINDOWS_CERTIFICATE_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Configure release (updater / Windows signing)
+        id: release
+        run: python desktop/scripts/configure_release.py
+
+      # tauri CLI 把「环境变量存在」当作要签名 / 公证；空字符串也算存在，所以只导出非空的 secret。
+      - name: Export signing environment
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          UPDATER_ENABLED: ${{ steps.release.outputs.updater }}
+        run: |
+          export_var() {
+            local name="$1"
+            local value="${!name}"
+            if [[ -n "$value" ]]; then
+              { echo "$name<<KA_ENV_EOF"; echo "$value"; echo "KA_ENV_EOF"; } >> "$GITHUB_ENV"
+            fi
+          }
+          if [[ "$RUNNER_OS" == "macOS" && "$HAS_APPLE_CERT" == "true" ]]; then
+            export_var APPLE_SIGNING_IDENTITY
+            # 公证需要三项齐全，缺一项就只签名不公证。
+            if [[ -n "$APPLE_ID" && -n "$APPLE_PASSWORD" && -n "$APPLE_TEAM_ID" ]]; then
+              export_var APPLE_ID
+              export_var APPLE_PASSWORD
+              export_var APPLE_TEAM_ID
+            fi
+          fi
+          if [[ "$UPDATER_ENABLED" == "true" ]]; then
+            export_var TAURI_SIGNING_PRIVATE_KEY
+            export_var TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+          fi
+
+      - name: Install Tauri CLI
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build and (on tags) draft a release
+        id: tauri
+        uses: tauri-apps/tauri-action@v0
+        env:
+          # 签名 / 公证 / updater 私钥由上一步按需写入 GITHUB_ENV。
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Linux 打包不 strip（linuxdeploy 自带的 strip 会弄坏内置 Python 的部分 .so）。
+          NO_STRIP: "true"
+        with:
+          projectPath: desktop
+          tauriScript: npx tauri
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} ${{ steps.release.outputs.features }}
+          tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+          releaseName: Knowledge Arch ${{ github.ref_name }}
+          releaseBody: 见 CHANGELOG.md。
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: ${{ steps.release.outputs.updater == 'true' }}
+
+      # tauri 出的 DMG 是 zlib（UDZO）；改为 LZMA（ULMO，macOS 10.15+）后体积接近 Windows 的 NSIS 包。
+      # .app 本身的签名与公证票据不受影响；DMG 有签名身份时重新签名。
+      - name: Recompress DMG with LZMA (macOS)
+        if: runner.os == 'macOS'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          shopt -s nullglob
+          for dmg in desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg; do
+            hdiutil convert "$dmg" -format ULMO -o "$RUNNER_TEMP/lzma.dmg"
+            mv -f "$RUNNER_TEMP/lzma.dmg" "$dmg"
+            if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+              codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
+            fi
+            ls -lh "$dmg"
+            if [[ "$IS_TAG" == "true" ]]; then
+              # GitHub 把资产名里的空格换成点；按同名上传才能覆盖 tauri-action 传的旧 DMG。
+              name=$(basename "$dmg")
+              cp "$dmg" "$RUNNER_TEMP/${name// /.}"
+              gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/${name// /.}" --clobber -R "$GITHUB_REPOSITORY"
+            fi
+          done
+
+      - name: AppImage without bundled Python (Linux)
+        if: runner.os == 'Linux'
+        working-directory: desktop
+        env:
+          # linuxdeploy 自带的 strip 处理不了内置依赖；python 不在这一遍里，仍保持 NO_STRIP 与 deb 一致。
+          NO_STRIP: "true"
+        run: >-
+          npx tauri build --target ${{ matrix.target }} --bundles appimage
+          --config "$GITHUB_WORKSPACE/desktop/src-tauri/tauri.appimage.conf.json"
+          ${{ steps.release.outputs.features }}
+
+      - name: AppImage — inject Python, re-sign, upload (Linux)
+        if: runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          dir=desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage
+          appimage=$(ls "$dir"/*.AppImage)
+          bash desktop/scripts/appimage_inject_python.sh "$appimage" desktop/src-tauri/resources/python
+          # updater 的签名针对注入前的文件，必须重签。
+          rm -f "$appimage.sig"
+          if [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+            (cd desktop && npx tauri signer sign "$GITHUB_WORKSPACE/$appimage")
+          fi
+          if [[ "$IS_TAG" == "true" ]]; then
+            for f in "$appimage" "$appimage.sig"; do
+              [[ -e "$f" ]] || continue
+              name=$(basename "$f")
+              cp "$f" "$RUNNER_TEMP/${name// /.}"
+              gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/${name// /.}" --clobber -R "$GITHUB_REPOSITORY"
+            done
+          fi
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: knowledge-arch-${{ matrix.target }}
+          # AppImage 的中间目录（*.AppDir，几百 MB）不上传。
+          path: |
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/
+            !desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppDir
+          if-no-files-found: error
+          retention-days: 14
+
+  # tauri-action 在 Linux 只打 .deb，生成的 latest.json 没有 linux-x86_64-appimage 条目。所有平台都出完包（各自合并完
+  # latest.json）之后再补，避免和其它平台并发改写同一个文件互相覆盖。
+  updater-manifest:
+    name: Updater manifest (Linux AppImage)
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') && vars.TAURI_UPDATER_PUBKEY != ''
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Add the AppImage to latest.json
+        run: |
+          dl="$RUNNER_TEMP/release"
+          # 只要资产名，不下载 AppImage 本体。
+          appimage=$(gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --json assets \
+            -q '.assets[].name | select(endswith(".AppImage"))')
+          gh release download "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" -D "$dl" \
+            -p latest.json -p "$appimage.sig"
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$appimage"
+          python desktop/scripts/updater_add_appimage.py --latest "$dl/latest.json" \
+            --sig "$dl/$appimage.sig" --url "$url"
+          gh release upload "$GITHUB_REF_NAME" "$dl/latest.json" --clobber -R "$GITHUB_REPOSITORY"

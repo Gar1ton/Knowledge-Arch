@@ -1,18 +1,19 @@
 """Notion 镜像同步目标实现（repository 层）。
 
-经 NotionMCPAdapter（真实 notion_ 前缀工具）把文章元数据与 QA 记录**单向推送**到
+经 NotionRestClient（Notion REST API）把文章元数据与 QA 记录**单向推送**到
 Notion 两表（Articles 单库 + QA 库）。核心语义：
 
 - 幂等 upsert：账本 page_id 命中 → update；miss → 按幂等键（DocID/NoteID）反查
   远端回填 → update，仍无才 create + 追加正文块。杜绝历史「每次 push 都新建页面」。
 - 渐进降级：属性写入失败时剔除到 Name+DocID 最小集重试一次（DocID 必留，
   保后续幂等），返回 degraded 供上层记账。
-- 正文块只在 create 或 content_hash 变化时写（重写 = 列块 → 逐删 → 追加）。
+- Articles 只写属性，正文完全留给用户；QA 保持既有正文写入契约。
 - 频控由 adapter 统一执行，本层不 sleep。
 
 属性构造/指纹等纯函数在 notion_schema.py；增量 diff 与账本读写在
 pipelines/notion_sync_pipeline.py（本层不读账本，prior 由上层传入）。
 """
+
 from __future__ import annotations
 
 import logging
@@ -20,7 +21,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from kacore.adapters.notion_mcp import NotionMCPAdapter, NotionMCPError
+from kacore.adapters.notion_rest import NotionMCPError, NotionRestClient
 from kacore.domain.models import QuotaUsage, SyncTargetKind
 from kacore.repository.sync_targets import notion_schema as schema
 from kacore.repository.sync_targets.base import SyncTarget
@@ -44,8 +45,8 @@ class NotionUpsertResult:
     - action ∈ {created, updated}：updated 含「复用远端同幂等键页面重写」
       （QA 重试或跨进程去重命中）。
     - degraded=True 表示属性经降级重试才写入成功（message 携带原因）。
-    - skipped_binary=True 表示大文件跳过了二进制镜像（仅元数据 + callout）。
-    - content_synced=False 表示正文块本轮尝试写入但失败——上层据此**不推进**
+    - skipped_binary 为通用 SyncTarget 结果保留；Articles 只写属性，因此始终 False。
+    - content_synced=False 表示 QA 正文块本轮尝试写入但失败——上层据此**不推进**
       账本 content_hash，使下一轮判定为「正文待重写」而非跳过（防缺正文页被
       误标 synced）。默认 True 覆盖「无需重写正文」的常态。
     """
@@ -59,22 +60,39 @@ class NotionUpsertResult:
 
 
 class NotionSyncTarget(SyncTarget):
-    """基于 MCP 调用的 Notion 单向推送目标（Articles + QA 两表）。"""
+    """基于 Notion REST API 的单向推送目标（Articles + QA 两表）。"""
 
     def __init__(
         self,
         config: NotionSyncConfig,
         source_store: SourceDocumentStore,
-        context: Any = None,
         *,
-        adapter: NotionMCPAdapter | None = None,
+        adapter: NotionRestClient | None = None,
     ) -> None:
         self._config = config
         self._source_store = source_store
-        self._adapter = adapter or NotionMCPAdapter(
-            context,
-            server_name=config.mcp_server_name,
-            rate_limit_rps=config.rate_limit_rps,
+        # 未注入客户端（测试 / 未装配）时用一个没有 token 的客户端：调用一律报「Notion 未连接」。
+        self._adapter = adapter or NotionRestClient(
+            lambda: "", rate_limit_rps=config.rate_limit_rps
+        )
+        self._adapter.configure_data_sources(
+            {
+                config.database_id: config.data_source_id,
+                config.qa_database_id: config.qa_data_source_id,
+            }
+        )
+
+    @property
+    def request_count(self) -> int:
+        """累计 Notion API 请求尝试数（含失败与重试）。"""
+        return self._adapter.request_count
+
+    async def scan_notes(self) -> dict[str, int]:
+        """刷新正文笔记 checkbox；不参与任何删除决策。"""
+        from kacore.repository.sync_targets.notion_notes import NotionNotesScanner
+
+        return await NotionNotesScanner(self._source_store, self._adapter).scan(
+            self._config.database_id
         )
 
     @property
@@ -85,6 +103,27 @@ class NotionSyncTarget(SyncTarget):
     def config(self) -> NotionSyncConfig:
         """当前生效配置（initialize_databases 后含回填的 database id）。"""
         return self._config
+
+    async def preflight(self, *, initialize: bool = False) -> None:
+        """批次开始前只读检查工具能力和目标，失败不进入逐文档循环。"""
+        await self._adapter.check_capabilities(initialize=initialize)
+        for field, role in (("database_id", "Articles"), ("qa_database_id", "QA")):
+            database_id = getattr(self._config, field)
+            if database_id:
+                try:
+                    await self._adapter.resolve_data_source(database_id)
+                except NotionMCPError as exc:
+                    if not exc.is_not_found:
+                        raise
+                    raise NotionMCPError(
+                        f"The Notion {role} database is not accessible "
+                        f"(notion_sync.{field}={database_id}). Check the database container ID and "
+                        "make sure it is shared with the integration behind the Notion node "
+                        "token; a 404 cannot tell an invalid ID from missing access. Original "
+                        f"error: {exc}",
+                        code=exc.code,
+                        status=exc.status,
+                    ) from exc
 
     # ── SyncTarget 契约 ─────────────────────────────────────────
 
@@ -110,14 +149,37 @@ class NotionSyncTarget(SyncTarget):
         return result.page_id
 
     async def delete(self, remote_ref: str) -> bool:
-        """归档远端页面（页面即 block，经 notion_delete_block）。"""
+        """归档远端页面；不存在返回 False，其他 Notion 错误按 SyncTarget 契约上抛。"""
         if not self._config.enabled:
             return False
         try:
             return await self._adapter.delete_block(remote_ref)
         except NotionMCPError as e:
-            logger.warning("Notion 页面归档失败（%s）：%s", remote_ref, e)
-            return False
+            if e.is_not_found:
+                return False
+            raise
+
+    async def archive_document(self, doc_id: str, known_page_id: str = "") -> int:
+        """归档 Articles 库中一个 DocID 的全部页面，返回实际归档数。
+
+        账本 page_id 与 DocID 反查结果取并集，兼顾账本陈旧和历史重复页面；远端已归档/
+        不存在按幂等成功处理。真实 Notion 错误上抛，供管线保留重试账本。
+        """
+        pages = await self._adapter.query_database(
+            self._config.database_id,
+            filter={"property": schema.PROP_DOC_ID, "rich_text": {"equals": doc_id}},
+            page_size=100,
+        )
+        page_ids: list[str] = []
+        if known_page_id:
+            page_ids.append(known_page_id)
+        page_ids.extend(str(page["id"]) for page in pages if page.get("id"))
+
+        archived = 0
+        for page_id in dict.fromkeys(page_ids):
+            if await self.delete(page_id):
+                archived += 1
+        return archived
 
     async def check_quota(self, pending_bytes: int = 0) -> QuotaUsage:
         # Notion 数据库不按字节计额度，默认返回 limit_bytes=0, used_bytes=0
@@ -144,6 +206,7 @@ class NotionSyncTarget(SyncTarget):
         if not self._config.enabled:
             return {"status": "error", "message": "Notion sync is disabled in configuration."}
 
+        await self.preflight(initialize=True)
         parent = parent_page_id or self._config.parent_page_id
         title = database_title or self._config.database_title
         warnings: list[str] = []
@@ -154,12 +217,10 @@ class NotionSyncTarget(SyncTarget):
         created_articles = False
         if articles_id:
             try:
-                await self._ensure_database_properties(
-                    articles_id, schema.articles_db_properties()
-                )
+                await self._ensure_database_properties(articles_id, schema.articles_db_properties())
             except NotionMCPError as e:
                 degraded = True
-                warnings.append(f"Articles 库缺列补齐失败：{e}")
+                warnings.append(f"Adding missing columns to the Articles database failed: {e}")
         else:
             if not parent:
                 return {"status": "error", "message": "Notion parent_page_id is required."}
@@ -170,17 +231,18 @@ class NotionSyncTarget(SyncTarget):
             )
             created_articles = True
 
-        # 2) QA 库（Citations relation 指向 Articles）
+        articles_source_id = await self._adapter.resolve_data_source(articles_id)
+        # 2) QA 库（Citations relation 指向 Articles 的 data source）
         qa_id = self._config.qa_database_id
         created_qa = False
         if qa_id:
             try:
                 await self._ensure_database_properties(
-                    qa_id, schema.qa_db_properties(articles_id)
+                    qa_id, schema.qa_db_properties(articles_source_id)
                 )
             except NotionMCPError as e:
                 degraded = True
-                warnings.append(f"QA 库缺列补齐失败：{e}")
+                warnings.append(f"Adding missing columns to the QA database failed: {e}")
         else:
             if not parent:
                 return {"status": "error", "message": "Notion parent_page_id is required."}
@@ -189,12 +251,15 @@ class NotionSyncTarget(SyncTarget):
                 qa_id = await self._adapter.create_database(
                     parent_page_id=parent,
                     title=qa_title,
-                    properties=schema.qa_db_properties(articles_id),
+                    properties=schema.qa_db_properties(articles_source_id),
                 )
             except NotionMCPError as e:
                 # relation 配置被拒时退化为无 relation 建库（Citations 走正文文本）
                 degraded = True
-                warnings.append(f"QA 库带 Citations relation 建库失败，已降级重试：{e}")
+                warnings.append(
+                    "Creating the QA database with the Citations relation failed; retried without "
+                    f"it: {e}"
+                )
                 qa_id = await self._adapter.create_database(
                     parent_page_id=parent,
                     title=qa_title,
@@ -206,6 +271,8 @@ class NotionSyncTarget(SyncTarget):
             self._config,
             database_id=articles_id,
             qa_database_id=qa_id,
+            data_source_id=articles_source_id,
+            qa_data_source_id=await self._adapter.resolve_data_source(qa_id),
             parent_page_id=parent or self._config.parent_page_id,
             database_title=title,
         )
@@ -213,6 +280,8 @@ class NotionSyncTarget(SyncTarget):
             "status": "success",
             "database_id": articles_id,
             "qa_database_id": qa_id,
+            "data_source_id": self._config.data_source_id,
+            "qa_data_source_id": self._config.qa_data_source_id,
             "parent_page_id": self._config.parent_page_id,
             "database_title": title,
             "created": created_articles or created_qa,
@@ -223,16 +292,85 @@ class NotionSyncTarget(SyncTarget):
             "message": "Notion databases ready.",
         }
 
-    async def _ensure_database_properties(
-        self, database_id: str, expected: dict[str, Any]
-    ) -> None:
+    async def _ensure_database_properties(self, database_id: str, expected: dict[str, Any]) -> None:
         """retrieve 对账：缺列则 update_database 补齐（已存在的列不动，幂等）。"""
-        data = await self._adapter.retrieve_database(database_id)
+        data = await self._adapter.retrieve_data_source(database_id)
         existing = data.get("properties")
         existing_names = set(existing.keys()) if isinstance(existing, dict) else set()
         missing = {k: v for k, v in expected.items() if k not in existing_names}
         if missing:
             await self._adapter.update_database(database_id, missing)
+
+    # ── Strict 选项清理（失效集合派生选项回收）──────────────────
+
+    async def prune_collection_options(
+        self,
+        *,
+        live_collection_names: set[str],
+        live_path_names: set[str],
+    ) -> dict[str, int]:
+        """Strict 模式清理 Articles 库中失效的集合派生选项。
+
+        删除 `Collections`(multi_select) 与 `Collection Path`(select) 里不再对应任何活跃
+        集合/路径的残留选项——集合被删/改名后 Notion 不会自动回收这些选项，越积越多。
+        发送**保留项（带 id）**即可让 Notion 删除被省略的失效项。每个属性独立降级：
+        单属性读/写失败记 warning 跳过，绝不中断整轮推送。返回各属性实际删除数。
+
+        入参 name 集合须已按 `schema.sanitize_option_name` 净化，与写库口径一致。
+        """
+        pruned = {"collections": 0, "collection_path": 0}
+        if not self._config.enabled or not self._config.database_id:
+            return pruned
+        try:
+            data = await self._adapter.retrieve_data_source(self._config.database_id)
+        except NotionMCPError as e:
+            logger.warning("Strict option cleanup skipped (reading the database failed): %s", e)
+            return pruned
+        properties = data.get("properties")
+        if not isinstance(properties, dict):
+            return pruned
+
+        pruned["collections"] = await self._prune_property_options(
+            properties, schema.PROP_COLLECTIONS, "multi_select", live_collection_names
+        )
+        pruned["collection_path"] = await self._prune_property_options(
+            properties, schema.PROP_COLLECTION_PATH, "select", live_path_names
+        )
+        return pruned
+
+    async def _prune_property_options(
+        self,
+        properties: dict[str, Any],
+        prop_name: str,
+        kind: str,
+        live_names: set[str],
+    ) -> int:
+        """删除单个 select/multi_select 属性里 name 不在 live_names 的选项，返回删除数。"""
+        prop = properties.get(prop_name)
+        spec = prop.get(kind) if isinstance(prop, dict) else None
+        options = spec.get("options") if isinstance(spec, dict) else None
+        if not isinstance(options, list):
+            return 0
+        keep = [o for o in options if isinstance(o, dict) and o.get("name") in live_names]
+        removed = len(options) - len(keep)
+        if removed <= 0:
+            return 0
+        payload = {
+            prop_name: {
+                kind: {
+                    "options": [
+                        {k: o[k] for k in ("id", "name", "color") if k in o}
+                        for o in keep
+                    ]
+                }
+            }
+        }
+        try:
+            await self._adapter.update_database(self._config.database_id, payload)
+        except NotionMCPError as e:
+            logger.warning("Strict option cleanup failed (%s): %s", prop_name, e)
+            return 0
+        return removed
 
     # ── 文章幂等 upsert ─────────────────────────────────────────
 
@@ -248,8 +386,8 @@ class NotionSyncTarget(SyncTarget):
         """把一篇文章幂等推送到 Articles 库。
 
         幂等序列：prior.page_id 直接 update（404/失败落 miss 分支）→ 按 DocID
-        反查回填 → 仍无才 create。正文块在 create、content_hash 变化或
-        force_body=True 时写入/重写。是否需要推送（指纹相等 skip）由上层判定。
+        反查回填 → 仍无才 create。所有路径只写属性；force_body 保留调用接口，
+        不触及文章正文。是否需要推送（指纹相等 skip）由上层判定。
         """
         if not self._config.enabled:
             raise ValueError("Notion sync is disabled in configuration.")
@@ -269,7 +407,8 @@ class NotionSyncTarget(SyncTarget):
                 await self._adapter.update_page_properties(page_id, properties)
             except NotionMCPError as e:
                 logger.warning(
-                    "Notion 按账本 page_id 更新失败（%s），转按 DocID 反查：%s",
+                    "Updating Notion by the ledger page_id failed (%s); looking up by DocID "
+                    "instead: %s",
                     page_id,
                     e,
                 )
@@ -289,28 +428,11 @@ class NotionSyncTarget(SyncTarget):
                     self._config.database_id, properties, document
                 )
 
-        is_large = document.size_bytes > self._config.max_upload_bytes
-        rewrite_blocks = force_body or action == ACTION_CREATED or (
-            prior is not None and prior.content_hash != document.content_hash
-        )
-        content_synced = True
-        if rewrite_blocks:
-            try:
-                await self._write_document_body(
-                    page_id, document, is_large=is_large, is_new=action == ACTION_CREATED
-                )
-            except NotionMCPError as e:
-                degraded = True
-                content_synced = False  # 正文没写成 → 上层不推进 content_hash，下轮重试
-                message = message or f"正文块写入失败：{e}"
-                logger.warning("Notion 正文块写入失败（%s）：%s", document.doc_id, e)
-
         return NotionUpsertResult(
             page_id=page_id,
             action=action,
             degraded=degraded,
-            skipped_binary=is_large,
-            content_synced=content_synced,
+            content_synced=True,
             message=message,
         )
 
@@ -324,7 +446,7 @@ class NotionSyncTarget(SyncTarget):
         except NotionMCPError as e:
             minimal = self._minimal_properties(document)
             await self._adapter.update_page_properties(page_id, minimal)
-            return True, f"属性降级为最小集：{e}"
+            return True, f"Properties reduced to the minimal set: {e}"
 
     async def _create_with_degradation(
         self, database_id: str, properties: dict[str, Any], document: SourceDocument
@@ -334,10 +456,13 @@ class NotionSyncTarget(SyncTarget):
             page_id = await self._adapter.create_database_item(database_id, properties)
             return page_id, False, ""
         except NotionMCPError as e:
-            logger.warning("Notion 全属性建页失败，降级为最小集重试：%s", e)
+            logger.warning((
+                "Creating the Notion page with all properties failed; retrying with the minimal "
+                "set: %s"
+            ), e)
             minimal = self._minimal_properties(document)
             page_id = await self._adapter.create_database_item(database_id, minimal)
-            return page_id, True, f"属性降级为最小集：{e}"
+            return page_id, True, f"Properties reduced to the minimal set: {e}"
 
     @staticmethod
     def _minimal_properties(document: SourceDocument) -> dict[str, Any]:
@@ -348,29 +473,6 @@ class NotionSyncTarget(SyncTarget):
                 "rich_text": [{"text": {"content": document.doc_id}}]
             },
         }
-
-    async def _write_document_body(
-        self,
-        page_id: str,
-        document: SourceDocument,
-        *,
-        is_large: bool,
-        is_new: bool,
-    ) -> None:
-        """写文章页正文：大文件 callout / 切片预览；非新建页先清旧块再追加。"""
-        if not is_new:
-            await self._clear_page_blocks(page_id)
-        if is_large:
-            children: list[dict[str, Any]] = [schema.large_file_callout_block()]
-        else:
-            try:
-                chunks = await self._source_store.list_chunks(document.doc_id)
-            except Exception as e:
-                logger.error("读取文档切片失败（%s）：%s", document.doc_id, e)
-                chunks = []
-            children = schema.chunk_preview_blocks(chunks)
-        if children:
-            await self._adapter.append_blocks(page_id, children)
 
     async def _clear_page_blocks(self, page_id: str) -> None:
         blocks = await self._adapter.list_block_children(page_id)
@@ -431,17 +533,19 @@ class NotionSyncTarget(SyncTarget):
                 )
             except NotionMCPError as e:
                 properties.pop(schema.PROP_CITATIONS, None)
-                logger.warning("QA 建行失败，剔除 Citations relation 降级重试：%s", e)
+                logger.warning((
+                    "Creating the QA row failed; retrying without the Citations relation: %s"
+                ), e)
                 page_id = await self._adapter.create_database_item(
                     self._config.qa_database_id, properties
                 )
                 degraded = True
-                message = f"Citations relation 降级：{e}"
+                message = f"Citations relation dropped: {e}"
 
         # 降级时把已解析引用补进正文尾部（relation 丢了但引用信息不丢）。
         body = content
         if degraded and citation_labels:
-            body = f"{content}\n\n引用文献（DocID，未建立链接）：{'、'.join(citation_labels)}"
+            body = f"{content}\n\nReferences (DocID, not linked): {', '.join(citation_labels)}"
 
         content_synced = True
         try:
@@ -453,8 +557,8 @@ class NotionSyncTarget(SyncTarget):
                 await self._adapter.append_blocks(page_id, blocks)
         except NotionMCPError as e:
             content_synced = False
-            message = message or f"QA 正文写入失败：{e}"
-            logger.warning("QA 正文写入失败（NoteID=%s）：%s", note_id, e)
+            message = message or f"Writing the QA body failed: {e}"
+            logger.warning("Writing the QA body failed (NoteID=%s): %s", note_id, e)
 
         return NotionUpsertResult(
             page_id=page_id,

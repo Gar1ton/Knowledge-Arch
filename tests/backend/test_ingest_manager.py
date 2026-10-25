@@ -377,7 +377,7 @@ async def test_rebuild_document_chunks_from_legacy_clean_md(tmp_path: Path) -> N
     assert "REPEATED TEST HEADER" not in clean_md
     assert "formal operations" in clean_md
     chunks = await store.list_chunks("doc1")
-    assert chunks[0].chunk_id == "doc1_c0000"
+    assert chunks[0].chunk_id.startswith("doc1_c0000_r")  # 修订身份禁止旧引用串文。
     assert chunks[0].metadata["chunk_schema"] == "clean_md_structural_v3"
 
 
@@ -427,7 +427,7 @@ async def test_artifact_bundle_and_offset_invariant(temp_pdf: Path, tmp_path: Pa
         e = c.metadata["end_char"]
         assert clean_md[s:e] == c.text
         assert c.metadata["pages"]  # 至少映射到一页
-        assert c.chunk_id == f"{document_id}_c{c.ordinal:04d}"
+        assert c.chunk_id == f"{document_id}_c{c.ordinal:04d}_r{c.metadata['revision_id']}"
 
     # 4) 页面 provenance：两页，区间连续覆盖
     pages = await store.list_page_chunks(document_id)
@@ -442,6 +442,54 @@ async def test_artifact_bundle_and_offset_invariant(temp_pdf: Path, tmp_path: Pa
     # 6) 本地上传已镜像进 Zotero 表（origin=local）
     items = await store.list_zotero_items(LOCAL_LIBRARY_ID)
     assert len(items) == 1 and items[0].origin.value == "local"
+
+
+async def test_ingest_extracts_biblio_hint_from_well_formed_filename(
+    temp_pdf: Path, tmp_path: Path
+) -> None:
+    """上传标题长得像「作者 (年份) - 标题」时，应确定性提取干净标题与作者/年份写进 local_meta。"""
+    store = InMemorySourceDocumentStore()
+    manager = _manager(store, tmp_path)
+
+    document_id = await manager.ingest(
+        title="Vaswani and Shazeer (2017) - Attention Is All You Need.pdf",
+        file_path=str(temp_pdf),
+        content_type="application/pdf",
+        size_bytes=temp_pdf.stat().st_size,
+        collection="papers",
+    )
+
+    doc = await store.get_document(document_id)
+    assert doc is not None
+    assert doc.title == "Attention Is All You Need"
+    assert doc.local_meta["creators"] == ["Vaswani", "Shazeer"]
+    assert doc.local_meta["year"] == "2017"
+    # chunk_schema 仍然存在——biblio_hint 是叠加，不是替换。
+    assert doc.local_meta["chunk_schema"]
+    items = await store.list_zotero_items(LOCAL_LIBRARY_ID)
+    assert items[0].title == "Attention Is All You Need"
+
+
+async def test_ingest_keeps_raw_title_when_filename_not_recognized(
+    temp_pdf: Path, tmp_path: Path
+) -> None:
+    """文件名不符合书目格式时，标题与 local_meta 都应保持原样（不猜、不报错）。"""
+    store = InMemorySourceDocumentStore()
+    manager = _manager(store, tmp_path)
+
+    document_id = await manager.ingest(
+        title="scan_final_v2.pdf",
+        file_path=str(temp_pdf),
+        content_type="application/pdf",
+        size_bytes=temp_pdf.stat().st_size,
+        collection="papers",
+    )
+
+    doc = await store.get_document(document_id)
+    assert doc is not None
+    assert doc.title == "scan_final_v2.pdf"
+    assert "creators" not in doc.local_meta
+    assert "year" not in doc.local_meta
 
 
 async def test_ingest_raises_if_file_missing(tmp_path: Path) -> None:
@@ -480,3 +528,52 @@ async def test_ingest_rolls_back_bundle_when_chunk_write_fails(
     assert await store.list_documents() == []
     library_dir = tmp_path / "library"
     assert not any(library_dir.iterdir())
+
+
+def test_chunk_needs_rebuild_flags_stale_processing_version_without_reading_chunks() -> None:
+    """分块逻辑升级但 CHUNK_SCHEMA 未升版本时，靠 local_meta.processing_version 识别旧数据。"""
+    from kacore.managers.artifact_provenance import PROCESSING_VERSION
+
+    current_chunk = DocumentChunk(
+        "doc1_c0000_rabc", "doc1", 0, "text", "papers",
+        metadata={"chunk_schema": "clean_md_structural_v3", "start_char": 0, "end_char": 4},
+    )
+    # 旧库：schema/ID/offset 全部满足，但没有 processing_version → 仍判旧。
+    assert IngestManager.chunk_needs_rebuild("doc1", [current_chunk], {}) is True
+    assert IngestManager.chunk_needs_rebuild(
+        "doc1", [current_chunk], {"processing_version": "cleaning-v1"}
+    ) is True
+    # 当前版本 → 不重切。
+    assert IngestManager.chunk_needs_rebuild(
+        "doc1", [current_chunk], {"processing_version": PROCESSING_VERSION}
+    ) is False
+    # 未传 local_meta 时保持旧行为（只看 chunk 本身）。
+    assert IngestManager.chunk_needs_rebuild("doc1", [current_chunk]) is False
+
+
+async def test_rebuild_from_artifact_writes_back_processing_version(tmp_path: Path) -> None:
+    """重切后必须写回 processing_version，否则每次启动都会再次判旧（破坏一次性语义）。"""
+    from kacore.managers.artifact_provenance import PROCESSING_VERSION
+
+    store = InMemorySourceDocumentStore()
+    manager = _manager(store, tmp_path)
+    bundle = tmp_path / "library" / "doc1"
+    bundle.mkdir(parents=True)
+    (bundle / "clean.md").write_text("Some legacy body text.", encoding="utf-8")
+    (bundle / "pages.json").write_text(
+        json.dumps([{"page": 1, "markdown_start_char": 0, "markdown_end_char": 22}]),
+        encoding="utf-8",
+    )
+    await store.add_document(SourceDocument(
+        "doc1", "Legacy", str(bundle / "original.pdf"), "application/pdf", 10, "hash",
+        "papers", markdown_rel_path="clean.md", pages_rel_path="pages.json",
+    ))
+    await store.replace_chunks("doc1", [DocumentChunk("doc1-0001", "doc1", 0, "old", "old")])
+
+    await manager.rebuild_document_chunks_from_artifact("doc1")
+
+    doc = await store.get_document("doc1")
+    assert doc is not None
+    assert doc.local_meta["processing_version"] == PROCESSING_VERSION
+    chunks = await store.list_chunks("doc1")
+    assert IngestManager.chunk_needs_rebuild("doc1", chunks, doc.local_meta) is False

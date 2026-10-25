@@ -1,43 +1,26 @@
-# web/ — 可选全栈层（后端路由 + 前端）
-
-> **可选**。无 WebUI/HTTP 的项目可整目录删除。
+# web/ — HTTP 路由 + 前端源码
 
 ## 职责
 
-承载 HTTP/WebUI。后端只做**传输适配**：解析请求 → 委派给 `core/api` 纯函数 → 包装响应。
-**业务逻辑不在 web，在 `core`。**
-
-## 典型成员
+后端只做**传输适配**：解析请求 → 委派给 `kacore/api` 纯函数 → 包装响应。
+**业务逻辑不在 web，在 `kacore`。**
 
 ```
 web/
-  server.py         # 独立 HTTP 服务（如 aiohttp）：路由 → 委派 core/api
-  plugin_routes.py  # 挂载到宿主框架（如 astrbot Plugin Pages）的路由
-  registry.py       # 扩展/面板注册中心：供第三方插件挂载自己的面板
-  auth.py           # 鉴权
-  config_schema.py  # web 侧配置 schema
-  frontend/         # 前端源码（见下）
+  server.py          # aiohttp 路由（build_app）：token 鉴权 + CORS + 路由 → kacore/api
+  desktop_routes.py  # 桌面版新增路由：/api/components*（组件）、/api/legacy-import*（旧数据导入）
+  frontend/          # Next.js 前端源码（静态导出到 frontend/out/，由桌面壳加载）
 ```
 
-## registry 模式（可选）
+## 安全边界
 
-允许**第三方扩展**在统一 UI 中挂载新面板，而无需改本项目：
-
-```python
-@dataclass(slots=True)
-class PanelManifest:
-    plugin_id: str
-    panel_id: str
-    title: str
-    api_prefix: str
-    frontend_url: str
-    permission: str  # "public" | "auth" | "sudo"
-```
-
-前端拉取已注册清单并动态加载脚本。是「开放扩展、封闭修改」的落地。
+- 服务由 `ka_server` 起在 127.0.0.1，端口由系统分配。
+- 每次启动随机 token，只经环境变量 `KA_TOKEN` 交给后端、经桌面壳交给自己的窗口；
+  请求带 `Authorization: Bearer <token>`（下载类 GET 可用 `?access_token=`）。
+- CORS 只放行 `tauri://localhost` 与 `http://tauri.localhost`；开发期用 `KA_DEV_ORIGINS` 追加。
+- 不托管静态文件，没有登录页。
 
 ## 约定
 
-- 路由薄、`core/api` 厚：路由函数 = 取参 + 调 api + 序列化。
-- 后端不 import `managers` 的内部实现细节，经 `core/api` 门面交互。
-- 前端构建产物落到 `../pages/`（见 `frontend/README.md` 与 `../pages/README.md`）。
+- 路由薄、`kacore/api` 厚：路由函数 = 取参 + 调 api + 序列化。
+- 后端不 import `managers` 的内部实现细节，经 `kacore/api` 门面交互。

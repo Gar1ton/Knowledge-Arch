@@ -82,7 +82,7 @@ async def pipeline(
         db.execute("CREATE TABLE documents (doc_id TEXT PRIMARY KEY)")
         db.execute("INSERT INTO collections (name) VALUES ('papers')")
         db.execute("INSERT INTO documents (doc_id) VALUES ('d1')")
-        db.executescript(Path("ka_migrations/013_scoped_notes.sql").read_text(encoding="utf-8"))
+        db.executescript(Path("migrations/013_scoped_notes.sql").read_text(encoding="utf-8"))
         db.execute(
             "INSERT INTO scoped_notes "
             "(id, scope_type, scope_key, content, note_html, doc_id, created_at, updated_at, "
@@ -163,7 +163,7 @@ async def test_incremental_indexing_efficiency(
     res_noop = await pipeline.sync(SyncTargetKind.R2)
     # 应智能识别，不重复上传文件
     assert res_noop["synced_count"] == 0
-    assert "所有文档已是最新状态" in res_noop["message"]
+    assert "All documents are up to date" in res_noop["message"]
 
     # 3) 修改 d1 的哈希，只同步 d1
     d1 = await store.get_document("d1")
@@ -191,7 +191,7 @@ async def test_quota_hard_block_stops_sync(
     result = await pipeline.sync(SyncTargetKind.R2)
 
     assert result["status"] == "blocked"
-    assert "已被硬性安全阻断" in result["message"]
+    assert "blocked for safety" in result["message"]
     assert result["synced_count"] == 0
     assert result["failed_count"] == 2
 

@@ -38,6 +38,91 @@ def module_available(name: str) -> bool:
         return False
 
 
+# ── Milvus Lite 运行时就绪度（唯一真相源）─────────────────────────
+
+# 为何单独一套判断：Milvus Lite 从 3.0（2026-05）起用纯 Python 重写，wheel 是
+# `py3-none-any`，**全平台（含 Windows）都装得上**；但 pymilvus 的 `milvus_lite` extra
+# 至今仍带着 2.x C++ wheel 时代遗留的 `sys_platform != "win32"` 标记，于是
+# `pip install pymilvus[milvus_lite]` 在 Windows 上会静默跳过 milvus-lite 并以退出码 0
+# “安装成功”。只探测 pymilvus 就会把「装了也用不了」误报为就绪——面板显示已安装、装配却抛
+# `ConnectionConfigException: milvus-lite is required for local database connections`。
+# 故：就绪 = pymilvus ∧ milvus_lite；缺 milvus-lite 时**显式**安装它绕开那条失效标记。
+MILVUS_IMPORT_NAME = "pymilvus"
+MILVUS_LITE_IMPORT_NAME = "milvus_lite"
+
+# milvus-lite 3.x 的 gRPC 层要求较新的 search 请求字段（function_score）：
+# pymilvus 2.5.x + milvus-lite 3.x 可以建集合、可以写入，但 search 会抛
+# `MilvusException: function_score`。实测 pymilvus 2.6.0 起正常，故安装规格钉在 >=2.6。
+MILVUS_PIP_SPEC = "pymilvus[milvus_lite]>=2.6,<3.0"
+MILVUS_LITE_PIP_SPEC = "milvus-lite>=3.0,<4.0"
+
+_MILVUS_REINSTALL_HINT = (
+    "Click “Install” on the data flow page to install the core dependencies, then restart the "
+    "service."
+)
+
+
+def milvus_runtime_status() -> dict[str, Any]:
+    """返回 Milvus Lite 的真实可用状态、缺失项与中文修复建议。
+
+    ready       两个包都在才为 True（装配、能力快照与错误文案共用同一判断）。
+    missing     缺失的 import 名（都在时为空串）。
+    hint        面向用户的可执行建议；ready 时为空串。
+    """
+    has_pymilvus = module_available(MILVUS_IMPORT_NAME)
+    has_lite = module_available(MILVUS_LITE_IMPORT_NAME)
+
+    if has_pymilvus and has_lite:
+        return {
+            "ready": True,
+            "missing": "",
+            "pymilvus_installed": True,
+            "milvus_lite_installed": True,
+            "hint": "",
+        }
+
+    if not has_pymilvus:
+        missing = MILVUS_IMPORT_NAME
+        hint = f"pymilvus is not installed. {_MILVUS_REINSTALL_HINT}"
+    else:
+        missing = MILVUS_LITE_IMPORT_NAME
+        hint = (
+                "pymilvus is installed but milvus-lite (the actual local vector store runtime) is "
+                "missing: the milvus_lite extra of pymilvus carries an outdated win32 exclusion "
+                f"marker, so pip silently skips it on Windows. {_MILVUS_REINSTALL_HINT}"
+            
+        )
+
+    return {
+        "ready": False,
+        "missing": missing,
+        "pymilvus_installed": has_pymilvus,
+        "milvus_lite_installed": has_lite,
+        "hint": hint,
+    }
+
+
+_MILVUS_LOCK_HINT = (
+    "The Milvus data folder is still held by a service; the holder may be another Knowledge "
+    "Arch backend that is still running. Quit the app completely (including the tray) and "
+    "start it again; restarting only the service may not release the old one. If it still "
+    "fails, check for duplicate processes, folder permissions or security software. Do not "
+    "delete the lock file or the vector data folder."
+)
+
+
+def milvus_lock_error_hint(text: str) -> str | None:
+    """若异常/日志文本指向 Milvus 数据目录被占用，返回可执行提示；否则 None。
+
+    唯一实现：`log_capture.py`（日志诊断）与 `api_capabilities.py`（数据流面板的
+    向量库节点）共用同一份识别逻辑与文案，避免两处各写一份、措辞不一致。
+    """
+    lowered = text.lower()
+    if "datadirlockederror" in lowered or "another process holds the lock" in lowered:
+        return _MILVUS_LOCK_HINT
+    return None
+
+
 def _installed_version(dist_name: str) -> str | None:
     """返回已安装发行包的版本号；未安装返回 None。"""
     try:
@@ -70,6 +155,17 @@ class OptionalDependency:
     feature: str
     stages: tuple[str, ...]
     required: bool = False
+    # 必须与 pip_spec 一起装的附加规格：用于 extra 标记不可靠的依赖（见 milvus_runtime_status）。
+    companion_specs: tuple[str, ...] = ()
+    # 交给安装器的附加参数（如 torch 按本机显卡选择 CPU / CUDA 构建）。
+    installer_args: tuple[str, ...] = ()
+    # 用户可见的「组件」（偏好设置 › 组件）；核心依赖随安装包提供，不在组件页出现。
+    component: bool = True
+
+    @property
+    def install_specs(self) -> tuple[str, ...]:
+        """实际交给 pip 的全部规格（主规格 + 附加规格）。"""
+        return (self.pip_spec, *self.companion_specs)
 
 
 # 仅收录「用户可见可选功能」的依赖；核心安装依赖（如 pymupdf4llm）不在手动安装面板内。
@@ -82,15 +178,21 @@ OPTIONAL_DEPENDENCIES: tuple[OptionalDependency, ...] = (
         pip_spec="sentence-transformers>=3,<6",
         feature="local_embedding",
         stages=("embedding", "ask"),
+        # 本地 Embedding 与 rerank 共用：torch 显式列出，由 uv 按本机显卡选 CPU / CUDA 构建。
+        companion_specs=("torch",),
+        installer_args=("--torch-backend", "auto"),
     ),
     OptionalDependency(
         key="milvus",
         import_name="pymilvus",
         dist_name="pymilvus",
-        pip_spec="pymilvus[milvus_lite]>=2.5,<3.0",
+        pip_spec=MILVUS_PIP_SPEC,
         feature="milvus",
         stages=("vector_store", "retrieval"),
         required=True,
+        # extra 的 win32 标记已失效，必须显式带上 milvus-lite，否则 Windows 装了等于没装。
+        companion_specs=(MILVUS_LITE_PIP_SPEC,),
+        component=False,
     ),
     OptionalDependency(
         key="lightrag",
@@ -107,14 +209,6 @@ OPTIONAL_DEPENDENCIES: tuple[OptionalDependency, ...] = (
         pip_spec="boto3",
         feature="r2",
         stages=("sync",),
-    ),
-    OptionalDependency(
-        key="discord",
-        import_name="discord",
-        dist_name="discord.py",
-        pip_spec="discord.py>=2.7,<3",
-        feature="discord",
-        stages=("ask",),
     ),
 )
 
@@ -135,22 +229,62 @@ def resolve_install_spec(package: str) -> str:
     raise ValueError(f"package is not in the optional-dependency allowlist: {package!r}")
 
 
+def resolve_dependency(package: str) -> OptionalDependency:
+    """依赖 key 或主规格 → 白名单内的 OptionalDependency；不在白名单抛 ValueError。"""
+    spec = resolve_install_spec(package)
+    for dep in OPTIONAL_DEPENDENCIES:
+        if dep.pip_spec == spec:
+            return dep
+    raise ValueError(f"package is not in the optional-dependency allowlist: {package!r}")
+
+
+def resolve_install_specs(package: str) -> tuple[str, ...]:
+    """解析出「实际要交给 pip 的全部规格」（主规格 + 必需的附加规格）。
+
+    与 `resolve_install_spec` 共用同一白名单：先按主规格校验入参合法性，再补上该依赖声明的
+    companion（如 milvus 必须显式带上 milvus-lite，否则 Windows 上 pip 会跳过它）。
+    """
+    spec = resolve_install_spec(package)
+    for dep in OPTIONAL_DEPENDENCIES:
+        if dep.pip_spec == spec:
+            return dep.install_specs
+    return (spec,)
+
+
 def dependency_statuses() -> list[dict[str, Any]]:
-    """返回每个可选依赖的安装状态，供依赖管理面板渲染。"""
-    return [
-        {
-            "key": dep.key,
-            "import_name": dep.import_name,
-            "dist_name": dep.dist_name,
-            "pip_spec": dep.pip_spec,
-            "feature": dep.feature,
-            "stages": list(dep.stages),
-            "required": dep.required,
-            "installed": module_available(dep.import_name),
-            "version": _installed_version(dep.dist_name),
-        }
-        for dep in OPTIONAL_DEPENDENCIES
-    ]
+    """返回每个可选依赖的安装状态，供依赖管理面板渲染。
+
+    `installed` 仍表示「顶层 import 名存在」；`runtime_ready` 表示「这个功能真的能跑」。
+    二者对 milvus 会分叉（pymilvus 装了但 milvus-lite 没装），此时面板必须显示未就绪，
+    否则用户看到绿灯却一用就报错。
+    """
+    statuses: list[dict[str, Any]] = []
+    for dep in OPTIONAL_DEPENDENCIES:
+        installed = module_available(dep.import_name)
+        runtime_ready = installed
+        runtime_hint = ""
+        # 仅 milvus 存在「装了顶层包 ≠ 能用」的分裂（见 milvus_runtime_status 注释）。
+        if dep.key == "milvus":
+            runtime = milvus_runtime_status()
+            runtime_ready = bool(runtime["ready"])
+            runtime_hint = str(runtime["hint"])
+        statuses.append(
+            {
+                "key": dep.key,
+                "import_name": dep.import_name,
+                "dist_name": dep.dist_name,
+                "pip_spec": dep.pip_spec,
+                "feature": dep.feature,
+                "stages": list(dep.stages),
+                "required": dep.required,
+                "component": dep.component,
+                "installed": installed,
+                "runtime_ready": runtime_ready,
+                "runtime_hint": runtime_hint,
+                "version": _installed_version(dep.dist_name),
+            }
+        )
+    return statuses
 
 
 # ── 数据流环节快照 ────────────────────────────────────────────────
@@ -169,16 +303,11 @@ CONSEQUENCE_REBUILD = "rebuild"
 ENV_EMBEDDING_API_KEY = "KR_EMBEDDING_API_KEY"
 
 
-def _lightrag_llm_label(provider: str, model: str) -> str:
-    """返回数据流 UI 的只读 LLM 摘要，不暴露 endpoint。"""
-    display_model = (model or "").strip()
-    if provider == "main":
-        display_model = display_model or "AstrBot main LLM"
-    elif provider == "local":
-        display_model = display_model or "local model"
-    else:
-        display_model = display_model or "configured model"
-    return f"<{provider} - {display_model}>"
+def _graph_llm_label(graph_model: str, chat_model: str) -> str:
+    """返回数据流 UI 的只读图谱 LLM 摘要（连接:模型），不暴露 endpoint。"""
+    if graph_model:
+        return graph_model
+    return chat_model or "no model assigned"
 
 
 def detect_pipeline(config: Config) -> list[dict[str, Any]]:
@@ -192,16 +321,19 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
     embedding_cfg = config.get_embedding_config()
     vdb_cfg = config.get_vector_db_config()
     graph_cfg = config.get_graph_config()
+    models = config.get_model_assignments()
     rerank_cfg = config.get_rerank_config()
     r2_cfg = config.get_r2_sync_config()
     notion_cfg = config.get_notion_sync_config()
 
     has_local = module_available("sentence_transformers")
-    has_milvus = module_available("pymilvus")
+    # 就绪 = pymilvus ∧ milvus_lite；只看 pymilvus 会把 Windows 上「装了也用不了」判成绿灯。
+    milvus_runtime = milvus_runtime_status()
+    has_milvus = bool(milvus_runtime["ready"])
     has_lightrag = module_available("lightrag")
     has_boto3 = module_available("boto3")
     has_pdf = module_available("pymupdf4llm")
-    has_api_key = bool(os.environ.get(ENV_EMBEDDING_API_KEY))
+    has_api_key = bool(embedding_cfg.api_key or os.environ.get(ENV_EMBEDDING_API_KEY))
     dim = config.runtime_embedding_dimension
     embedding_runtime_ready = dim is not None and dim > 0
 
@@ -252,9 +384,10 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
         embed_configured = has_local
         embed_deps = ["local_embedding"]
     elif embedding_cfg.provider == "external":
-        embed_configured = has_api_key
+        # 本机服务（Ollama / LM Studio）可以没有密钥：有可用连接地址即视为已配置。
+        embed_configured = bool(embedding_cfg.base_url)
         embed_deps = []
-    else:  # "astr" 旧值：不支持，禁用 Milvus/LightRAG
+    else:  # 未知取值：不支持，禁用 Milvus/LightRAG
         embed_configured = False
         embed_deps = []
     embed_ready = embed_configured and embedding_runtime_ready
@@ -276,26 +409,31 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
         },
     }
 
-    # ③ 向量库：milvus 需 pymilvus + embedding 就绪，否则受控回退到 AstrBot/SQLite。
+    # ③ 向量库：只提供 Milvus Lite（内置）；embedding 未就绪时检索受控回退到 SQLite 词法召回。
+    #    lexical 仅作内部装配（测试 / 无向量环境），不再是用户可选项。
     if vdb_cfg.backend == "milvus":
         vector_ready = has_milvus and embedding_runtime_ready
         vector_status = STATUS_READY if vector_ready else STATUS_DEGRADED
         vector_deps = ["milvus"]
-    else:  # astr
+    else:  # lexical
         vector_status = STATUS_READY
         vector_deps = []
     vector_store = {
         "id": "vector_store",
         "current": vdb_cfg.backend,
-        "candidates": ["milvus", "astr"],
+        "candidates": ["milvus"],
         "status": vector_status,
-        "switchable": True,
+        "switchable": False,
         "consequence": CONSEQUENCE_RESTART,
         "required_deps": vector_deps,
         "configured": True,
         "detail": {
             "auto_index_enabled": vdb_cfg.auto_index_enabled,
-            "astrbot_locked": True,
+            "auto_rebuild_enabled": vdb_cfg.auto_rebuild_enabled,
+            "auto_rebuild_delay_seconds": vdb_cfg.auto_rebuild_delay_seconds,
+            "milvus_runtime_ready": has_milvus,
+            "waiting_for_embedding": vdb_cfg.backend == "milvus" and not embedding_runtime_ready,
+            "milvus_runtime_hint": milvus_runtime["hint"],
         },
     }
 
@@ -303,8 +441,6 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
     engines = ["sqlite_lexical"]
     if vdb_cfg.backend == "milvus" and has_milvus and embedding_runtime_ready:
         engines.insert(0, "milvus")
-    else:
-        engines.insert(0, "astrbot_kb")
     retrieval = {
         "id": "retrieval",
         "current": "rrf_fusion",
@@ -335,18 +471,17 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
         "configured": graph_cfg.enabled,
         "detail": {
             "query_mode": graph_cfg.query_mode,
-            "llm_provider": graph_cfg.lightrag_llm_provider,
-            "llm_model": graph_cfg.lightrag_llm_model,
-            "llm_label": _lightrag_llm_label(
-                graph_cfg.lightrag_llm_provider,
-                graph_cfg.lightrag_llm_model,
-            ),
+            "llm_model": models.graph or models.chat,
+            "llm_follows_chat": not models.graph,
+            "llm_label": _graph_llm_label(models.graph, models.chat),
         },
     }
 
     # ⑥ 问答模式：普通 Ask 配置即时生效；rerank 仅供 Deep Thinking 路径使用。
-    rerank_enabled = rerank_cfg.provider == "cross_encoder"
-    rerank_ready = rerank_enabled and has_local
+    # 本地 cross-encoder 需要本地组件；线上 Rerank 只需连接（地址由设置桥注入）。
+    rerank_enabled = rerank_cfg.provider in {"cross_encoder", "remote"}
+    needs_local_rerank = rerank_cfg.provider == "cross_encoder" and not has_local
+    rerank_ready = rerank_enabled and not needs_local_rerank
     rerank_status = (
         STATUS_OFF
         if not rerank_enabled
@@ -357,10 +492,10 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
         "id": "ask",
         "current": "",
         "candidates": [],
-        "status": STATUS_DEGRADED if rerank_enabled and not has_local else STATUS_READY,
+        "status": STATUS_DEGRADED if needs_local_rerank else STATUS_READY,
         "switchable": False,
         "consequence": CONSEQUENCE_NONE,
-        "required_deps": ["local_embedding"] if rerank_enabled and not has_local else [],
+        "required_deps": ["local_embedding"] if needs_local_rerank else [],
         "configured": True,
         "detail": {
             "rerank_provider": rerank_cfg.provider,
@@ -370,31 +505,90 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
         },
     }
 
-    # ⑦ 同步：R2 需 boto3 + 凭证（密钥走 env）；Notion 经 MCP。启用为非机密开关，需重启。
-    if not (r2_cfg.enabled or notion_cfg.enabled):
-        sync_status = STATUS_OFF
-    elif (r2_cfg.enabled and not has_boto3) or (
-        r2_cfg.enabled and not (r2_cfg.account_id and r2_cfg.secret_access_key and r2_cfg.bucket)
-    ):
-        sync_status = STATUS_DEGRADED
-    else:
-        sync_status = STATUS_READY
-    sync = {
-        "id": "sync",
-        "current": "on" if (r2_cfg.enabled or notion_cfg.enabled) else "off",
-        "candidates": ["on", "off"],
-        "status": sync_status,
-        "switchable": True,
-        "consequence": CONSEQUENCE_RESTART,
-        "required_deps": ["r2"] if r2_cfg.enabled else [],
-        "configured": r2_cfg.enabled or notion_cfg.enabled,
+    # ⑦ 模型分配：chat 未分配时问答走离线占位（只回摘录），research / graph 为空跟随 chat。
+    models_stage = {
+        "id": "models",
+        "current": models.chat or "unassigned",
+        "candidates": [],
+        "status": STATUS_READY if models.chat else STATUS_DEGRADED,
+        "switchable": False,
+        "consequence": CONSEQUENCE_NONE,
+        "required_deps": [],
+        "configured": bool(models.chat),
         "detail": {
-            "r2_enabled": r2_cfg.enabled,
-            "notion_enabled": notion_cfg.enabled,
+            "chat": models.chat,
+            "research": models.research or models.chat,
+            "graph": models.graph or models.chat,
+            "research_follows_chat": not models.research,
+            "graph_follows_chat": not models.graph,
         },
     }
 
-    return [zotero, ingest, embedding, vector_store, retrieval, graph, ask, sync]
+    # ⑧ 模型供应商：连接列表（地址 + 密钥）；没有任何连接时问答与图谱都无模型可用。
+    provider_info = config.raw.get("providers")
+    provider_count = int(provider_info.get("count") or 0) if isinstance(provider_info, dict) else 0
+    providers_stage = {
+        "id": "providers",
+        "current": str(provider_count),
+        "candidates": [],
+        "status": STATUS_READY if provider_count else STATUS_DEGRADED,
+        "switchable": False,
+        "consequence": CONSEQUENCE_NONE,
+        "required_deps": [],
+        "configured": provider_count > 0,
+        "detail": {"count": provider_count},
+    }
+
+    # ⑨ Notion：REST API，需 token + 目标库（或建库用的父页面）。启用开关需重启。
+    notion_raw = config.raw.get("notion_sync")
+    notion_token = isinstance(notion_raw, dict) and bool(str(notion_raw.get("token") or "").strip())
+    notion_target = bool(notion_cfg.database_id or notion_cfg.parent_page_id)
+    if not notion_cfg.enabled:
+        notion_status = STATUS_OFF
+    elif notion_token and notion_target:
+        notion_status = STATUS_READY
+    else:
+        notion_status = STATUS_DEGRADED
+    notion = {
+        "id": "notion",
+        "current": "on" if notion_cfg.enabled else "off",
+        "candidates": ["on", "off"],
+        "status": notion_status,
+        "switchable": True,
+        "consequence": CONSEQUENCE_RESTART,
+        "required_deps": [],
+        "configured": notion_cfg.enabled,
+        "detail": {
+            "token_present": notion_token,
+            "database_ready": bool(notion_cfg.database_id and notion_cfg.qa_database_id),
+            "sync_mode": notion_cfg.sync_mode,
+        },
+    }
+
+    # ⑩ R2 备份：需 boto3（组件）+ 账号 / 密钥 / bucket。启用开关需重启。
+    r2_credentials = bool(r2_cfg.account_id and r2_cfg.secret_access_key and r2_cfg.bucket)
+    if not r2_cfg.enabled:
+        r2_status = STATUS_OFF
+    elif has_boto3 and r2_credentials:
+        r2_status = STATUS_READY
+    else:
+        r2_status = STATUS_DEGRADED
+    r2 = {
+        "id": "r2",
+        "current": "on" if r2_cfg.enabled else "off",
+        "candidates": ["on", "off"],
+        "status": r2_status,
+        "switchable": True,
+        "consequence": CONSEQUENCE_RESTART,
+        "required_deps": ["r2"] if r2_cfg.enabled else [],
+        "configured": r2_cfg.enabled,
+        "detail": {"credentials_present": r2_credentials, "bucket": r2_cfg.bucket},
+    }
+
+    return [
+        zotero, ingest, embedding, vector_store, retrieval, graph, ask,
+        models_stage, providers_stage, notion, r2,
+    ]
 
 
 def detect_capabilities(config: Config) -> dict[str, Any]:
@@ -408,10 +602,18 @@ def detect_capabilities(config: Config) -> dict[str, Any]:
 
 __all__ = [
     "module_available",
+    "milvus_runtime_status",
+    "milvus_lock_error_hint",
+    "MILVUS_IMPORT_NAME",
+    "MILVUS_LITE_IMPORT_NAME",
+    "MILVUS_PIP_SPEC",
+    "MILVUS_LITE_PIP_SPEC",
     "OptionalDependency",
     "OPTIONAL_DEPENDENCIES",
     "ALLOWED_INSTALL_SPECS",
+    "resolve_dependency",
     "resolve_install_spec",
+    "resolve_install_specs",
     "dependency_statuses",
     "detect_pipeline",
     "detect_capabilities",

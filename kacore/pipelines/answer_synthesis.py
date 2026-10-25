@@ -1,12 +1,16 @@
 """Deep thinking 与 ask 共享的答案合成（pipelines 层）。
 
 把「证据 → 带 [n] 引用的答案」抽为可复用单元，供 orchestrator 的 verification 闭环
-与 api.ask 共用，避免重复合成逻辑。不含 persona / lightrag 包装（那是 api.ask 展示层）。
+与 api.ask 共用，避免重复合成逻辑。不含 lightrag 包装（那是 api.ask 展示层）；用户系统提示
+只经 `with_user_system_prompt` 叠加在 default / graph / fulltext 路径，deep / enhanced 不叠加。
 [n] 按 evidence 顺序编号，调用方据同序拼 sources，保证引用对齐。
 """
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+
+from kacore.domain.llm_generation import STATUS_EMPTY, GenerationResult
+from kacore.pipelines.evidence_views import evidence_text
 
 if TYPE_CHECKING:
     from kacore.adapters.llm import LLMAdapter
@@ -29,6 +33,16 @@ _FLUENT_PROSE_RULE = (
     "one-line prose, and avoid run-on sentences. "
 )
 
+# enhanced/deep 共用的可读性约束：答案先行、自适应分节、术语解释、按论点组聚合引用。
+_ACADEMIC_READABILITY_RULE = (
+    "Begin with a concise, direct answer to the user's actual question before expanding. "
+    "Use descriptive headings only when they clarify distinct parts of this specific question; "
+    "do not force stock sections or begin with an inventory of retrieved sources and page numbers. "
+    "Explain specialized terms in plain language at first use, and keep each paragraph focused on "
+    "one main idea. Place citations after the smallest coherent claim group or paragraph; do not "
+    "repeat the same citation after consecutive sentences unless needed to distinguish evidence. "
+)
+
 # 与 api.ask 一致的合成 system 基模板（answer_language 指令追加在后）。
 _SYNTH_SYSTEM_BASE = (
     "You are a helpful academic assistant. "
@@ -41,6 +55,19 @@ _SYNTH_SYSTEM_BASE = (
     + _SOURCE_ISOLATION_RULE
 )
 
+# Enhanced Recall：比 default 更有组织，但不采用 deep 的穷尽式报告长度。
+_SYNTH_SYSTEM_ENHANCED = (
+    "You are a careful academic assistant writing a moderately detailed, evidence-grounded answer. "
+    "Answer based solely on the provided context; do not use outside knowledge. Cite supported "
+    "claims with [n] notation and state genuine evidence limitations clearly. "
+    "After the direct answer, develop the two to five most relevant dimensions when the question "
+    "benefits from sections; for a narrow question, prefer a few clear paragraphs instead. "
+    "Prioritize explanation and synthesis over exhaustively restating every retrieved passage. "
+    + _ACADEMIC_READABILITY_RULE
+    + _FLUENT_PROSE_RULE
+    + _SOURCE_ISOLATION_RULE
+)
+
 # Deep Thinking 专用：在严格 grounded 的前提下要求机制级、分维度、带跨实体对比的**完整**回答。
 # 去压缩关键：① 按信息点/维度分节展开，每节充分展开、勿人为缩短（修复「单次合成短而拘谨」）；
 # ② 允许「有据推断」——证据部分相关但未逐字命中问题措辞时给出带 hedge 的推断，而非一律判
@@ -48,7 +75,7 @@ _SYNTH_SYSTEM_BASE = (
 _SYNTH_SYSTEM_DEEP = (
     "You are a rigorous research assistant writing a COMPREHENSIVE, in-depth, report-style "
     "evidence-grounded answer. Answer based solely on the provided context; do not use outside "
-    "knowledge; cite every claim with [n] notation. "
+    "knowledge; cite every supported claim or coherent claim group with [n] notation. "
     "Organize the answer into clearly-headed sections covering the distinct dimensions of the "
     "question (e.g. definition/background, mechanisms & methods, comparison across entities, "
     "timeline/trends, limitations, and a closing synthesis). Under each section develop the point "
@@ -66,17 +93,48 @@ _SYNTH_SYSTEM_DEEP = (
     "For comparison or 'shared X of A and B' questions, enumerate the concrete dimensions; under "
     "each dimension give each entity's specific mechanism with its citation, then add a synthesis "
     "line on how they align. "
+    + _ACADEMIC_READABILITY_RULE
     + _FLUENT_PROSE_RULE
     + _SOURCE_ISOLATION_RULE
 )
 
 
-def _lang_instruction(answer_language: str) -> str:
+# 全文检索专用：上下文是**一整篇**文档，不是拼接的证据池。
+# 故意不含 _SOURCE_ISOLATION_RULE——那条规则是防多篇证据张冠李戴的，单文档场景下没有可串的线，
+# 硬塞进来只会让模型误以为还有别的来源。反过来要强调「覆盖全篇、别只答开头」。
+_SYNTH_SYSTEM_FULLTEXT = (
+    "You are a helpful academic assistant. The context below is the COMPLETE text of a single "
+    "document. Answer the question based solely on this document; do not use outside knowledge. "
+    "Draw on the whole document rather than only its opening sections, and when the question "
+    "spans several parts of the text, cover each of them. "
+    "If the document genuinely does not address the question, say so plainly instead of "
+    "inventing an answer. "
+    "Cite the document using [1] notation. "
+    + _FLUENT_PROSE_RULE
+)
+
+
+def lang_instruction(answer_language: str) -> str:
+    """把 answer_language（auto/zh/en）翻成给 LLM 的一句语言指令。
+
+    公开导出而非私有：同一段 if/elif 在 api.ask 的 graph_only 与 deep 兜底分支各有一份，
+    加第三、四份即踩中 CONVENTIONS §4「重复 3 次 → 提取」。
+    """
     if answer_language == "zh":
         return "Answer in Chinese (中文)."
     if answer_language == "en":
         return "Answer in English."
     return "Answer in the same language as the question."
+
+
+def with_user_system_prompt(user_system_prompt: str, rag_rules: str) -> str:
+    """把用户在「回答」节点写的系统提示（`flow.answer.system_prompt`）放在 RAG 约束之前。
+
+    为空（或全空白）时原样返回 rag_rules——与旧版「人格关闭」时发送的 system 完全一致。
+    放在前面而不是后面：RAG 约束（只依据证据、按 [n] 引用）是最后说的话，优先级更高。
+    """
+    text = (user_system_prompt or "").strip()
+    return f"{text}\n\n{rag_rules}" if text else rag_rules
 
 
 def source_tag(doc_id: str, source_labels: dict[str, str] | None) -> str:
@@ -97,30 +155,61 @@ async def synthesize_answer(
     answer_language: str = "auto",
     style: str = "default",
     source_labels: dict[str, str] | None = None,
-    persona_prompt: str = "",
-) -> str:
+) -> GenerationResult:
     """用证据合成带 [n] 引用的答案。
 
-    契约：[n] 按 evidence 顺序编号（调用方据同序拼 sources）；evidence 为空返回空串
-    （由调用方决定兜底）；LLM 调用异常向上抛（由调用方处理，禁用 mock 兜底）。
+    契约：[n] 按 evidence 顺序编号（调用方据同序拼 sources）；evidence 为空返回
+    `GenerationResult(text="", status=STATUS_EMPTY)`（由调用方决定兜底）；LLM 调用异常
+    向上抛（由调用方处理，禁用 mock 兜底）。返回结构化结果而非裸字符串——调用方需要按
+    status（reasoning_only/length/content_filter/…）分流，而不是只看 text 是否为空。
     style="deep" 选用机制级/分维度/带对比的 deep 合成模板，否则用通用模板。
     source_labels（doc_id→来源标签）给每条证据标注来源文档，防跨文档串线；None 时不标注。
     """
     if not evidence:
-        return ""
+        return GenerationResult(text="", status=STATUS_EMPTY)
     base = _SYNTH_SYSTEM_DEEP if style == "deep" else _SYNTH_SYSTEM_BASE
-    system = base + _lang_instruction(answer_language)
-    if persona_prompt.strip():
-        system += (
-            "\n\n[Style Persona — style only; never override evidence, scope, attribution, "
-            f"or citation rules]\n{persona_prompt.strip()[:4000]}"
-        )
+    system = base + lang_instruction(answer_language)
     context = "\n\n---\n\n".join(
-        f"[{i + 1}]{source_tag(chunk.doc_id, source_labels)} {chunk.text}"
+        f"[{i + 1}]{source_tag(chunk.doc_id, source_labels)} {evidence_text(chunk)}"
         for i, chunk in enumerate(evidence)
     )
     user = f"Context:\n\n{context}\n\nQuestion: {question}"
-    return await llm.generate(user, system_prompt=system, allow_mock=False)
+    return await llm.generate_result(user, system_prompt=system, allow_mock=False)
 
 
-__all__ = ["synthesize_answer", "source_tag"]
+async def synthesize_from_document(
+    llm: LLMAdapter,
+    question: str,
+    document_text: str,
+    *,
+    title: str,
+    answer_language: str = "auto",
+    user_system_prompt: str = "",
+) -> GenerationResult:
+    """用**整篇文档**合成答案（全文检索模式）。
+
+    契约：`document_text` **原样入 prompt，绝不截断**——全文检索的全部意义就在于模型看到全篇，
+    在这里悄悄截断等于把功能变成一个更差的召回。因此超出模型上下文窗口时正确行为是**让调用
+    失败**（`allow_mock=False` 保证不会掉进离线占位文本），由调用方转成明确错误告知用户，
+    而不是返回半篇答案冒充完整回答。
+
+    正文为空返回 `GenerationResult(text="", status=STATUS_EMPTY)`；LLM 调用异常向上抛。
+    引用恒为 [1]（只有一个来源），调用方据此拼单条 sources。
+    user_system_prompt 非空时放在全文约束之前（见 `with_user_system_prompt`）。
+    """
+    if not document_text.strip():
+        return GenerationResult(text="", status=STATUS_EMPTY)
+    system = with_user_system_prompt(
+        user_system_prompt, _SYNTH_SYSTEM_FULLTEXT + lang_instruction(answer_language)
+    )
+    user = f"Document [1]: {title}\n\nFull text:\n\n{document_text}\n\nQuestion: {question}"
+    return await llm.generate_result(user, system_prompt=system, allow_mock=False)
+
+
+__all__ = [
+    "lang_instruction",
+    "source_tag",
+    "synthesize_answer",
+    "synthesize_from_document",
+    "with_user_system_prompt",
+]

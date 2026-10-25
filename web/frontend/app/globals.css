@@ -7,6 +7,9 @@
 /* 设计 Token（白灰色调 + 蓝色强调，Heptabase 演绎） */
 @import "../styles/ds-tokens.css";
 
+/* 桌面版新增界面（启动 / 崩溃 / 欢迎、模型供应商、节点操作区） */
+@import "../styles/desktop.css";
+
 /* ─── 全局基础样式 ──────────────────────────────────────────── */
 *,
 ::before,

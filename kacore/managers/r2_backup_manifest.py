@@ -51,12 +51,12 @@ def sha256_file(path: Path) -> str:
 def parse_entries(manifest: dict[str, Any]) -> list[BackupEntry]:
     raw = manifest.get("files")
     if not isinstance(raw, list):
-        raise ValueError("manifest files 字段非法")
+        raise ValueError("manifest files field is invalid")
     entries: list[BackupEntry] = []
     paths: set[str] = set()
     for item in raw:
         if not isinstance(item, dict):
-            raise ValueError("manifest file entry 非对象")
+            raise ValueError("manifest file entry is not an object")
         entry = BackupEntry(
             path=str(item.get("path") or ""),
             component=str(item.get("component") or ""),
@@ -69,10 +69,10 @@ def parse_entries(manifest: dict[str, Any]) -> list[BackupEntry]:
             or any(char not in "0123456789abcdef" for char in entry.sha256)
             or entry.size < 0
         ):
-            raise ValueError(f"manifest entry 非法：{entry.path}")
+            raise ValueError(f"Invalid manifest entry: {entry.path}")
         validate_relative_path(entry.path)
         if entry.path in paths:
-            raise ValueError(f"manifest path 重复：{entry.path}")
+            raise ValueError(f"Duplicate manifest path: {entry.path}")
         paths.add(entry.path)
         entries.append(entry)
     return entries
@@ -81,7 +81,7 @@ def parse_entries(manifest: dict[str, Any]) -> list[BackupEntry]:
 def validate_relative_path(value: str) -> None:
     path = PurePosixPath(value)
     if not value or path.is_absolute() or ".." in path.parts or "\\" in value:
-        raise ValueError(f"非法备份路径：{value!r}")
+        raise ValueError(f"Invalid backup path: {value!r}")
 
 
 def safe_payload_path(root: Path, value: str) -> Path:

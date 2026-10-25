@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import copy
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from kacore.config import GraphConfig
 from kacore.domain.models import DocumentChunk, SourceDocument
@@ -36,7 +40,7 @@ def test_estimate_lightrag_build_uses_existing_chunks_without_model_calls() -> N
     assert result["chunks_count"] == 2
     assert result["chars_count"] == len("abc\n\ndef")
     assert result["estimated_lrag_chunks"] == 1
-    assert "LRAG chunk" in result["estimate_notice"]
+    assert "LightRAG chunks" in result["estimate_notice"]
 
 
 def test_parse_lightrag_csv_entities_and_relations(tmp_path: Path) -> None:
@@ -79,6 +83,92 @@ async def test_lightrag_llm_adapter_flattens_history_and_disables_mock() -> None
 
     assert result == "answer"
     assert stub.call == ("user: old\n\ncurrent", "system", False)
+
+
+def test_lightrag_llm_adapter_survives_deepcopy() -> None:
+    class LockingLLM:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+
+        async def generate(self, prompt: str, system_prompt: str = "", *, allow_mock: bool = True):
+            return "answer"
+
+    adapter = LightRAGLLMAdapter(LockingLLM())  # type: ignore[arg-type]
+    # 模拟 LightRAG 对 global_config 的 dataclasses.asdict() 风格深拷贝。
+    global_config = {"llm_model_func": adapter, "nested": {"llm_model_func": adapter}}
+
+    copied = copy.deepcopy(global_config)
+
+    assert copied["llm_model_func"] is adapter
+    assert copied["nested"]["llm_model_func"] is adapter
+
+
+def test_lightrag_embedding_adapter_survives_deepcopy() -> None:
+    class LockingEmbedding:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+
+        async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            return [[0.0] for _ in texts]
+
+    adapter = LightRAGEmbeddingAdapter(
+        LockingEmbedding(),  # type: ignore[arg-type]
+        embedding_dim=1,
+        max_token_size=100,
+        model_name="stub",
+    )
+    global_config = {"embedding_func": adapter, "nested": {"embedding_func": adapter}}
+
+    copied = copy.deepcopy(global_config)
+
+    assert copied["embedding_func"] is adapter
+    assert copied["nested"]["embedding_func"] is adapter
+
+
+async def test_lightrag_construction_with_locking_adapters_does_not_raise_pickle_error(
+    tmp_path: Path,
+) -> None:
+    """回归 LightRAG 1.5.5rc1 构造期 `cannot pickle '_thread.lock' object`。
+
+    真实场景中适配器间接持有的运行时 provider 对象含 threading.Lock；不 mock lightrag-hku，
+    直接走真实构造路径，确保 __deepcopy__ 修复对上游库的实际行为生效。
+    """
+    lightrag = pytest.importorskip("lightrag")
+    from lightrag.utils import EmbeddingFunc
+
+    class LockingLLM:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+
+        async def generate(self, prompt: str, system_prompt: str = "", *, allow_mock: bool = True):
+            return "answer"
+
+    class LockingEmbedding:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+
+        async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            return [[0.0, 0.0] for _ in texts]
+
+    llm_adapter = LightRAGLLMAdapter(LockingLLM())  # type: ignore[arg-type]
+    embedding_adapter = LightRAGEmbeddingAdapter(
+        LockingEmbedding(),  # type: ignore[arg-type]
+        embedding_dim=2,
+        max_token_size=100,
+        model_name="stub",
+    )
+
+    rag = lightrag.LightRAG(
+        working_dir=str(tmp_path / "lightrag_ws"),
+        embedding_func=EmbeddingFunc(
+            embedding_dim=embedding_adapter.embedding_dim,
+            max_token_size=embedding_adapter.max_token_size,
+            func=embedding_adapter,
+        ),
+        llm_model_func=llm_adapter,
+    )
+
+    assert rag is not None
 
 
 async def test_estimate_lightrag_build_local_profile_is_conservative() -> None:
@@ -127,6 +217,36 @@ async def test_registry_chunk_document_uses_lightrag_chunking_func() -> None:
     assert chunks == ["aa", "bb"]
     assert basis == "lrag_chunks"
     assert rag.call == ("aabb", None, False, 1, 4)
+
+
+async def test_registry_insert_custom_kg_calls_official_non_llm_path() -> None:
+    class Rag:
+        def __init__(self) -> None:
+            self.calls: list[tuple[dict, str | None]] = []
+
+        async def ainsert_custom_kg(
+            self, custom_kg: dict, full_doc_id: str | None = None
+        ) -> None:
+            self.calls.append((custom_kg, full_doc_id))
+
+    rag = Rag()
+    registry = object.__new__(LightRAGCoreRegistry)
+    registry._collection_locks = {}
+
+    async def get(collection: str):
+        assert collection == "papers"
+        return rag
+
+    registry.get = get  # type: ignore[method-assign]
+    payload = {
+        "chunks": [{"content": "bounded", "source_id": "task-1"}],
+        "entities": [],
+        "relationships": [],
+    }
+
+    await registry.insert_custom_kg("papers", "doc-1", payload)
+
+    assert rag.calls == [(payload, "doc-1")]
 
 
 async def test_lightrag_embedding_adapter_returns_numpy_batch() -> None:

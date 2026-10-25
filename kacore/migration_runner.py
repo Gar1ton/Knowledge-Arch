@@ -1,9 +1,8 @@
 """Plugin-owned SQLite migration runner.
 
-The runner lives under ``kacore`` and reads from the uniquely-named
-``ka_migrations`` directory so another plugin's identically-named top-level
-package can't shadow this plugin's migrations (see CHANGELOG for the
-core/web/migrations naming collision this replaced).
+The runner lives under ``kacore`` and resolves the sibling ``migrations``
+directory from its own file path. It never imports the generic top-level
+``migrations`` package, so another plugin cannot shadow these SQL files.
 """
 from __future__ import annotations
 
@@ -15,12 +14,12 @@ if TYPE_CHECKING:
     import aiosqlite
 
 
-MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "ka_migrations"
+MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 REQUIRED_TABLES = {"collections", "documents", "chunks"}
 
 
 async def run_migrations(db: aiosqlite.Connection) -> list[str]:
-    """Apply all pending plugin migrations in filename order."""
+    """Apply all pending migrations in filename order (tracked by file name only)."""
     await db.execute(
         "CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT)"
     )

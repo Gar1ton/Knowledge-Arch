@@ -39,6 +39,7 @@ from kacore.pipelines.deep_thinking_prompts import (
     parse_verify,
 )
 from kacore.pipelines.deep_thinking_view import live_detail
+from kacore.pipelines.evidence_session import current_evidence_session, evidence_request
 from kacore.pipelines.llm_json import est_tokens as _est_tokens
 from kacore.pipelines.llm_json import llm_json_call
 from kacore.utils.cutoff import adaptive_cutoff
@@ -63,7 +64,7 @@ _BASELINE_FLOOR_N = 5
 
 # actual_mode 三态（杜绝魔法字面量散落）。
 MODE_MILVUS_DEEP = "milvus_deep"
-MODE_ASTRBOT_DEEP_FALLBACK = "astrbot_deep_fallback"
+MODE_LEXICAL_DEEP_FALLBACK = "lexical_deep_fallback"
 MODE_DEGRADED = "deep_degraded_to_default"
 
 
@@ -94,6 +95,7 @@ class DeepThinkingOrchestrator:
     def reranker_status(self) -> dict[str, str | bool | None]:
         return self._reranker.status
 
+    @evidence_request
     async def run(
         self,
         collection: str,
@@ -102,7 +104,6 @@ class DeepThinkingOrchestrator:
         progress: Callable[[str, int, dict | None], None] | None = None,
         answer_language: str = "auto",
         answer_question: str | None = None,
-        persona_prompt: str = "",
     ) -> DeepThinkingOutcome:
         def _progress(stage: str, pct: int, detail: dict | None = None) -> None:
             if progress is not None:
@@ -118,7 +119,7 @@ class DeepThinkingOrchestrator:
         base_mode = (
             MODE_MILVUS_DEEP
             if "milvus" in baseline_outcome.engines
-            else MODE_ASTRBOT_DEEP_FALLBACK
+            else MODE_LEXICAL_DEEP_FALLBACK
         )
 
         est_tokens = 0
@@ -135,9 +136,12 @@ class DeepThinkingOrchestrator:
             )
             est_tokens += tokens
             calls_used += plan_calls
-        except JsonContractError:
+        except JsonContractError as exc:
             items = [ChecklistItem(id="c0", text=query, critical=True)]
             sub_queries = [query]
+            # 重试耗尽前的调用也真实消耗了 token，不能因解析失败就当作零消费。
+            est_tokens += exc.tokens
+            calls_used += exc.calls
         except Exception as exc:  # LLM 调用异常/不可用 → 回退 baseline。
             logger.warning("deep_thinking PLAN llm unavailable: %s", exc)
             return self._degraded(baseline_floor, trace, est_tokens, reason=str(exc))
@@ -189,12 +193,22 @@ class DeepThinkingOrchestrator:
                     SEA_SYSTEM,
                     parse_sea,
                 )
-            except JsonContractError:
-                sea, round_calls, round_tokens = SeaResult(sufficient=False), 1, 0
+            except JsonContractError as exc:
+                # calls/tokens 来自异常上携带的重试耗尽前真实消费，不再硬编码为 1/0。
+                sea, round_calls, round_tokens = SeaResult(sufficient=False), exc.calls, exc.tokens
             except Exception as exc:  # LLM 调用异常 → 回退 baseline。
                 logger.warning("deep_thinking SEA llm unavailable: %s", exc)
                 return self._degraded(baseline_floor, trace, est_tokens, reason=str(exc))
 
+            session = current_evidence_session.get()
+            if session:
+                session.request_actions(sea.actions)
+                for coverage in sea.coverage:
+                    for cid in coverage.supporting_chunk_ids:
+                        if cid in session.chunks:
+                            session.edges.append({"source": coverage.checklist_id, "target": cid,
+                                                  "kind": coverage.status,
+                                                  "provenance": "SEA"})
             checklist.apply_satisfied(sea.satisfied_ids)
             self._apply_coverage(checklist, sea)
             conflicting_ids |= sea.conflicting_chunk_ids
@@ -241,34 +255,35 @@ class DeepThinkingOrchestrator:
 
         # 阶段3：循环后一次性过滤非 pinned 的 conflicting；只有无证据才硬降级。
         _progress("deep_finalize", 90, live_detail("finalize", checklist, trace))
-        final = select_final_evidence(
+        final = await self._select_final(
             evidence, pinned_ids, conflicting_ids, self._cfg.max_final_evidence
         )
         if not final:
             return self._degraded(
                 baseline_floor, trace, est_tokens,
                 checklist=checklist,
-                reason="无最终证据",
+                reason="no final evidence",
             )
         # 关键检查项未满足是硬缺失（代表回答必需的信息点真缺）——计入正文告警。
         hard_notes: list[str] = []
         for item in checklist.items:
             if item.critical and not item.satisfied:
                 text = item.why_missing or item.text
-                msg = f"关键检查项未满足：{text}"
+                msg = f"Critical checklist item not satisfied: {text}"
                 if msg not in hard_notes:
                     hard_notes.append(msg)
 
         # 阶段4：答案级 verification 闭环（可选）。合成 draft → 校验 → 不合格补检再合成。
         # verify_missing=硬项（计入正文告警）；verify_notes=软项（仅入「思考过程」展示）。
         answer: str | None = None
+        answer_generation_status = ""
         verified = False
         verify_missing: list[str] = list(hard_notes)
         verify_notes: list[str] = list(soft_gaps)
         if self._cfg.verify_enabled:
             try:
                 (
-                    answer, qualified, v_hard, v_soft, final, est_tokens
+                    answer, answer_generation_status, qualified, v_hard, v_soft, final, est_tokens
                 ) = await self._run_verification(
                     collection,
                     query,
@@ -281,14 +296,13 @@ class DeepThinkingOrchestrator:
                     conflicting_ids,
                     est_tokens,
                     labels_cache,
-                    persona_prompt,
                 )
                 verify_missing = self._merge_missing(hard_notes, v_hard)
                 verify_notes = self._merge_missing(soft_gaps, v_soft)
                 verified = qualified and not verify_missing
             except Exception as exc:  # 兜底：verify 任何异常都不打崩，退回 api.ask 合成。
                 logger.warning("deep_thinking verification failed: %s", exc)
-                answer, verified = None, False
+                answer, answer_generation_status, verified = None, "", False
                 verify_missing, verify_notes = list(hard_notes), list(soft_gaps)
 
         return DeepThinkingOutcome(
@@ -299,6 +313,7 @@ class DeepThinkingOrchestrator:
             actual_mode=base_mode,
             est_total_tokens=est_tokens,
             answer=answer,
+            answer_generation_status=answer_generation_status,
             verified=verified,
             verify_missing=verify_missing,
             verify_notes=verify_notes,
@@ -488,6 +503,21 @@ class DeepThinkingOrchestrator:
                     oc for oc in outcomes if isinstance(oc, BaseException)
                 )
                 raise first_failure
+        session = current_evidence_session.get()
+        if session is not None:
+            session.absorb(query_outcomes)
+            selected = await session.select(
+                self._reranker, limit=self._cfg.deep_keep,
+                weight=self._cfg.rerank_weight,
+            )
+            store = getattr(self._retrieval, "_source_store", None)
+            if store is not None:
+                selected = await session.expand(selected, store, limit=self._cfg.deep_keep)
+            for chunk in selected:
+                evidence.setdefault(chunk.chunk_id, EvidenceItem(chunk, "aspect_coverage"))
+            for chunk in baseline_floor:
+                evidence.setdefault(chunk.chunk_id, EvidenceItem(chunk, "baseline_floor"))
+            return [c.chunk_id for c in selected]
         candidates: dict[str, DocumentChunk] = {}
         anchor_ids: set[str] = set()
         for _q, oc in query_outcomes:
@@ -512,6 +542,20 @@ class DeepThinkingOrchestrator:
             )
         return list(anchor_ids) + [sc.chunk.chunk_id for sc in kept]
 
+    async def _select_final(
+        self, evidence: dict[str, EvidenceItem], pinned: set[str],
+        conflicting: set[str], limit: int,
+    ) -> list[DocumentChunk]:
+        session = current_evidence_session.get()
+        if session is None:
+            return select_final_evidence(evidence, pinned, conflicting, limit)
+        selected = await session.select(
+            self._reranker, limit=limit, weight=self._cfg.rerank_weight,
+            eligible=set(evidence) - (conflicting - pinned), pinned=pinned,
+        )
+        store = getattr(self._retrieval, "_source_store", None)
+        return await session.expand(selected, store, limit=limit) if store else selected
+
     async def _run_verification(
         self,
         collection: str,
@@ -525,15 +569,18 @@ class DeepThinkingOrchestrator:
         conflicting_ids: set[str],
         est_tokens: int,
         labels_cache: dict[str, str] | None = None,
-        persona_prompt: str = "",
-    ) -> tuple[str | None, bool, list[str], list[str], list[DocumentChunk], int]:
+    ) -> tuple[str | None, str, bool, list[str], list[str], list[DocumentChunk], int]:
         """合成 draft → 校验 → 不合格则用软项当 gap 补检再合成，受 max_verify_rounds 限。
 
-        返回 (answer, qualified, hard_missing, soft_notes, final_evidence, est_tokens)。
-        qualified = supported ∧ complete ∧ 无硬违规（partial/info_gap 不阻塞）。
-        合成不可用 → answer=None（退回 api.ask）；校验不可用 → 用 draft、qualified=False。
+        返回 (answer, answer_generation_status, qualified, hard_missing, soft_notes,
+        final_evidence, est_tokens)。qualified = supported ∧ complete ∧ 无硬违规
+        （partial/info_gap 不阻塞）。合成不可用 → answer=None（退回 api.ask）；
+        校验不可用 → 用 draft、qualified=False。answer_generation_status 为最后一次
+        合成的 GenerationResult.status，供 api.ask 决定是否给用户加提示
+        （reasoning_only/length/content_filter 等）。
         """
         answer = ""
+        status = ""
         hard: list[str] = []
         soft: list[str] = []
         cache = labels_cache if labels_cache is not None else {}
@@ -548,20 +595,20 @@ class DeepThinkingOrchestrator:
                     answer_language,
                     style="deep",
                     source_labels=source_labels,
-                    persona_prompt=persona_prompt,
                 )
             except Exception as exc:  # 合成 LLM 不可用 → 放弃 verify，让 api.ask 兜底合成。
                 logger.warning("deep_thinking synth-for-verify unavailable: %s", exc)
-                return None, False, hard, soft, final, est_tokens
-            if not draft:
-                return None, False, hard, soft, final, est_tokens
-            answer = draft
-            est_tokens += _est_tokens(answer_question, draft, *(chunk.text for chunk in final))
+                return None, "", False, hard, soft, final, est_tokens
+            status = draft.status
+            if not draft.text:
+                return None, status, False, hard, soft, final, est_tokens
+            answer = draft.text
+            est_tokens += _est_tokens(answer_question, answer, *(chunk.text for chunk in final))
             try:
                 verify_result, _, vtokens = await self._llm_json(
                     build_verify_prompt(
                         answer_question,
-                        draft,
+                        answer,
                         final,
                         self._cfg.verify_evidence_clip,
                         source_labels,
@@ -570,17 +617,18 @@ class DeepThinkingOrchestrator:
                     parse_verify,
                 )
                 est_tokens += vtokens
-            except JsonContractError:
-                return answer, False, [], [], final, est_tokens
+            except JsonContractError as exc:
+                est_tokens += exc.tokens
+                return answer, status, False, [], [], final, est_tokens
             except Exception as exc:  # 校验 LLM 不可用 → 用 draft，标记未校验。
                 logger.warning("deep_thinking VERIFY llm unavailable: %s", exc)
-                return answer, False, [], [], final, est_tokens
+                return answer, status, False, [], [], final, est_tokens
             hard = verify_result.hard_missing
             soft = verify_result.soft_notes
             qualified = verify_result.supported and verify_result.complete and not hard
             recheck_gaps = soft or hard
             if qualified or vround == self._cfg.max_verify_rounds or not recheck_gaps:
-                return answer, qualified, hard, soft, final, est_tokens
+                return answer, status, qualified, hard, soft, final, est_tokens
             # 不合格且有轮次 + 有补充方向：软/硬项当 gap 再检索补证据，重算 final。
             await self._gather_round(
                 collection,
@@ -592,10 +640,10 @@ class DeepThinkingOrchestrator:
                 pinned_ids,
                 include_baseline=None,
             )
-            final = select_final_evidence(
+            final = await self._select_final(
                 evidence, pinned_ids, conflicting_ids, self._cfg.max_final_evidence
             )
-        return answer, False, hard, soft, final, est_tokens
+        return answer, status, False, hard, soft, final, est_tokens
 
     async def _llm_json(
         self, prompt: str, system: str, parse_fn: Callable[[str], T]

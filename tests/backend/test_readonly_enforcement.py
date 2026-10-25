@@ -6,7 +6,6 @@ import pytest
 from kacore.api import KnowledgeRepositoryApi, ReadOnlyError
 from kacore.config import Config
 from kacore.domain.models import Collection, DocumentOrigin, SourceDocument
-from kacore.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
 from kacore.repository.source_store.memory import InMemorySourceDocumentStore
 
 
@@ -47,7 +46,7 @@ async def _api() -> tuple[KnowledgeRepositoryApi, InMemorySourceDocumentStore]:
         Collection(name="Zotero", origin=DocumentOrigin.ZOTERO, read_only=True)
     )
     api = KnowledgeRepositoryApi(
-        source_store=store, kb_reader=InMemoryKnowledgeBaseReader({}), config=Config({})
+        source_store=store, config=Config({})
     )
     return api, store
 

@@ -1,8 +1,8 @@
 """LightRAG Core integration helpers.
 
-This module is intentionally small and explicit: AstrBot deployment is the first
-place where real local LLM/Embedding endpoints are available, so every operation
-logs readable "KR LightRAG" lines for terminal-based manual verification.
+This module is intentionally small and explicit: real local LLM/Embedding endpoints
+are only available in a running app, so every operation logs readable "KR LightRAG"
+lines for log-based manual verification.
 """
 
 from __future__ import annotations
@@ -95,7 +95,7 @@ class BuildJob:
             "paused": self.paused,
             "pause_requested": self.pause_requested,
             "pause_message": (
-                "等待当前 LLM 调用完成后暂停" if self.pause_requested else ""
+                "Pausing after the current LLM call finishes" if self.pause_requested else ""
             ),
             "processed_docs": self.processed_docs,
             "failed_docs": self.failed_docs,
@@ -126,6 +126,13 @@ class LightRAGLLMAdapter:
 
     def __init__(self, llm_adapter: LLMAdapter) -> None:
         self._llm_adapter = llm_adapter
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> LightRAGLLMAdapter:
+        # LightRAG 构造 global_config 时会对可达对象做 deepcopy；本适配器持有的运行时
+        # provider 对象内部含 threading.Lock，不可 pickle/deepcopy，按身份返回自身即可
+        # （适配器本身无状态，深拷贝语义上等价于共享同一个实例）。
+        memo[id(self)] = self
+        return self
 
     async def __call__(
         self,
@@ -190,6 +197,11 @@ class LightRAGEmbeddingAdapter:
         self.max_token_size = max_token_size
         self.model_name = model_name
 
+    def __deepcopy__(self, memo: dict[int, Any]) -> LightRAGEmbeddingAdapter:
+        # 同 LightRAGLLMAdapter：self._provider 间接持有 threading.Lock，不可深拷贝。
+        memo[id(self)] = self
+        return self
+
     async def __call__(self, texts: list[str], **kwargs: Any) -> np.ndarray:
         del kwargs
         vectors = await self._provider.embed_documents(list(texts))
@@ -241,6 +253,15 @@ class LightRAGCoreRegistry:
     def has_workspace(self, collection: str) -> bool:
         safe = self._workspace_map.get(collection)
         return bool(safe and (self._root / safe).is_dir())
+
+    async def probe_llm_ready(self) -> None:
+        """构建前 LLM 就绪度探针：直接调用图谱构建实际会用的 LLM adapter。
+
+        为何不能让调用方直接探测 api._llm_adapter：「模型分配」里 graph 角色可以落在与
+        chat 完全不同的连接与模型上（见组合根 app_initializer.py），只有 registry 自己知道
+        当前真正会被调用的是哪一个。探测失败（含超时/网络异常/空响应）直接向上抛异常。
+        """
+        await self._llm_adapter.generate("ping", allow_mock=False)
 
     def existing_collections(self) -> list[str]:
         return sorted(
@@ -364,6 +385,26 @@ class LightRAGCoreRegistry:
             finally:
                 _LLM_PROGRESS_CALLBACK.reset(token)
                 _LLM_PAUSE_GATE.reset(pause_token)
+
+    async def insert_custom_kg(
+        self,
+        collection: str,
+        doc_id: str,
+        custom_kg: dict[str, Any],
+    ) -> None:
+        """写入由外部 agent 提取的实体与关系；仅触发 LightRAG 存储/嵌入。"""
+        async with self._get_collection_lock(collection):
+            rag = await self.get(collection)
+            insert = getattr(rag, "ainsert_custom_kg", None)
+            if not callable(insert):
+                raise RuntimeError("Installed LightRAG does not support ainsert_custom_kg")
+            _terminal(
+                f"ainsert_custom_kg collection={collection!r} doc_id={doc_id!r} "
+                f"chunks={len(custom_kg.get('chunks', []))} "
+                f"entities={len(custom_kg.get('entities', []))} "
+                f"relationships={len(custom_kg.get('relationships', []))}"
+            )
+            await insert(custom_kg, full_doc_id=doc_id)
 
     async def query(
         self, collection: str, query: str, *, only_need_context: bool = False
@@ -614,7 +655,8 @@ def estimate_lightrag_build(
         "seconds_per_chunk": per_chunk,
         "runtime_profile": runtime,
         "estimate_notice": (
-            "这是基于 LRAG chunk 的估算，不是倒计时；实际耗时会按运行中速度动态修正。"
+            "This is an estimate based on LightRAG chunks, not a countdown; the actual time "
+            "adjusts to the running speed."
         ),
     }
 

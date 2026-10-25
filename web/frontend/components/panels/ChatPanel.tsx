@@ -11,15 +11,16 @@ import { Z } from "@/lib/zLayers";
 import { useConsole } from "@/lib/ConsoleContext";
 import { useToast } from "@/components/ui/Toast";
 import { useI18n, type I18nKey } from "@/lib/i18n";
-import { ChatScopeFooter } from "@/components/chat/ChatScopeFooter";
+import { notifyAskSent } from "@/lib/tour";
+import { AnswerMarkdown } from "@/components/panels/AnswerMarkdown";
+import { FullTextConfirmDialog } from "@/components/panels/FullTextConfirmDialog";
 import {
-  AskSource, ApiError, GraphBuildEstimate, ThinkingTrace,
-  ChatMessage, buildGraph, estimateGraphBuild,
+  AskResult, AskSource, ApiError, AskTaskTimeoutError, FullTextConfirmation, GraphBuildEstimate, ThinkingTrace,
+  ChatMessage, ask, buildGraph, estimateGraphBuild,
   getChatHistory, clearChatHistory, lockChatAnswer,
   createDocumentNote, createCollectionNote,
-  getAskProgress, type LiveProgressDetail,
-  getEffectiveConfig, pushNotionNote, getChatSession, updateChatSession,
-  streamChatTurn, type RetrievalScopeSnapshot,
+  getAskProgress, waitForLateAskAnswer, type LiveProgressDetail,
+  getEffectiveConfig, pushNotionNote,
 } from "@/lib/api";
 
 // ─── Types ────────────────────────────────────────────────────
@@ -40,7 +41,6 @@ interface Message {
   actualRetrievalMode?: string;
   thinkingTrace?: ThinkingTrace;
   answerNotice?: string;
-  retrievalScope?: RetrievalScopeSnapshot;
   pinned?: boolean;
 }
 
@@ -53,6 +53,12 @@ interface GraphBuildDialogState {
   building?: boolean;
 }
 
+interface FullTextConfirmDialogState {
+  question: string;
+  info: FullTextConfirmation;
+  running?: boolean;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────
 
 function retrievalModeLabel(
@@ -62,13 +68,14 @@ function retrievalModeLabel(
   if (mode === "lightrag_only") return t("chat_retrieval_lightrag");
   if (mode === "milvus_lightrag") return t("chat_retrieval_milvus_lightrag");
   if (mode?.includes("lightrag")) return t("chat_retrieval_lightrag_mixed");
-  if (mode === "astrbot") return t("chat_retrieval_astrbot");
   if (mode === "sqlite_lexical") return t("chat_retrieval_lexical");
   if (mode === "none") return t("chat_retrieval_none");
-  if (mode === "milvus_deep" || mode === "astrbot_deep_fallback") return t("chat_retrieval_deep_mode");
+  if (mode === "milvus_deep" || mode === "lexical_deep_fallback") return t("chat_retrieval_deep_mode");
   if (mode === "deep_degraded_to_default") return t("chat_retrieval_deep_degraded");
   if (mode === "enhanced_recall") return t("chat_retrieval_enhanced_mode");
   if (mode === "enhanced_degraded_to_default") return t("chat_retrieval_enhanced_degraded");
+  // 缺这条会让全文检索的答案（以及历史回放）被兜底标成「Milvus 语义检索」。
+  if (mode === "fulltext") return t("chat_retrieval_fulltext");
   return t("chat_retrieval_milvus");
 }
 
@@ -273,49 +280,6 @@ function formatDuration(seconds?: number | null): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-// ─── renderAnswer: **bold** + [n] citation sups ───────────────
-
-function renderAnswer(
-  text: string,
-  onCite: (n: number) => void,
-): React.ReactNode {
-  return text.split("\n").map((line, li, lines) => {
-    const parts = line.split(/(\*\*[^*]+\*\*|\[\d+\])/g);
-    return (
-      <React.Fragment key={li}>
-        {parts.map((p, pi) => {
-          if (/^\*\*[^*]+\*\*$/.test(p))
-            return <strong key={pi} style={{ fontWeight: 700, color: "var(--heading)" }}>{p.slice(2, -2)}</strong>;
-          const m = p.match(/^\[(\d+)\]$/);
-          if (m) {
-            const n = parseInt(m[1]);
-            return (
-              <sup
-                key={pi}
-                onClick={() => onCite(n)}
-                style={{
-                  cursor: "pointer",
-                  color: "var(--accent)",
-                  background: "var(--accent-soft)",
-                  borderRadius: 3,
-                  padding: "0 3px",
-                  fontWeight: 700,
-                  fontSize: ".72em",
-                  margin: "0 1px",
-                }}
-              >
-                [{n}]
-              </sup>
-            );
-          }
-          return p;
-        })}
-        {li < lines.length - 1 && <br />}
-      </React.Fragment>
-    );
-  });
-}
-
 // ─── SourceMini card ──────────────────────────────────────────
 
 function SourceMini({ s, onClick }: { s: AskSource; onClick: () => void }) {
@@ -462,9 +426,23 @@ function MessageBubble({
             </Badge>
           )}
         </div>
-        <div style={{ fontSize: 12.5, lineHeight: 1.7, color: "var(--fg)" }}>
-          {renderAnswer(msg.content, onCite)}
-        </div>
+        {/* v1.1.0：校验告警前置到正文之前——读完整篇才发现「未通过证据校验」为时已晚。
+            与存库回放（stored_answer）同序。 */}
+        {msg.answerNotice && (
+          <div
+            style={{
+              marginBottom: 8,
+              paddingBottom: 8,
+              borderBottom: "1px solid var(--border)",
+              fontSize: 11,
+              lineHeight: 1.6,
+              color: "var(--warn)",
+            }}
+          >
+            ⚠️ {msg.answerNotice.replace(/\*\*/g, "")}
+          </div>
+        )}
+        <AnswerMarkdown text={msg.content} sources={msg.sources} onCite={onCite} />
         {msg.sources && msg.sources.length > 0 && (
           <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border)" }}>
             <div
@@ -485,21 +463,6 @@ function MessageBubble({
           </div>
         )}
         {msg.thinkingTrace && <ThinkingTraceView trace={msg.thinkingTrace} t={t} />}
-        {msg.answerNotice && (
-          <div
-            style={{
-              marginTop: 8,
-              paddingTop: 8,
-              borderTop: "1px solid var(--border)",
-              fontSize: 11,
-              lineHeight: 1.6,
-              color: "var(--warn)",
-            }}
-          >
-            ⚠️ {msg.answerNotice.replace(/\*\*/g, "")}
-          </div>
-        )}
-        <ChatScopeFooter scope={msg.retrievalScope} />
       </div>
       <div
         style={{
@@ -671,6 +634,18 @@ function getOrCreateConvId(): string {
   return id;
 }
 
+/** ChatMessage（后端存库形态）→ Message（气泡渲染形态）；挂载加载历史与超时后补回答案共用。 */
+function chatMessagesToMessages(msgs: ChatMessage[]): Message[] {
+  return msgs.map((m) => ({
+    role: m.role as "user" | "assistant",
+    content: m.content,
+    sources: m.sources,
+    actualRetrievalMode: m.retrieval_mode || undefined,
+    id: m.id,
+    pinned: Boolean(m.locked),
+  }));
+}
+
 export function ChatPanel({ width }: { width?: number }) {
   const { selectedCollection, selectedDocId, setSelectedDocId, setHighlightedChunk } = useConsole();
   const { t } = useI18n();
@@ -692,13 +667,12 @@ export function ChatPanel({ width }: { width?: number }) {
   const [liveProgress, setLiveProgress] = useState<LiveProgressDetail | null>(null);
   const liveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [retrievalMode, setRetrievalMode] = useState<RetrievalMode>("default");
-  const [researchEnabled, setResearchEnabled] = useState(false);
-  const [contextEnabled, setContextEnabled] = useState(true);
-  const [personaEnabled, setPersonaEnabled] = useState(false);
+  const personaEnabled = false;
   const [useEnglishRetrieval, setUseEnglishRetrieval] = useState(true);
   const [answerLanguage, setAnswerLanguage] = useState<"auto" | "zh" | "en">("auto");
   const [showSettings, setShowSettings] = useState(false);
   const [graphBuildDialog, setGraphBuildDialog] = useState<GraphBuildDialogState | null>(null);
+  const [fullTextDialog, setFullTextDialog] = useState<FullTextConfirmDialogState | null>(null);
   const [notionEnabled, setNotionEnabled] = useState(false);
   // 卸载时兜底清除轮询定时器，避免组件被销毁后仍在轮询。
   useEffect(
@@ -711,13 +685,6 @@ export function ChatPanel({ width }: { width?: number }) {
   useEffect(() => {
     const cid = getOrCreateConvId();
     setConversationId(cid);
-    getChatSession(cid)
-      .then((session) => {
-        setResearchEnabled(session.research_enabled);
-        setContextEnabled(session.context_enabled);
-        setPersonaEnabled(session.persona_enabled);
-      })
-      .catch(() => {});
   }, []);
 
   // askAI 的中英文开关与后端 ask.answer_language 是同一参数：挂载时以配置项为初值，保持前后端一致。
@@ -746,19 +713,7 @@ export function ChatPanel({ width }: { width?: number }) {
     getChatHistory(conversationId)
       .then((msgs: ChatMessage[]) => {
         if (msgs.length === 0) return;
-        setMessages(
-          msgs.map((m) => ({
-            role: m.role as "user" | "assistant",
-            content: m.content,
-            sources: m.sources,
-            actualRetrievalMode: m.retrieval_mode || undefined,
-            id: m.id,
-            pinned: Boolean(m.locked),
-            retrievalScope: m.metadata?.retrieval_scope,
-            answerNotice: m.metadata?.answer_notice || undefined,
-            thinkingTrace: m.metadata?.thinking_trace || undefined,
-          })),
-        );
+        setMessages(chatMessagesToMessages(msgs));
       })
       .catch(() => {});
   }, [conversationId]);
@@ -854,31 +809,17 @@ export function ChatPanel({ width }: { width?: number }) {
   function clearChat() {
     if (conversationId) clearChatHistory(conversationId, true).catch(() => {});
     setMessages((prev) => prev.filter((m) => m.pinned));
-    setResearchEnabled(false);
-    setContextEnabled(true);
-    setPersonaEnabled(false);
   }
 
-  async function patchSession(values: {
-    research_enabled?: boolean;
-    context_enabled?: boolean;
-    persona_enabled?: boolean;
-  }) {
-    if (!conversationId) return;
-    try {
-      const session = await updateChatSession(conversationId, values);
-      setResearchEnabled(session.research_enabled);
-      setContextEnabled(session.context_enabled);
-      setPersonaEnabled(session.persona_enabled);
-    } catch (err) {
-      toast(err instanceof Error ? err.message : t("error_generic"), "error");
-    }
-  }
-
-  async function submitQuestion(question: string, mode: RetrievalMode, appendUser: boolean) {
+  async function submitQuestion(
+    question: string,
+    mode: RetrievalMode,
+    appendUser: boolean,
+    confirmed = false,
+  ) {
     if (loading) return;
     if (mode === "fulltext" && !selectedDocId) {
-      toast(t("chat_graph_requires_collection"), "info");
+      toast(t("chat_fulltext_requires_doc"), "info");
       return;
     }
     if (appendUser) {
@@ -907,39 +848,32 @@ export function ChatPanel({ width }: { width?: number }) {
       }
     };
     try {
-      let streamError = "";
-      await streamChatTurn(
+      const result: AskResult = await ask({
+        question,
+        collection: collectionName ?? null,
+        doc_id: mode === "fulltext" ? selectedDocId : null,
+        top_k: 6,
+        conversation_id: cid,
+        persona_enabled: personaEnabled,
+        retrieval_mode: mode,
+        use_english_retrieval: useEnglishRetrieval,
+        answer_language: answerLanguage,
+        confirmed,
+      });
+      setFullTextDialog(null);
+      setConversationId(result.conversation_id);
+      if (typeof window !== "undefined") localStorage.setItem(CONV_KEY, result.conversation_id);
+      setMessages((prev) => [
+        ...prev,
         {
-          message: question,
-          conversation_id: cid,
-          collection: collectionName ?? null,
-          document_id: mode === "fulltext" ? selectedDocId : null,
-          retrieval_mode: mode,
-          use_english_retrieval: useEnglishRetrieval,
-          answer_language: answerLanguage,
+          role: "assistant",
+          content: result.answer,
+          sources: result.sources,
+          actualRetrievalMode: result.actual_retrieval_mode,
+          thinkingTrace: result.thinking_trace ?? undefined,
+          answerNotice: result.answer_notice || undefined,
         },
-        (event) => {
-          if (event.type === "assistant" && event.content) {
-            setMessages((prev) => [
-              ...prev,
-              {
-                role: "assistant",
-                content: event.content || "",
-                sources: event.sources,
-                actualRetrievalMode: event.actual_retrieval_mode || event.retrieval_mode,
-                thinkingTrace: event.thinking_trace ?? undefined,
-                answerNotice: event.answer_notice || undefined,
-                retrievalScope: event.retrieval_scope,
-              },
-            ]);
-          } else if (event.type === "error") {
-            streamError = event.message || t("error_generic");
-          }
-        },
-      );
-      setConversationId(cid);
-      if (typeof window !== "undefined") localStorage.setItem(CONV_KEY, cid);
-      if (streamError) throw new Error(streamError);
+      ]);
     } catch (err) {
       if (
         (mode === "graph_mixed" || mode === "graph_only") &&
@@ -953,6 +887,34 @@ export function ChatPanel({ width }: { width?: number }) {
           try { estimate = await estimateGraphBuild(collectionName); } catch { /* ignore */ }
         }
         setGraphBuildDialog({ question, collection: collectionName, reason: err.message, estimate, canBuild });
+      } else if (
+        mode === "fulltext" &&
+        err instanceof ApiError &&
+        err.body?.status === "fulltext_confirmation_required"
+      ) {
+        // 409 = 后端在问「这篇有 N 字符，确定要整篇送进去吗」。此刻后端尚未调用 LLM、
+        // 也没写任何 chat_history，用户确认后原样重发即可，不是续跑。
+        setFullTextDialog({
+          question,
+          info: err.body as unknown as FullTextConfirmation,
+        });
+      } else if (err instanceof AskTaskTimeoutError || (err instanceof ApiError && err.timedOut)) {
+        // 后端 task_timeout_seconds 到点，或前端自己先放弃等待：请求没有失败，任务仍在
+        // 后台跑并会正常写库——转入补轮询找回迟到的答案，而不是弹错误后直接放弃。
+        const recoverCid = err instanceof AskTaskTimeoutError ? err.conversationId : cid;
+        toast(t("chat_ask_still_running"), "info");
+        setConversationId(recoverCid);
+        if (typeof window !== "undefined") localStorage.setItem(CONV_KEY, recoverCid);
+        waitForLateAskAnswer(recoverCid)
+          .then((history) => {
+            if (history) {
+              setMessages(chatMessagesToMessages(history));
+              toast(t("chat_ask_recovered"), "ok");
+            } else {
+              toast(t("chat_ask_recover_failed"), "info");
+            }
+          })
+          .catch(() => {});
       } else {
         toast(err instanceof ApiError ? err.message : t("error_generic"), "error");
       }
@@ -960,12 +922,16 @@ export function ChatPanel({ width }: { width?: number }) {
       stopPolling();
       setLiveProgress(null);
       setLoading(false);
+      // 已确认的那次重发无论成败都要收起确认框，否则失败时它会永远停在 loading 态。
+      // 刚被 409 打开的（running 未置位）不受影响。
+      setFullTextDialog((prev) => (prev?.running ? null : prev));
     }
   }
 
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
     if (!input.trim() || loading) return;
+    notifyAskSent();
     await submitQuestion(input.trim(), retrievalMode, true);
   }
 
@@ -1021,6 +987,18 @@ export function ChatPanel({ width }: { width?: number }) {
           onBuild={handleGraphBuild}
           onFallback={handleGraphFallback}
           onCancel={() => setGraphBuildDialog(null)}
+        />
+      )}
+
+      {fullTextDialog && (
+        <FullTextConfirmDialog
+          info={fullTextDialog.info}
+          running={fullTextDialog.running}
+          onConfirm={() => {
+            setFullTextDialog((prev) => (prev ? { ...prev, running: true } : prev));
+            void submitQuestion(fullTextDialog.question, "fulltext", false, true);
+          }}
+          onCancel={() => setFullTextDialog(null)}
         />
       )}
 
@@ -1125,6 +1103,7 @@ export function ChatPanel({ width }: { width?: number }) {
 
         <form onSubmit={handleSend}>
           <div
+            data-tour="ask"
             className={[
               "ask-card",
               collectionName ? "ask-card--collection" : "",
@@ -1163,7 +1142,7 @@ export function ChatPanel({ width }: { width?: number }) {
                 <IconButton
                   name="settings"
                   label={t("chat_settings_label")}
-                  active={researchEnabled || contextEnabled || personaEnabled || retrievalMode !== "default" || showSettings}
+                  active={personaEnabled || retrievalMode !== "default" || showSettings}
                   onClick={() => setShowSettings((v) => !v)}
                 />
                 <Popover
@@ -1197,13 +1176,8 @@ export function ChatPanel({ width }: { width?: number }) {
                     >
                       {t("chat_settings_title")}
                     </div>
-                    {researchEnabled && (
-                      <div style={{ margin: "4px 8px 7px", padding: "7px 8px", borderRadius: "var(--radius-md)", background: "var(--accent-soft)", color: "var(--accent)", fontSize: 11 }}>
-                        Research 将自动探查范围并选择召回模式
-                      </div>
-                    )}
                     {/* Retrieval mode */}
-                    <div style={{ padding: "4px 8px 6px", display: researchEnabled ? "none" : "block" }}>
+                    <div style={{ padding: "4px 8px 6px" }}>
                       {(
                         [
                           { value: "default" as RetrievalMode,        label: t("chat_retrieval_semantic"), desc: t("chat_retrieval_semantic_desc"), disabled: false },
@@ -1277,14 +1251,6 @@ export function ChatPanel({ width }: { width?: number }) {
                           </button>
                         );
                       })}
-                    </div>
-                    <div onClick={() => void patchSession({ context_enabled: !contextEnabled })} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 8px", cursor: "pointer", borderTop: "1px solid var(--border)", fontSize: 12 }}>
-                      <span>上下文参与召回</span>
-                      <Badge tone={contextEnabled ? "accent" : "neutral"}>{contextEnabled ? "ON" : "OFF"}</Badge>
-                    </div>
-                    <div onClick={() => void patchSession({ persona_enabled: !personaEnabled })} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 8px", cursor: "pointer", borderTop: "1px solid var(--border)", fontSize: 12 }}>
-                      <span>启用 Persona</span>
-                      <Badge tone={personaEnabled ? "accent" : "neutral"}>{personaEnabled ? "ON" : "OFF"}</Badge>
                     </div>
                     {/* English retrieval toggle */}
                     <div
@@ -1368,15 +1334,6 @@ export function ChatPanel({ width }: { width?: number }) {
                   </div>
                 </Popover>
               </div>
-
-              <Tooltip label={researchEnabled ? "关闭 Research" : "开启 Research"} side="top">
-                <IconButton
-                  name="sparkle"
-                  label="Research"
-                  active={researchEnabled}
-                  onClick={() => void patchSession({ research_enabled: !researchEnabled })}
-                />
-              </Tooltip>
 
               <span style={{ flex: 1 }} />
 

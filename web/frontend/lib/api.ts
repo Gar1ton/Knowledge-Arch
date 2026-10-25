@@ -1,8 +1,11 @@
 /**
  * lib/api.ts — 唯一网络出口
  * 所有组件禁止裸 fetch，必须经此模块。
+ * 后端地址与 token 由 lib/backend.ts 提供（桌面壳 / 开发代理），每个请求带 Bearer token。
  * ?mock 参数启用内置离线模拟数据。
  */
+
+import { apiUrl, authHeaders, authedUrl, inDesktopShell, resetBackendInfo } from "@/lib/backend";
 
 // ─── 类型定义 ──────────────────────────────────────────────────
 
@@ -84,13 +87,10 @@ export interface QuotaItem {
 
 export interface EffectiveConfig {
   source_store?: Record<string, unknown>;
-  main_llm?: Record<string, unknown>;
   r2_sync?: Record<string, unknown>;
   notion_sync?: Record<string, unknown>;
-  web_console?: Record<string, unknown>;
   graph?: Record<string, unknown>;
   ask?: Record<string, unknown>;
-  discord?: Record<string, unknown>;
   rerank?: Record<string, unknown>;
   deep_thinking?: Record<string, unknown>;
   enhanced_recall?: Record<string, unknown>;
@@ -218,6 +218,38 @@ export interface ZoteroSyncJob {
   errors?: string[];
 }
 
+// Notion 单向推送后台任务快照（与 ZoteroSyncJob 同构，供统一进度面板轮询）。
+export interface NotionSyncJob {
+  job_id: string;
+  type?: string; // "notion_sync"
+  status: string; // running | success | partial_failure | error
+  stage?: string;
+  stage_label?: string;
+  force?: boolean;
+  sync_mode?: string;
+  docs_total: number;
+  docs_processed: number;
+  docs_created?: number;
+  docs_updated?: number;
+  docs_archived?: number;
+  docs_skipped?: number;
+  docs_failed?: number;
+  qa_pushed?: number;
+  qa_failed?: number;
+  tags_pruned?: number;
+  request_count?: number;
+  notes_scanned?: number;
+  notes_marked?: number;
+  notes_failed?: number;
+  model_tokens?: number;
+  progress_percent: number;
+  elapsed_seconds?: number;
+  started_at?: string;
+  finished_at?: string | null;
+  recent_error?: string;
+  errors?: string[];
+}
+
 export interface ZoteroProbeResult {
   connection: { connected: boolean; port?: number; detail?: string };
   read: {
@@ -337,6 +369,18 @@ export interface AskSource {
   ordinal: number;
   text: string;
   rrf_score?: number;
+  // v1.1.0 书目字段：Zotero 与本地文档一视同仁（此前只有 Zotero 文档能拿到）。
+  creators?: string[];
+  author?: string;
+  year?: string;
+  venue?: string;
+  doi?: string;
+  url?: string;
+  pages?: number[];
+  // 后端渲染好的 Harvard 串。harvard_in_text 是正文里出现的**内层**串（不含括号），
+  // 前端据它还原「点击引用 → 跳来源卡片」。
+  harvard_in_text?: string;
+  harvard_reference?: string;
 }
 
 export interface ThinkingChecklistItem {
@@ -373,6 +417,8 @@ export interface AskResult {
   answer: string;
   // 证据不足/未验证提示（结构化字段，v0.30.0 起不再拼在正文开头）。
   answer_notice?: string;
+  // Harvard 参考文献表（已去重排序）。答案正文尾部已含同一份，此字段供非 Web 调用方使用。
+  references?: string[];
   sources: AskSource[];
   requested_retrieval_mode:
     | "default"
@@ -385,14 +431,24 @@ export interface AskResult {
   retrieval_engines: string[];
   fallback_reason?: string | null;
   thinking_trace?: ThinkingTrace | null;
-  retrieval_scope?: RetrievalScopeSnapshot;
 }
 
-export interface RetrievalScopeSnapshot {
-  kind: "global" | "collection" | "document" | "none";
-  requested_collection?: string | null;
-  collection_names: string[];
-  include_descendants: boolean;
+/**
+ * `/api/ask` 与文档分页读在正文超阈值时返回的 409 体（`status:
+ * "fulltext_confirmation_required"`）。
+ *
+ * 不是失败而是一次询问：把这些数字展示给用户，取得同意后带 `confirmed: true` 重发同一请求。
+ * 阈值由后端回传，前端**不复制**这个数字——阈值只有一个真相源（kacore/retrieval_modes.py）。
+ */
+export interface FullTextConfirmation {
+  status: "fulltext_confirmation_required";
+  message: string;
+  doc_id: string;
+  title: string;
+  total_chars: number;
+  requested_chars: number;
+  threshold_chars: number;
+  estimated_tokens: number;
 }
 
 export interface ReservedResult {
@@ -425,9 +481,27 @@ export class ApiError extends Error {
     public readonly status: number,
     message: string,
     public readonly body?: Record<string, unknown>,
+    /** 客户端主动放弃等待（后端很可能还在跑）：调用方据此区分「超时」与「真失败」。 */
+    public readonly timedOut: boolean = false,
   ) {
     super(message);
     this.name = "ApiError";
+  }
+}
+
+/**
+ * 后端 ask.task_timeout_seconds 到点（HTTP 202 status="ask_task_timeout"）：请求没有失败，
+ * 只是后端放弃了「等它跑完再回」，任务仍在后台继续运行、完成后会正常写入 chat_history。
+ * 与 ApiError.timedOut（客户端主动放弃等待）语义相近但成因不同，调用方通常一并处理
+ * （见 ChatPanel 的补轮询逻辑）。
+ */
+export class AskTaskTimeoutError extends Error {
+  constructor(
+    public readonly conversationId: string,
+    public readonly timeoutSeconds: number,
+  ) {
+    super(`The ask task exceeded the backend timeout of ${timeoutSeconds}s and is still running in the background`);
+    this.name = "AskTaskTimeoutError";
   }
 }
 
@@ -435,11 +509,19 @@ export class ApiError extends Error {
 
 const DEFAULT_API_TIMEOUT_MS = 30_000;
 
-type ApiFetchOptions = RequestInit & {
+// 长任务专用时限：默认 30s 会把「正常但耗时」的请求误报成超时——后端其实还在跑，
+// 用户却看到「请求超时，请稍后重试」，重试又叠一份负载。各值按最坏情况给足余量，
+// 但仍保留上限，避免请求永远悬着（timeoutMs: 0 = 不设限，留给调用方显式选择）。
+const ASK_TIMEOUT_MS = 600_000; // 深度思考 / 图谱问答可跑数分钟
+const UPLOAD_TIMEOUT_MS = 300_000; // PDF 清洗 + 切块 + 首次索引
+const DEPENDENCY_INSTALL_TIMEOUT_MS = 900_000; // pip 安装 torch 等大包
+const MODEL_PROBE_TIMEOUT_MS = 300_000; // 模型连通性探测（可能触发首次下载）
+
+export type ApiFetchOptions = RequestInit & {
   timeoutMs?: number;
 };
 
-async function apiFetch<T>(
+export async function apiFetch<T>(
   path: string,
   options?: ApiFetchOptions,
 ): Promise<T> {
@@ -463,15 +545,24 @@ async function apiFetch<T>(
 
   let res: Response;
   try {
-    res = await fetch(path, {
+    const headers = new Headers(fetchOptions.headers);
+    for (const [name, value] of Object.entries(await authHeaders())) headers.set(name, value);
+    res = await fetch(await apiUrl(path), {
       ...fetchOptions,
-      credentials: "include",
+      headers,
       signal: controller?.signal ?? signal,
     });
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
-      throw new ApiError(0, timedOut ? "请求超时，请稍后重试" : "请求已取消");
+      throw new ApiError(
+        0,
+        timedOut ? "The request timed out; please try again later" : "The request was cancelled",
+        undefined,
+        timedOut,
+      );
     }
+    // 桌面壳里网络错误多半是后端重启换了端口：丢弃缓存，下一次请求重新向壳要地址。
+    if (inDesktopShell()) resetBackendInfo();
     throw err;
   } finally {
     if (timeout) clearTimeout(timeout);
@@ -522,9 +613,9 @@ export function isGraphNotReady(x: unknown): x is GraphNotReady {
 // ─────────────────────────────────────────────────────────────
 
 const MOCK_COLLECTIONS: Collection[] = [
-  { name: "papers", description: "学术论文集合" },
-  { name: "manuals", description: "产品手册与文档" },
-  { name: "default", description: "默认集合" },
+  { name: "papers", description: "Academic papers" },
+  { name: "manuals", description: "Product manuals and docs" },
+  { name: "default", description: "Default collection" },
 ];
 
 const MOCK_DOCS: KrDocument[] = [
@@ -552,10 +643,10 @@ const MOCK_DOCS: KrDocument[] = [
   },
   {
     doc_id: "seed-3",
-    title: "AstrBot 使用手册.md",
-    filename: "AstrBot 使用手册.md",
+    title: "Knowledge Arch user guide.md",
+    filename: "Knowledge Arch user guide.md",
     collection: "manuals",
-    tags: ["astrbot", "manual"],
+    tags: ["manual"],
     size: 98_432,
     chunks: 15,
     updated: "2024-05-01T09:00:00Z",
@@ -563,7 +654,7 @@ const MOCK_DOCS: KrDocument[] = [
   },
   {
     doc_id: "seed-4",
-    title: "GraphRAG 技术报告.pdf",
+    title: "GraphRAG technical report.pdf",
     filename: "GraphRAG.pdf",
     collection: "papers",
     tags: ["graphrag", "knowledge-graph"],
@@ -574,7 +665,7 @@ const MOCK_DOCS: KrDocument[] = [
   },
   {
     doc_id: "seed-5",
-    title: "系统配置说明.txt",
+    title: "System configuration notes.txt",
     filename: "system-config.txt",
     collection: "default",
     tags: [],
@@ -586,9 +677,9 @@ const MOCK_DOCS: KrDocument[] = [
 ];
 
 const MOCK_KB_CHUNKS: KbChunk[] = [
-  { chunk_id: "k1", doc_id: "seed-1", ordinal: 0, text: "Transformer 架构通过自注意力机制（Self-Attention）实现对序列中任意位置的直接依赖建模，彻底摆脱了 RNN 的顺序计算限制。", context_before: [], context_after: [] },
-  { chunk_id: "k2", doc_id: "seed-2", ordinal: 1, text: "LightRAG 将知识图谱与向量检索融合，采用双层检索策略：局部级（实体邻域）与全局级（跨文档主题）协同工作以提升召回质量。", context_before: [], context_after: [] },
-  { chunk_id: "k3", doc_id: "seed-1", ordinal: 2, text: "RRF（Reciprocal Rank Fusion）是一种无参数排名融合算法，通过 1/(k+rank_i) 公式合并多路召回结果，天然规避了分数量纲不统一的问题。", context_before: [], context_after: [] },
+  { chunk_id: "k1", doc_id: "seed-1", ordinal: 0, text: "The Transformer models direct dependencies between any positions in a sequence through self-attention, removing the sequential computation limit of RNNs.", context_before: [], context_after: [] },
+  { chunk_id: "k2", doc_id: "seed-2", ordinal: 1, text: "LightRAG combines a knowledge graph with vector retrieval using two levels: local (entity neighbourhoods) and global (cross-document themes) work together to improve recall.", context_before: [], context_after: [] },
+  { chunk_id: "k3", doc_id: "seed-1", ordinal: 2, text: "RRF (Reciprocal Rank Fusion) is a parameter-free rank fusion method that merges several result lists with 1/(k+rank_i), sidestepping incompatible score scales.", context_before: [], context_after: [] },
 ];
 
 const MOCK_GRAPH: GraphData = {
@@ -629,8 +720,7 @@ const MOCK_QUOTA: QuotaItem[] = [
 const MOCK_CONFIG: EffectiveConfig = {
   source_store: { db_filename: "knowledge_repository.db", default_collection: "default", ocr_enabled: false },
   r2_sync: { enabled: true, bucket: "kr-bucket", account_id: "ac****nt", access_key_id: "ak****id", secret_access_key: "****", free_tier_gb: 10, warn_threshold: 0.8 },
-  notion_sync: { enabled: true, database_id: "db-****", qa_database_id: "qa-****", auto_sync_interval_sec: 0, max_upload_mib: 5 },
-  web_console: { enabled: true, host: "0.0.0.0", port: 26618, username: "admin", password: "****" },
+  notion_sync: { enabled: true, database_id: "db-****", qa_database_id: "qa-****", auto_sync_enabled: true, auto_sync_interval_sec: 300, sync_mode: "preserve", max_upload_mib: 5 },
   ask: { answer_language: "auto" },
   graph: { enabled: false, query_mode: "mix", llm_max_async: 4, embedding_max_async: 8, working_dir: "lightrag_workspaces", max_doc_chars: 30000, lightrag_llm_provider: "main", lightrag_llm_base_url: "", lightrag_llm_model: "", lightrag_llm_timeout_seconds: 900 },
   rerank: { provider: "cross_encoder", model: "Alibaba-NLP/gte-reranker-modernbert-base", device: "auto", batch_size: 32, max_candidates: 30, keep: 12 },
@@ -645,57 +735,24 @@ const MOCK_CONFIG: EffectiveConfig = {
     llm_model: "",
     llm_api_key: "",
   },
-  vector_db: { backend: "milvus", db_filename: "vector_store.db", auto_index_enabled: true },
+  vector_db: { backend: "milvus", db_filename: "vector_store.db", auto_index_enabled: true, auto_rebuild_enabled: true, auto_rebuild_delay_seconds: 30 },
   embedding: { provider: "local", model: "intfloat/multilingual-e5-small", base_url: "https://api.openai.com/v1", max_token_size: 512, actual_dimension: 384, api_key: "" },
   zotero_sync: { enabled: false, access_mode: "local", zotero_data_dir: "", resolved_data_dir: "", api_port: 23119, storage_mode: "managed_copy", linked_root: "", zotmoov_root: "", sync_mode: "conservative", auto_sync_enabled: false, auto_sync_interval_sec: 3600, server_key_present: false, server_key_masked: "" },
 };
 
 const MOCK_ASK: AskResult = {
   conversation_id: "conv-demo-1",
-  answer: "Transformer 架构的核心是**自注意力机制**（Self-Attention），它允许模型在处理序列时直接建模任意位置之间的依赖关系 [1]。与 RNN 不同，Transformer 可以并行计算，显著提升训练效率。\n\nLightRAG 则将图结构检索与向量检索融合，通过 RRF 算法 [3] 对多路召回结果进行排名融合，提供更准确的上下文 [2]。",
+  answer: "The core of the Transformer is **self-attention**, which lets the model relate any two positions in a sequence directly [1]. Unlike RNNs, Transformers compute in parallel, which speeds up training considerably.\n\nLightRAG combines graph retrieval with vector retrieval and fuses the result lists with RRF [3] to provide more accurate context [2].",
   sources: [
-    { n: 1, doc_id: "seed-1", title: "Attention Is All You Need", chunk_id: "k1", ordinal: 0, text: "Transformer 架构通过自注意力机制（Self-Attention）实现对序列中任意位置的直接依赖建模。", rrf_score: 0.0327 },
-    { n: 2, doc_id: "seed-2", title: "LightRAG 论文", chunk_id: "k2", ordinal: 1, text: "LightRAG 将知识图谱与向量检索融合，采用双层检索策略。", rrf_score: 0.0289 },
-    { n: 3, doc_id: "seed-1", title: "Attention Is All You Need", chunk_id: "k3", ordinal: 2, text: "RRF 是一种无参数排名融合算法，通过 1/(k+rank_i) 公式合并多路召回结果。", rrf_score: 0.0214 },
+    { n: 1, doc_id: "seed-1", title: "Attention Is All You Need", chunk_id: "k1", ordinal: 0, text: "The Transformer models direct dependencies between any positions in a sequence through self-attention.", rrf_score: 0.0327 },
+    { n: 2, doc_id: "seed-2", title: "LightRAG paper", chunk_id: "k2", ordinal: 1, text: "LightRAG combines a knowledge graph with vector retrieval using a two-level strategy.", rrf_score: 0.0289 },
+    { n: 3, doc_id: "seed-1", title: "Attention Is All You Need", chunk_id: "k3", ordinal: 2, text: "RRF is a parameter-free rank fusion method that merges result lists with 1/(k+rank_i).", rrf_score: 0.0214 },
   ],
   requested_retrieval_mode: "default",
   actual_retrieval_mode: "milvus",
   retrieval_engines: ["milvus", "sqlite_lexical"],
   fallback_reason: null,
 };
-
-// ─────────────────────────────────────────────────────────────
-// 认证 Auth
-// ─────────────────────────────────────────────────────────────
-
-export async function getAuth(): Promise<{ logged_in: boolean; shell?: string }> {
-  if (isMock()) return { logged_in: true, shell: "plugin" };
-  return apiFetch<{ logged_in: boolean; shell?: string }>("/api/auth");
-}
-
-export async function login(username: string, password: string): Promise<void> {
-  if (isMock()) {
-    if (username === "admin") return;
-    throw new ApiError(401, "用户名或密码错误");
-  }
-  await apiFetch<{ status: string }>("/api/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
-  });
-}
-
-export async function logout(): Promise<void> {
-  if (isMock()) return;
-  try {
-    await apiFetch<{ ok: boolean }>("/api/logout", { method: "POST" });
-  } catch {
-    // Fallback: clear session cookie locally if backend logout endpoint doesn't exist
-    if (typeof document !== "undefined") {
-      document.cookie = "kr_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT;";
-    }
-  }
-}
 
 // ─────────────────────────────────────────────────────────────
 // 集合 Collections
@@ -800,7 +857,11 @@ export async function uploadDocument(
   form.append("file", file);
   form.append("collection", collection);
   if (tags.length) form.append("tags", tags.join(","));
-  return apiFetch<KrDocument>("/api/documents", { method: "POST", body: form });
+  return apiFetch<KrDocument>("/api/documents", {
+    method: "POST",
+    body: form,
+    timeoutMs: UPLOAD_TIMEOUT_MS,
+  });
 }
 
 export async function patchDocument(
@@ -809,7 +870,7 @@ export async function patchDocument(
 ): Promise<KrDocument> {
   if (isMock()) {
     const doc = MOCK_DOCS.find((d) => d.doc_id === id);
-    if (!doc) throw new ApiError(404, "文档不存在");
+    if (!doc) throw new ApiError(404, "Document not found");
     if (patch.collection !== undefined) doc.collection = patch.collection;
     if (patch.tags !== undefined) doc.tags = patch.tags;
     return { ...doc };
@@ -847,9 +908,15 @@ export async function reextractDocument(id: string): Promise<{ chunk_count: numb
   return apiFetch(`/api/documents/${encodeURIComponent(id)}/reextract`, { method: "POST" });
 }
 
-export function downloadDocument(id: string): void {
+export async function downloadDocument(id: string): Promise<void> {
   if (isMock() || typeof window === "undefined") return;
-  window.location.assign(`/api/documents/${encodeURIComponent(id)}/raw`);
+  window.location.assign(await authedUrl(`/api/documents/${encodeURIComponent(id)}/raw`));
+}
+
+/** PDF.js 等「只能给 URL」的加载方用：带 access_token 的原件地址。 */
+export async function rawDocumentUrl(id: string, inline = true): Promise<string> {
+  const suffix = inline ? "?disposition=inline" : "";
+  return authedUrl(`/api/documents/${encodeURIComponent(id)}/raw${suffix}`);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -894,168 +961,33 @@ export async function getEffectiveConfig(timeoutMs = 8_000): Promise<EffectiveCo
   return apiFetch<EffectiveConfig>("/api/config/effective", { timeoutMs });
 }
 
-const MOCK_REBUILD_KEYS = new Set([
-  "embedding.provider",
-  "embedding.model",
-  "embedding.base_url",
-  "graph.max_doc_chars",
-  "zotero_sync.storage_mode",
-  "zotero_sync.linked_root",
-  "zotero_sync.zotmoov_root",
-  "zotero_sync.sync_mode",
-]);
-
-const MOCK_RESTART_KEYS = new Set([
-  "vector_db.backend",
-  "vector_db.auto_index_enabled",
-  "source_store.default_collection",
-  "graph.enabled",
-  "graph.query_mode",
-  "graph.llm_max_async",
-  "graph.embedding_max_async",
-  "graph.lightrag_llm_provider",
-  "graph.lightrag_llm_base_url",
-  "graph.lightrag_llm_model",
-  "graph.lightrag_llm_timeout_seconds",
-  "deep_thinking.llm_base_url",
-  "deep_thinking.llm_model",
-  "r2_sync.enabled",
-  "notion_sync.enabled",
-  "source_store.ocr_enabled",
-  "zotero_sync.enabled",
-  "zotero_sync.access_mode",
-  "zotero_sync.zotero_data_dir",
-  "zotero_sync.api_port",
-  "zotero_sync.auto_sync_enabled",
-  "zotero_sync.auto_sync_interval_sec",
-]);
-
-function applyMockConfigUpdate(section: string, key: string, value: unknown): void {
-  const configSection = (MOCK_CONFIG as Record<string, Record<string, unknown>>)[section];
-  if (configSection) configSection[key] = value;
-
-  const stage = (id: string) => MOCK_CAPABILITIES.pipeline.find((item) => item.id === id);
-  const embedding = stage("embedding");
-  const vectorStore = stage("vector_store");
-  const graph = stage("graph");
-  const ask = stage("ask");
-  const sync = stage("sync");
-  const ingest = stage("ingest");
-  const zotero = stage("zotero");
-
-  if (section === "embedding" && embedding) {
-    if (key === "provider") embedding.current = String(value);
-    if (key === "model") embedding.detail.model = value;
-    if (key === "max_token_size") embedding.detail.max_token_size = value;
-  }
-
-  if (section === "vector_db" && vectorStore) {
-    if (key === "backend") vectorStore.current = String(value);
-    if (key === "auto_index_enabled") vectorStore.detail.auto_index_enabled = Boolean(value);
-  }
-
-  if (section === "rerank" && ask) {
-    if (key === "provider") {
-      const provider = String(value);
-      ask.detail.rerank_provider = provider;
-      ask.detail.rerank_status = provider === "noop" ? "off" : "idle";
-      ask.detail.rerank_runtime = {
-        provider,
-        status: provider === "noop" ? "off" : "idle",
-        model: MOCK_CONFIG.rerank?.model,
-        enabled: provider !== "noop",
-        last_error: null,
-      };
-    }
-    if (key === "model") {
-      ask.detail.rerank_model = value;
-      const runtime = ask.detail.rerank_runtime as Record<string, unknown> | undefined;
-      if (runtime) runtime.model = value;
-    }
-  }
-
-  if (section === "graph" && graph) {
-    if (key === "enabled") {
-      const enabled = Boolean(value);
-      graph.current = enabled ? "on" : "off";
-      graph.status = enabled ? "degraded" : "off";
-      graph.configured = enabled;
-    } else {
-      graph.detail[key] = value;
-    }
-  }
-
-  if ((section === "r2_sync" || section === "notion_sync") && key === "enabled" && sync) {
-    sync.detail[section === "r2_sync" ? "r2_enabled" : "notion_enabled"] = Boolean(value);
-    const r2Enabled = Boolean(MOCK_CONFIG.r2_sync?.enabled);
-    const notionEnabled = Boolean(MOCK_CONFIG.notion_sync?.enabled);
-    sync.current = r2Enabled || notionEnabled ? "on" : "off";
-    sync.status = r2Enabled || notionEnabled ? "ready" : "off";
-    sync.configured = r2Enabled || notionEnabled;
-  }
-
-  if (section === "source_store" && key === "ocr_enabled" && ingest) {
-    ingest.detail.ocr_enabled = Boolean(value);
-  }
-
-  if (section === "zotero_sync" && zotero) {
-    if (key === "enabled") {
-      const enabled = Boolean(value);
-      zotero.current = enabled ? "on" : "off";
-      zotero.status = enabled ? "ready" : "off";
-      zotero.configured = enabled;
-    } else {
-      zotero.detail[key] = value;
-    }
-  }
-}
-
-function mockConfigResult(section: string, key: string): ConfigUpdateResult {
-  const fullKey = `${section}.${key}`;
-  return {
-    status: "success",
-    restart_required: MOCK_RESTART_KEYS.has(fullKey),
-    rebuild_required: MOCK_REBUILD_KEYS.has(fullKey),
-    message: "Configuration saved.",
-  };
-}
-
-export async function updateConfigValue(
-  section: string,
-  key: string,
-  value: unknown
-): Promise<ConfigUpdateResult> {
-  if (isMock()) {
-    applyMockConfigUpdate(section, key, value);
-    return mockConfigResult(section, key);
-  }
-  return apiFetch<ConfigUpdateResult>("/api/config/update", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ section, key, value }),
-  });
-}
-
-export interface ConfigUpdateResult {
-  status: string;
-  restart_required: boolean;
-  rebuild_required: boolean;
-  message: string;
-}
-
 export interface PluginRestartResult {
   status: string;
   message: string;
 }
 
-/** 触发插件软重启（teardown + 重新 initialize，重读持久化配置）。重启瞬间 Web 控制台短暂断连后自动重连。 */
+/** 触发服务软重启（teardown + 重新 initialize，重读持久化设置）；进程与端口不变，期间请求短暂返回 503。 */
 export async function restartPlugin(): Promise<PluginRestartResult> {
   if (isMock()) {
     return { status: "restarting", message: "mock restart" };
   }
   return apiFetch<PluginRestartResult>("/api/plugin/restart", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export interface ClearMilvusLockResult {
+  status: string;
+  message: string;
+}
+
+/** 删除 Milvus 数据目录残留的 LOCK 标记；仅在已检测到锁定问题时后端才会真正执行。 */
+export async function clearMilvusLock(): Promise<ClearMilvusLockResult> {
+  if (isMock()) {
+    return { status: "ok", message: "mock clear lock" };
+  }
+  return apiFetch<ClearMilvusLockResult>("/api/milvus/clear-lock", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
   });
@@ -1148,15 +1080,6 @@ export interface ChatMessage {
   locked?: boolean;
   locked_at?: string | null;
   updated_at?: string | null;
-  metadata?: {
-    turn_kind?: string;
-    requested_retrieval_mode?: string;
-    actual_retrieval_mode?: string;
-    retrieval_scope?: RetrievalScopeSnapshot;
-    answer_notice?: string;
-    thinking_trace?: ThinkingTrace | null;
-    context_applied?: boolean;
-  };
 }
 
 export async function getChatHistory(conversationId: string): Promise<ChatMessage[]> {
@@ -1180,133 +1103,6 @@ export async function clearChatHistory(
   );
 }
 
-// ─── 统一对话服务 ────────────────────────────────────────────────
-
-export interface AgentChatEvent {
-  type: "stage" | "delta" | "assistant" | "error" | "done";
-  text?: string;
-  content?: string;
-  message?: string;
-  retrieval_mode?: string;
-  sources?: AskSource[];
-  requested_retrieval_mode?: string;
-  actual_retrieval_mode?: string;
-  retrieval_scope?: RetrievalScopeSnapshot;
-  answer_notice?: string;
-  thinking_trace?: ThinkingTrace | null;
-  metadata?: ChatMessage["metadata"];
-}
-
-export interface ChatSession {
-  conversation_id: string;
-  channel: string;
-  research_enabled: boolean;
-  context_enabled: boolean;
-  persona_enabled: boolean;
-}
-
-export async function getChatSession(conversationId: string): Promise<ChatSession> {
-  if (isMock()) return { conversation_id: conversationId, channel: "web", research_enabled: false, context_enabled: true, persona_enabled: false };
-  return apiFetch(`/api/chat/session/${encodeURIComponent(conversationId)}`);
-}
-
-export async function updateChatSession(
-  conversationId: string,
-  values: Partial<Pick<ChatSession, "research_enabled" | "context_enabled" | "persona_enabled">>,
-): Promise<ChatSession> {
-  return apiFetch(`/api/chat/session/${encodeURIComponent(conversationId)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(values),
-  });
-}
-
-/** POST /api/chat/turn 的 SSE 流；普通 Ask 与 Research 共用。 */
-export async function streamChatTurn(
-  opts: {
-    message: string;
-    conversation_id: string;
-    collection?: string | null;
-    document_id?: string | null;
-    retrieval_mode?: string;
-    answer_language?: "auto" | "zh" | "en";
-    use_english_retrieval?: boolean;
-  },
-  onEvent: (event: AgentChatEvent) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  const res = await fetch("/api/chat/turn", {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(opts),
-    signal,
-  });
-  if (!res.ok || !res.body) {
-    let msg = res.statusText;
-    try {
-      const body = (await res.json()) as Record<string, unknown>;
-      msg = String(body.error || body.message || msg);
-    } catch {
-      /* ignore */
-    }
-    throw new ApiError(res.status, msg);
-  }
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let idx: number;
-    while ((idx = buffer.indexOf("\n\n")) >= 0) {
-      const frame = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 2);
-      const line = frame.trim();
-      if (!line.startsWith("data:")) continue;
-      try {
-        onEvent(JSON.parse(line.slice(5).trim()) as AgentChatEvent);
-      } catch {
-        /* 忽略坏帧 */
-      }
-    }
-  }
-}
-
-export interface DiscordSettings {
-  enabled: boolean;
-  allowed_user_ids: string[];
-  allowed_guild_ids: string[];
-  allowed_channel_ids: string[];
-  token_present: boolean;
-  status: { enabled: boolean; running: boolean; connected: boolean; detail: string };
-}
-
-export async function getDiscordSettings(): Promise<DiscordSettings> {
-  return apiFetch("/api/channels/discord");
-}
-
-export async function updateDiscordSettings(values: Partial<DiscordSettings>): Promise<{ status: string; restart_required: boolean }> {
-  return apiFetch("/api/channels/discord", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(values),
-  });
-}
-
-export async function setDiscordToken(token: string): Promise<{ status: string; token_present: boolean; restart_required: boolean }> {
-  return apiFetch("/api/channels/discord/token", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token }),
-  });
-}
-
-export async function deleteDiscordToken(): Promise<{ status: string; token_present: boolean; restart_required: boolean }> {
-  return apiFetch("/api/channels/discord/token", { method: "DELETE" });
-}
-
 export interface EmbeddingTestResult {
   status: "ok" | "error";
   dimension?: number;
@@ -1321,6 +1117,7 @@ export async function testEmbeddingConnection(
   if (isMock()) return { status: "ok", dimension: 1024, model: modelName };
   return apiFetch<EmbeddingTestResult>("/api/config/test-embedding", {
     method: "POST",
+    timeoutMs: MODEL_PROBE_TIMEOUT_MS,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ base_url: baseUrl, model_name: modelName }),
   });
@@ -1350,7 +1147,7 @@ export async function queryGraph(
       chunks: MOCK_KB_CHUNKS,
       entities: MOCK_GRAPH.nodes.slice(0, 2),
       relations: MOCK_GRAPH.edges.slice(0, 1),
-      context: "模拟图谱查询结果",
+      context: "Mock graph query result",
       debug: { vector_chunk_ids: ["k1"], keyword_chunk_ids: ["k2"], graph_chunk_ids: ["k3"], rrf_scores: { k1: 0.033, k2: 0.028, k3: 0.021 } },
     };
   }
@@ -1366,7 +1163,7 @@ export async function estimateGraphBuild(collection?: string): Promise<GraphBuil
     estimated_llm_calls_min: 12, estimated_llm_calls_max: 18, estimated_embedding_batches: 2,
     estimated_duration_seconds_min: 648, estimated_duration_seconds_max: 2592,
     seconds_per_chunk: 90, runtime_profile: "local",
-    estimate_notice: "这是估算，不是承诺；实际 LLM 调用次数和耗时可能更高。",
+    estimate_notice: "This is an estimate, not a promise; actual LLM calls and time may be higher.",
   };
   return apiFetch<GraphBuildEstimate>("/api/graph/build/estimate", {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -1440,6 +1237,32 @@ export async function resumeBuildJob(jobId: string): Promise<void> {
   await apiFetch(`/api/graph/build/${encodeURIComponent(jobId)}/resume`, { method: "POST" });
 }
 
+export interface CancelBuildResult {
+  job_id: string;
+  status: string;
+  cleanup: {
+    workspace: boolean;
+    index_status_rows: number;
+    codex_tasks: number;
+    active_state_removed: boolean;
+  };
+}
+
+export async function cancelBuildJob(jobId: string, cleanup = true): Promise<CancelBuildResult> {
+  if (isMock()) {
+    return {
+      job_id: jobId,
+      status: "cancelled",
+      cleanup: { workspace: false, index_status_rows: 0, codex_tasks: 0, active_state_removed: true },
+    };
+  }
+  return apiFetch<CancelBuildResult>(`/api/graph/build/${encodeURIComponent(jobId)}/cancel`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cleanup }),
+  });
+}
+
 // ─────────────────────────────────────────────────────────────
 // 同步 / 备份 / Notion
 // ─────────────────────────────────────────────────────────────
@@ -1447,7 +1270,7 @@ export async function resumeBuildJob(jobId: string): Promise<void> {
 export async function notionInit(
   parentPageId: string,
   databaseTitle: string
-): Promise<{ status: string; database_id?: string; qa_database_id?: string }> {
+): Promise<{ status: string; database_id?: string; qa_database_id?: string; message?: string }> {
   if (isMock()) {
     return { status: "success", database_id: "mock-articles", qa_database_id: "mock-qa" };
   }
@@ -1456,6 +1279,27 @@ export async function notionInit(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ parent_page_id: parentPageId, database_title: databaseTitle }),
   });
+}
+
+export interface NotionPushStatus {
+  status: string;
+  database_id: string;
+  qa_database_id: string;
+  data_source_id: string;
+  qa_data_source_id: string;
+  documents: Record<string, number>;
+  outbox_pending: number;
+  outbox_failed: number;
+  errors: { message: string; count: number }[];
+}
+
+export async function getNotionPushStatus(): Promise<NotionPushStatus> {
+  if (isMock()) return {
+    status: "ok", database_id: "mock-articles", qa_database_id: "mock-qa",
+    data_source_id: "mock-articles-source", qa_data_source_id: "mock-qa-source",
+    documents: { synced: 5, failed: 0 }, outbox_pending: 0, outbox_failed: 0, errors: [],
+  };
+  return apiFetch("/api/sync/notion/status");
 }
 
 export async function pushNotionNote(payload: {
@@ -1477,6 +1321,15 @@ export async function pushNotionNote(payload: {
 export async function getSyncStatus(): Promise<MaybeReserved<SyncRecord[]>> {
   if (isMock()) return { reserved: true, available_in: "v0.4.0" };
   return apiFetch<MaybeReserved<SyncRecord[]>>("/api/sync/status");
+}
+
+// 统一进度面板轮询：当前 running/partial/error 的 Notion 推送任务（无任务 → null）。
+export async function getActiveNotionSyncJob(): Promise<NotionSyncJob | null> {
+  if (isMock()) return null;
+  const res = await apiFetch<{ job: NotionSyncJob | null }>("/api/sync/notion/active", {
+    timeoutMs: 4_000,
+  });
+  return res.job;
 }
 
 export async function syncDocuments(
@@ -1641,6 +1494,8 @@ export async function ask(opts: {
     | "deep_thinking";
   use_english_retrieval?: boolean;
   answer_language?: "auto" | "zh" | "en";
+  /** 全文检索确认门：正文超阈值时后端返回 409，用户同意后带 true 重发同一请求。 */
+  confirmed?: boolean;
 }): Promise<AskResult> {
   if (isMock()) {
     await new Promise((r) => setTimeout(r, 800));
@@ -1649,25 +1504,41 @@ export async function ask(opts: {
       ...MOCK_ASK,
       conversation_id: `conv-${Date.now()}`,
       requested_retrieval_mode: requested,
-      actual_retrieval_mode: requested === "graph_mixed" ? "milvus_lightrag" : requested === "graph_only" ? "lightrag_only" : requested === "fulltext" ? "sqlite_lexical" : requested === "enhanced" ? "enhanced_recall" : "milvus",
-      retrieval_engines: requested === "graph_mixed" ? ["milvus", "sqlite_lexical", "lightrag"] : requested === "graph_only" ? ["lightrag"] : requested === "fulltext" ? ["sqlite_lexical"] : ["milvus", "sqlite_lexical"],
+      actual_retrieval_mode: requested === "graph_mixed" ? "milvus_lightrag" : requested === "graph_only" ? "lightrag_only" : requested === "fulltext" ? "fulltext" : requested === "enhanced" ? "enhanced_recall" : "milvus",
+      retrieval_engines: requested === "graph_mixed" ? ["milvus", "sqlite_lexical", "lightrag"] : requested === "graph_only" ? ["lightrag"] : requested === "fulltext" ? ["fulltext"] : ["milvus", "sqlite_lexical"],
     };
   }
-  return apiFetch<AskResult>("/api/ask", {
+  const result = await apiFetch<AskResult | AskTaskTimeoutBody>("/api/ask", {
     method: "POST",
+    timeoutMs: ASK_TIMEOUT_MS,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       question: opts.question,
       collection: opts.collection ?? null,
       doc_id: opts.doc_id ?? null,
-      top_k: opts.top_k ?? 5,
+      top_k: opts.top_k ?? 6,
       conversation_id: opts.conversation_id ?? null,
       persona_enabled: opts.persona_enabled ?? false,
       retrieval_mode: opts.retrieval_mode ?? "default",
       use_english_retrieval: opts.use_english_retrieval ?? false,
       answer_language: opts.answer_language ?? "auto",
+      confirmed: opts.confirmed ?? false,
     }),
   });
+  // HTTP 202：后端 task_timeout_seconds 到点，任务仍在后台跑——不是失败，但也不是
+  // 正常结果，转成一个专门的异常，调用方（ChatPanel）据此转入补轮询而不是当作答案渲染。
+  if ((result as AskTaskTimeoutBody).status === "ask_task_timeout") {
+    const body = result as AskTaskTimeoutBody;
+    throw new AskTaskTimeoutError(body.conversation_id, body.timeout_seconds);
+  }
+  return result as AskResult;
+}
+
+interface AskTaskTimeoutBody {
+  status: "ask_task_timeout";
+  message: string;
+  conversation_id: string;
+  timeout_seconds: number;
 }
 
 // deep thinking 实时进度：检索/校验进行中轮询时携带的逐轮增量 trace（与最终 thinking_trace 同形）。
@@ -1693,6 +1564,37 @@ export async function getAskProgress(conversationId: string): Promise<AskProgres
   } catch {
     return null;
   }
+}
+
+/**
+ * 客户端超时（ApiError.timedOut）或后端 task_timeout_seconds 到点（AskTaskTimeoutError）后
+ * 的补轮询：任务并未被取消，仍在后台跑，跑完会正常写入 chat_history——这里持续轮询
+ * /api/ask/progress 直到看到 stage="done"（或进度记录已过期/不存在，说明早就跑完了），
+ * 再拉一次 chat_history 找回迟到的答案。找不到时返回 null，调用方兜底提示手动刷新。
+ */
+export async function waitForLateAskAnswer(
+  conversationId: string,
+  opts?: { maxWaitMs?: number; intervalMs?: number },
+): Promise<ChatMessage[] | null> {
+  if (isMock()) return null;
+  const maxWaitMs = opts?.maxWaitMs ?? 15 * 60_000;
+  const intervalMs = opts?.intervalMs ?? 3_000;
+  const deadline = Date.now() + maxWaitMs;
+
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, intervalMs));
+    const progress = await getAskProgress(conversationId);
+    if (progress !== null && progress.stage !== "done") continue; // 仍在跑，继续等
+    // stage="done" 或进度记录已不存在（TTL 过期，大概率早已跑完）：去历史里找答案。
+    try {
+      const history = await getChatHistory(conversationId);
+      if (history.some((m) => m.role === "assistant")) return history;
+    } catch {
+      /* 网络抖动，下一轮再试 */
+    }
+    if (progress === null) return null; // 没有进度可依据、历史里也没有答案：放弃轮询
+  }
+  return null;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1764,12 +1666,15 @@ export async function deleteLocalModel(name: string): Promise<void> {
 // ─────────────────────────────────────────────────────────────
 
 export interface LogLine {
-  ts: number; level: string; name: string; msg: string;
+  seq: number; ts: number; level: string; name: string; msg: string;
   location?: string; exc?: string;
   source?: string; category?: string; operation?: string; status?: string;
   elapsed_ms?: number | null; metadata?: Record<string, unknown>;
 }
-export interface LogsResponse { lines: LogLine[]; server_ts: number; }
+export interface LogsResponse {
+  lines: LogLine[]; server_ts: number;
+  oldest_seq: number; latest_seq: number; dropped_count: number;
+}
 
 export async function postLogEvent(event: {
   type: "info" | "error" | "ok";
@@ -1784,9 +1689,12 @@ export async function postLogEvent(event: {
   });
 }
 
-export async function getLogs(after = 0, limit = 200): Promise<LogsResponse> {
-  if (isMock()) return { lines: [], server_ts: Date.now() / 1000 };
-  return apiFetch<LogsResponse>(`/api/logs?after=${after}&limit=${limit}`, { timeoutMs: 4_000 });
+export async function getLogs(afterSeq = 0, limit = 200): Promise<LogsResponse> {
+  if (isMock()) return {
+    lines: [], server_ts: Date.now() / 1000,
+    oldest_seq: 0, latest_seq: 0, dropped_count: 0,
+  };
+  return apiFetch<LogsResponse>(`/api/logs?after_seq=${afterSeq}&limit=${limit}`, { timeoutMs: 4_000 });
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1817,6 +1725,10 @@ export interface DependencyStatus {
   stages: string[];
   required?: boolean;
   installed: boolean;
+  /** 顶层包装了 ≠ 功能能跑（如 pymilvus 装了但缺 milvus-lite）。缺省视为与 installed 相同。 */
+  runtime_ready?: boolean;
+  /** runtime_ready=false 时的中文修复建议，直接展示给用户。 */
+  runtime_hint?: string;
   version: string | null;
 }
 
@@ -1832,6 +1744,8 @@ export interface InstallResult {
   returncode?: number;
   restart_required?: boolean;
   message?: string;
+  reason?: import("./settingsApi").InstallFailureReason;
+  detail?: string[];
 }
 
 const MOCK_DEPENDENCIES: DependencyStatus[] = [
@@ -1846,11 +1760,14 @@ const MOCK_CAPABILITIES: CapabilitiesData = {
     { id: "zotero", current: "off", candidates: ["on", "off"], status: "off", switchable: true, consequence: "restart", required_deps: [], configured: false, detail: { access_mode: "local", api_port: 23119, sync_mode: "conservative", storage_mode: "managed_copy" } },
     { id: "ingest", current: "pymupdf4llm", candidates: ["pymupdf4llm"], status: "ready", switchable: false, consequence: "none", required_deps: [], configured: true, detail: { ocr_enabled: false, pdf_converter: "pymupdf4llm", pdf_converter_ready: true, dependency_source: "requirements.txt" } },
     { id: "embedding", current: "local", candidates: ["local", "external"], status: "ready", switchable: true, consequence: "rebuild", required_deps: ["local_embedding"], configured: true, detail: { model: "intfloat/multilingual-e5-small", actual_dimension: 384 } },
-    { id: "vector_store", current: "milvus", candidates: ["milvus", "astr"], status: "ready", switchable: true, consequence: "restart", required_deps: ["milvus"], configured: true, detail: { auto_index_enabled: true, astrbot_locked: true, compatible: true, rebuild_required: false, pending_reindex_count: 0, document_count: 0, chunk_count: 0, reason: "" } },
+    { id: "vector_store", current: "milvus", candidates: ["milvus"], status: "ready", switchable: false, consequence: "restart", required_deps: ["milvus"], configured: true, detail: { auto_index_enabled: true, auto_rebuild_enabled: true, auto_rebuild_delay_seconds: 30, compatible: true, rebuild_required: false, pending_reindex_count: 0, document_count: 0, chunk_count: 0, reason: "", lock_detected: false } },
     { id: "retrieval", current: "rrf_fusion", candidates: ["rrf_fusion"], status: "ready", switchable: false, consequence: "none", required_deps: [], configured: true, detail: { engines: ["milvus", "sqlite_lexical"] } },
-    { id: "graph", current: "off", candidates: ["on", "off"], status: "off", switchable: true, consequence: "rebuild", required_deps: ["lightrag"], configured: false, detail: { query_mode: "mix", llm_provider: "main", llm_model: "", llm_label: "<main - AstrBot main LLM>" } },
+    { id: "graph", current: "off", candidates: ["on", "off"], status: "off", switchable: true, consequence: "rebuild", required_deps: ["lightrag"], configured: false, detail: { query_mode: "mix", llm_provider: "main", llm_model: "", llm_label: "<main - main LLM>" } },
     { id: "ask", current: "", candidates: [], status: "ready", switchable: false, consequence: "none", required_deps: [], configured: true, detail: { rerank_provider: "cross_encoder", rerank_model: "Alibaba-NLP/gte-reranker-modernbert-base", rerank_status: "idle", rerank_dependency_ready: true, rerank_runtime: { provider: "cross_encoder", status: "idle", model: "Alibaba-NLP/gte-reranker-modernbert-base", enabled: true, last_error: null } } },
-    { id: "sync", current: "off", candidates: ["on", "off"], status: "off", switchable: true, consequence: "restart", required_deps: [], configured: false, detail: { r2_enabled: false, notion_enabled: false } },
+    { id: "models", current: "", candidates: [], status: "degraded", switchable: false, consequence: "none", required_deps: [], configured: false, detail: { chat: "", research: "", graph: "", research_follows_chat: true, graph_follows_chat: true } },
+    { id: "providers", current: "0", candidates: [], status: "degraded", switchable: false, consequence: "none", required_deps: [], configured: false, detail: { count: 0 } },
+    { id: "notion", current: "off", candidates: ["on", "off"], status: "off", switchable: true, consequence: "restart", required_deps: [], configured: false, detail: { token_present: false, database_ready: false, sync_mode: "preserve" } },
+    { id: "r2", current: "off", candidates: ["on", "off"], status: "off", switchable: true, consequence: "restart", required_deps: [], configured: false, detail: { credentials_present: false, bucket: "" } },
   ],
   dependencies: MOCK_DEPENDENCIES,
   diagnostics: [],
@@ -1858,7 +1775,84 @@ const MOCK_CAPABILITIES: CapabilitiesData = {
 
 export async function getCapabilities(): Promise<CapabilitiesData> {
   if (isMock()) return JSON.parse(JSON.stringify(MOCK_CAPABILITIES));
-  return apiFetch<CapabilitiesData>("/api/capabilities", { timeoutMs: 1_500 });
+  // 8s 而非 1.5s：该端点会聚合 SQLite 统计与 Milvus 运行态，重建/加载模型时 1.5s 必超，
+  // 于是数据流页会毫无征兆地弹「请求超时」。
+  return apiFetch<CapabilitiesData>("/api/capabilities", { timeoutMs: 8_000 });
+}
+
+// ── 本地模型驻留 / 显存 ────────────────────────────────────────
+
+export type ModelRuntimeState = "idle" | "loading" | "ready" | "failed" | "external";
+
+export interface AcceleratorInfo {
+  device: string;
+  total_bytes: number;
+  free_bytes: number;
+  used_bytes: number;
+  allocated_bytes: number;
+  reserved_bytes: number;
+  torch_version: string;
+}
+
+export interface ModelRuntimeEntry {
+  kind: "embedding" | "rerank";
+  provider: string;
+  state: ModelRuntimeState;
+  model: string | null;
+  device?: string;
+  enabled?: boolean;
+  idle_timeout_seconds?: number;
+  last_error?: string | null;
+}
+
+export interface ModelRuntime {
+  /** 无 torch / 无 CUDA 时为 null——面板据此降级为「CPU 模式」，不是错误。 */
+  accelerator: AcceleratorInfo | null;
+  models: ModelRuntimeEntry[];
+  resident_count: number;
+  unloaded?: string[];
+  errors?: Record<string, string>;
+}
+
+const MOCK_MODEL_RUNTIME: ModelRuntime = {
+  accelerator: {
+    device: "NVIDIA GeForce RTX 4090",
+    total_bytes: 25_757_220_864,
+    free_bytes: 17_179_869_184,
+    used_bytes: 8_577_351_680,
+    allocated_bytes: 2_147_483_648,
+    reserved_bytes: 2_684_354_560,
+    torch_version: "2.4.0",
+  },
+  models: [
+    { kind: "embedding", provider: "local", state: "ready", model: "BAAI/bge-m3", device: "cuda" },
+    { kind: "rerank", provider: "cross_encoder", state: "idle", model: "BAAI/bge-reranker-v2-m3", enabled: true },
+  ],
+  resident_count: 1,
+};
+
+export async function getModelRuntime(): Promise<ModelRuntime> {
+  if (isMock()) return JSON.parse(JSON.stringify(MOCK_MODEL_RUNTIME));
+  return apiFetch<ModelRuntime>("/api/system/models", { timeoutMs: 8_000 });
+}
+
+export async function unloadModels(kinds?: string[]): Promise<ModelRuntime> {
+  if (isMock()) {
+    return {
+      ...JSON.parse(JSON.stringify(MOCK_MODEL_RUNTIME)),
+      models: MOCK_MODEL_RUNTIME.models.map((m) => ({ ...m, state: "idle" as const })),
+      resident_count: 0,
+      unloaded: kinds ?? ["embedding", "rerank"],
+      errors: {},
+    };
+  }
+  return apiFetch<ModelRuntime>("/api/system/models/unload", {
+    method: "POST",
+    // 卸载要等 CUDA 缓存回收，比普通 GET 慢；沿用能力探测那档超时。
+    timeoutMs: 8_000,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kinds: kinds ?? [] }),
+  });
 }
 
 export async function listDependencies(): Promise<DependencyStatus[]> {
@@ -1867,13 +1861,24 @@ export async function listDependencies(): Promise<DependencyStatus[]> {
   return res.dependencies;
 }
 
+/** 安装失败时后端用 500 返回结构化结果（含失败归类）：当作结果交给调用方，而不是抛异常。 */
+export async function installResultOf<T extends { status: string }>(request: Promise<T>): Promise<T> {
+  try {
+    return await request;
+  } catch (err) {
+    if (err instanceof ApiError && err.body?.status === "error") return err.body as unknown as T;
+    throw err;
+  }
+}
+
 export async function installDependency(pkg: string): Promise<InstallResult> {
   if (isMock()) return { status: "ok", package: pkg, restart_required: true, message: "mock installed" };
-  return apiFetch<InstallResult>("/api/dependencies/install", {
+  return installResultOf(apiFetch<InstallResult>("/api/dependencies/install", {
     method: "POST",
+    timeoutMs: DEPENDENCY_INSTALL_TIMEOUT_MS,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ package: pkg }),
-  });
+  }));
 }
 
 export async function recheckDependencies(): Promise<CapabilitiesData> {
@@ -1952,8 +1957,8 @@ export async function getDocumentContent(
 ): Promise<string> {
   if (isMock()) return "";
   const res = await fetch(
-    `/api/documents/${encodeURIComponent(docId)}/content?format=${format}`,
-    { credentials: "include" },
+    await apiUrl(`/api/documents/${encodeURIComponent(docId)}/content?format=${format}`),
+    { headers: await authHeaders() },
   );
   if (!res.ok) {
     throw new ApiError(res.status, res.statusText);

@@ -1,9 +1,15 @@
-"""HTTP 路由与 WebUI 服务（见 web/README.md 与 ../ARCHITECTURE.md §7）。
+"""HTTP 路由（见 web/README.md 与 ../ARCHITECTURE.md §7）。
 
-只做 HTTP↔业务的翻译：解析请求 → 调 `core/api` → 序列化响应。零业务逻辑。
-认证经中间件统一处理；静态前端由 `static_dir` 托管（生产指向 pages/，调试指向 web/frontend/）。
+只做 HTTP↔业务的翻译：解析请求 → 调 `kacore/api` → 序列化响应。零业务逻辑。
+服务只监听 127.0.0.1，只接受桌面壳窗口的请求：
+- 鉴权：每次启动随机生成的 token，经 `Authorization: Bearer <token>` 携带（GET 下载类请求
+  可退而用 `?access_token=`，因为浏览器导航无法附带请求头）。没有登录页与会话。
+  另有可选的 agent token（AI 助手用，见 web/agent_routes.py）：只能访问白名单接口、不能写机密。
+- CORS：只放行桌面壳窗口的 Origin（`tauri://localhost` 与 `http://tauri.localhost`），
+  其余带 Origin 的请求一律 403；开发期经 build_app 的 allowed_origins 追加。
+界面静态文件由桌面壳从安装包加载，本服务不托管。
 
-依赖经 build_app 注入（api 门面 + 配置），自身不构造依赖。
+依赖经 build_app 注入（api 门面 + token），自身不构造依赖。
 """
 
 from __future__ import annotations
@@ -14,34 +20,143 @@ import json
 import logging as _logging
 import secrets
 import time
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import web
+
+from web.agent_routes import (
+    after_setting_change,
+    authorize_agent,
+    guard_secret_fields,
+    guard_secret_setting,
+)
 
 if TYPE_CHECKING:
     from kacore.api import KnowledgeRepositoryApi
     from kacore.log_capture import MemoryLogHandler
+    from web.agent_routes import AgentAccessLike
 
 # ── 常量 ────────────────────────────────────────────────────────
 
-SESSION_COOKIE = "kr_session"
+# 桌面壳窗口的 Origin：macOS/Linux 为 tauri://localhost，Windows（WebView2）为 http://tauri.localhost。
+DEFAULT_ALLOWED_ORIGINS = ("tauri://localhost", "http://tauri.localhost")
+ACCESS_TOKEN_QUERY = "access_token"
 _MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 上传上限：超出返回 413，防内存/磁盘耗尽
 _UPLOAD_CHUNK_BYTES = 1 << 20  # 流式读块大小：内存占用 O(chunk) 而非 O(file)
 _API_PREFIX = "/api/"
-_PUBLIC_PATHS = frozenset({"/api/login", "/api/auth"})
 _API_KEY = web.AppKey("api", object)
 _UPLOAD_DIR_KEY = web.AppKey("upload_dir", Path)
-_AUTH_REQUIRED_KEY = web.AppKey("auth_required", bool)
-_USERNAME_KEY = web.AppKey("username", str)
-_PASSWORD_KEY = web.AppKey("password", str)
-_SESSIONS_KEY = web.AppKey("sessions", set)
+_TOKEN_KEY = web.AppKey("token", str)
+_ORIGINS_KEY = web.AppKey("allowed_origins", frozenset)
+_SHUTDOWN_KEY = web.AppKey("shutdown_callback", object)
+_CORS_ALLOW_HEADERS = "Authorization, Content-Type"
+_CORS_ALLOW_METHODS = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
 _LOG_HANDLER_KEY = web.AppKey("log_handler", object)
 
 
 # ── 中间件 ──────────────────────────────────────────────────────
 
 _mw_logger = _logging.getLogger("KRWebServer")
+_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+_SLOW_REQUEST_SECONDS = 2.0
+_LOG_ENDPOINTS = frozenset({"/api/logs", "/api/logs/events"})
+
+
+def _canonical_route(request: web.Request) -> str:
+    """返回不含用户实参的路由模板，避免日志泄露标题、路径或查询参数。"""
+    try:
+        resource = request.match_info.route.resource
+        canonical = getattr(resource, "canonical", "")
+        if canonical:
+            return str(canonical)
+    except (AttributeError, RuntimeError):
+        pass
+    return request.path
+
+
+def _request_category(route: str) -> str:
+    if any(part in route for part in ("rebuild-index", "search")):
+        return "retrieval"
+    if "/graph" in route:
+        return "graph"
+    if any(part in route for part in ("zotero", "notion", "backup", "restore", "sync")):
+        return "sync"
+    if any(part in route for part in ("documents", "collections")):
+        return "ingest"
+    if any(part in route for part in ("ask", "research")):
+        return "llm"
+    return "web"
+
+
+@web.middleware
+async def _request_observability_middleware(
+    request: web.Request, handler: web.Handler
+) -> web.StreamResponse:
+    """直接记录 Web 请求时间线，不依赖宿主 logging 的 logger 配置。"""
+    started = time.monotonic()
+    request_id = secrets.token_hex(4)
+    route = _canonical_route(request)
+    category = _request_category(route)
+    log_handler = cast("MemoryLogHandler | None", request.app.get(_LOG_HANDLER_KEY))
+    is_api = request.path.startswith(_API_PREFIX)
+    is_mutating = request.method in _MUTATING_METHODS and request.path not in _LOG_ENDPOINTS
+    base_metadata = {"request_id": request_id, "method": request.method, "route": route}
+    if log_handler is not None and is_mutating:
+        log_handler.add_event(
+            source="web",
+            category=category,
+            operation="http_request",
+            status="started",
+            msg=f"Web request started: {request.method} {route}",
+            metadata=base_metadata,
+        )
+    try:
+        response = await handler(request)
+    except web.HTTPException as exc:
+        elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+        if log_handler is not None and is_api and request.path not in _LOG_ENDPOINTS:
+            level = "ERROR" if exc.status >= 500 else "WARNING"
+            log_handler.add_event(
+                source="web",
+                category=category,
+                operation="http_request",
+                status="error" if exc.status >= 500 else "warning",
+                level=level,
+                msg=f"Web request finished: {request.method} {route} → HTTP {exc.status}",
+                metadata={**base_metadata, "http_status": exc.status, "elapsed_ms": elapsed_ms},
+            )
+        exc.headers["X-KA-Request-ID"] = request_id
+        raise
+    elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+    response.headers["X-KA-Request-ID"] = request_id
+    should_log = (
+        is_api
+        and request.path not in _LOG_ENDPOINTS
+        and (is_mutating or response.status >= 400 or elapsed_ms >= _SLOW_REQUEST_SECONDS * 1000)
+    )
+    if log_handler is not None and should_log:
+        level = (
+            "ERROR" if response.status >= 500
+            else "WARNING" if response.status >= 400
+            else "INFO"
+        )
+        status = (
+            "error" if response.status >= 500
+            else "warning" if response.status >= 400
+            else "ok"
+        )
+        log_handler.add_event(
+            source="web",
+            category=category,
+            operation="http_request",
+            status=status,
+            level=level,
+            msg=f"Web request finished: {request.method} {route} → HTTP {response.status}",
+            metadata={**base_metadata, "http_status": response.status, "elapsed_ms": elapsed_ms},
+        )
+    return response
 
 
 @web.middleware
@@ -62,17 +177,65 @@ async def _error_middleware(request: web.Request, handler: web.Handler) -> web.S
         return web.json_response({"error": str(exc)}, status=500)
 
 
+def _cors_headers(origin: str) -> dict[str, str]:
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Headers": _CORS_ALLOW_HEADERS,
+        "Access-Control-Allow-Methods": _CORS_ALLOW_METHODS,
+        "Access-Control-Max-Age": "600",
+        "Vary": "Origin",
+    }
+
+
+@web.middleware
+async def _cors_middleware(request: web.Request, handler: web.Handler) -> web.StreamResponse:
+    """只放行桌面壳窗口的 Origin；预检请求在鉴权之前应答（预检本身不带 Authorization）。
+
+    不带 Origin 的请求（桌面壳原生侧 / 本机脚本）不经 CORS 判定，交由 token 鉴权。
+    """
+    origin = request.headers.get("Origin")
+    if origin is None:
+        return await handler(request)
+    if origin not in request.app[_ORIGINS_KEY]:
+        return web.json_response({"error": "origin not allowed"}, status=403)
+    if request.method == "OPTIONS":
+        return web.Response(status=204, headers=_cors_headers(origin))
+    try:
+        response = await handler(request)
+    except web.HTTPException as exc:
+        exc.headers.update(_cors_headers(origin))
+        raise
+    response.headers.update(_cors_headers(origin))
+    return response
+
+
+def _request_token(request: web.Request) -> str:
+    header = request.headers.get("Authorization", "")
+    scheme, _, value = header.partition(" ")
+    if scheme.lower() == "bearer" and value:
+        return value.strip()
+    if request.method == "GET":
+        return request.query.get(ACCESS_TOKEN_QUERY, "")
+    return ""
+
+
 @web.middleware
 async def _auth_middleware(request: web.Request, handler: web.Handler) -> web.StreamResponse:
-    """保护 /api/*（登录/鉴权探测除外）；auth_required=False 时直接放行。"""
-    app = request.app
-    if not app[_AUTH_REQUIRED_KEY]:
-        return await handler(request)
-    path = request.path
-    if path.startswith(_API_PREFIX) and path not in _PUBLIC_PATHS:
-        token = request.cookies.get(SESSION_COOKIE)
-        if token not in app[_SESSIONS_KEY]:
+    """保护全部 /api/*：token 用常数时间比较，避免逐字符短路的定时侧信道。
+
+    界面 token 放行全部接口；agent token 只放行白名单（authorize_agent）。
+    """
+    if request.path.startswith(_API_PREFIX):
+        token = _request_token(request)
+        if not token:
             return web.json_response({"error": "unauthorized"}, status=401)
+        if not secrets.compare_digest(token, request.app[_TOKEN_KEY]):
+            try:
+                denied = authorize_agent(request, token)
+            except KeyError:
+                return web.json_response({"error": "unauthorized"}, status=401)
+            if denied is not None:
+                return denied
     return await handler(request)
 
 
@@ -80,7 +243,14 @@ async def _auth_middleware(request: web.Request, handler: web.Handler) -> web.St
 
 
 def _api(request: web.Request) -> KnowledgeRepositoryApi:
-    return cast("KnowledgeRepositoryApi", request.app[_API_KEY])
+    """取当前业务门面。服务软重启期间门面尚未重建，返回 503 让前端稍后重试。"""
+    api = request.app[_API_KEY]()  # type: ignore[operator]
+    if api is None:
+        raise web.HTTPServiceUnavailable(
+            text=json.dumps({"error": "service is restarting"}),
+            content_type="application/json",
+        )
+    return cast("KnowledgeRepositoryApi", api)
 
 
 def _parse_int(raw: object, name: str, default: int, lo: int, hi: int) -> int:
@@ -101,51 +271,48 @@ def _query_int(request: web.Request, name: str, default: int, lo: int, hi: int) 
     return _parse_int(request.query.get(name), name, default, lo, hi)
 
 
-async def handle_auth(request: web.Request) -> web.Response:
-    """前端探测是否需要登录 / 当前是否已登录。"""
-    app = request.app
-    logged_in = (
-        not app[_AUTH_REQUIRED_KEY]
-        or request.cookies.get(SESSION_COOKIE) in app[_SESSIONS_KEY]
-    )
-    return web.json_response(
-        {
-            "auth_required": app[_AUTH_REQUIRED_KEY],
-            "logged_in": logged_in,
-            # 运行壳标识（非敏感）：登录页/布局据此切换 standalone 与插件的呈现。
-            "shell": getattr(_api(request), "shell", "plugin"),
-        }
-    )
+def _query_flag(request: web.Request, name: str) -> bool:
+    """解析布尔查询参数（`1` / `true` / `yes`，大小写不敏感）；缺省为 False。
+
+    显式确认类的 flag 必须「默认关」：拼错值只会退回未确认，绝不会意外放行门禁。
+    """
+    return str(request.query.get(name) or "").strip().lower() in {"1", "true", "yes"}
 
 
-async def handle_login(request: web.Request) -> web.Response:
-    app = request.app
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON body"}, status=400)
-    if not isinstance(body, dict):
-        return web.json_response({"error": "invalid JSON body"}, status=400)
-    # compare_digest：常数时间比较，避免逐字符短路的定时侧信道。
-    username_ok = secrets.compare_digest(str(body.get("username") or ""), app[_USERNAME_KEY])
-    password_ok = secrets.compare_digest(str(body.get("password") or ""), app[_PASSWORD_KEY])
-    if username_ok and password_ok:
-        token = secrets.token_urlsafe(24)
-        app[_SESSIONS_KEY].add(token)
-        resp = web.json_response({"ok": True})
-        resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="Lax")
-        return resp
-    return web.json_response({"error": "invalid credentials"}, status=401)
+# 字符偏移/长度类查询参数的解析上界，纯粹用来挡住荒谬输入，不表达任何业务上限。
+_CHAR_OFFSET_CEILING = 2_000_000_000
 
 
-async def handle_logout(request: web.Request) -> web.Response:
-    app = request.app
-    token = request.cookies.get(SESSION_COOKIE)
-    if token in app[_SESSIONS_KEY]:
-        app[_SESSIONS_KEY].remove(token)
-    resp = web.json_response({"ok": True})
-    resp.del_cookie(SESSION_COOKIE)
-    return resp
+def _fulltext_confirmation_payload(exc: Any) -> dict[str, Any]:
+    """把全文确认门异常拍平成 409 响应体（`/api/ask` 与文档分页读共用同一形状）。
+
+    刻意把展示所需的数字全带上：调用方据此直接渲染确认界面，不必再打一次 estimate 请求。
+    阈值也一并回传——前端与 skill 因此不需要各自复制 60000 这个字面量。
+    """
+    return {
+        "status": "fulltext_confirmation_required",
+        "message": str(exc),
+        "doc_id": exc.doc_id,
+        "title": exc.title,
+        "total_chars": exc.total_chars,
+        "requested_chars": exc.requested_chars,
+        "threshold_chars": exc.threshold_chars,
+        "estimated_tokens": exc.estimated_tokens,
+    }
+
+
+async def handle_health(request: web.Request) -> web.Response:
+    """存活探测：桌面壳在 KA_READY 之后与重启服务后轮询它。"""
+    return web.json_response({"status": "ok"})
+
+
+async def handle_shutdown(request: web.Request) -> web.Response:
+    """请求后端有序退出（停定时任务 → 刷盘 Milvus → 关库）；实际退出由进程薄壳完成。"""
+    callback = request.app[_SHUTDOWN_KEY]
+    if not callable(callback):
+        return web.json_response({"error": "shutdown is not supported here"}, status=501)
+    callback()
+    return web.json_response({"status": "shutting_down"}, status=202)
 
 
 async def handle_list_collections(request: web.Request) -> web.Response:
@@ -346,6 +513,26 @@ async def handle_delete_document(request: web.Request) -> web.Response:
     return web.json_response({"ok": ok}, status=200 if ok else 404)
 
 
+async def handle_reprocess_cleaning(request: web.Request) -> web.Response:
+    """手动维护入口；默认只预览，复用已有鉴权与错误处理。"""
+    body = await request.json()
+    if not isinstance(body, dict):
+        return web.json_response({"error": "body must be an object"}, status=400)
+    dry_run = body.get("dry_run", True)
+    if not isinstance(dry_run, bool):
+        return web.json_response({"error": "dry_run must be a boolean"}, status=400)
+    return web.json_response(await _api(request).reprocess_documents_with_stale_cleaning(
+        dry_run=dry_run,
+    ))
+
+
+async def handle_document_footnotes(request: web.Request) -> web.Response:
+    notes = await _api(request).get_document_footnotes(request.match_info["doc_id"])
+    if notes is None:
+        return web.json_response({"error": "document not found"}, status=404)
+    return web.json_response(notes)
+
+
 async def handle_reextract_document(request: web.Request) -> web.Response:
     doc_id = request.match_info["doc_id"]
     _mw_logger.info("Re-extract document: doc_id=%s", doc_id)
@@ -375,6 +562,36 @@ async def handle_document_content(request: web.Request) -> web.Response:
     if content is None:
         return web.json_response({"error": "document not found"}, status=404)
     return web.Response(text=content, content_type="text/markdown", charset="utf-8")
+
+
+async def handle_document_content_page(request: web.Request) -> web.Response:
+    """GET 文档 Markdown 的单个字符页；供具备明确阅读意图的 agent 使用。
+
+    v1.1.1：`max_chars` 不再有 40000 硬上限（旧实现是**静默夹取**，请求 6 万字会被悄悄砍到
+    4 万，调用方毫不知情）。`max_chars=0` 表示读到文末；单次返回量超阈值且无 `confirmed`
+    时返回 409，形状与 `/api/ask` 的全文确认门完全一致。
+    """
+    from kacore.api import FullTextConfirmationRequiredError, FullTextDocumentUnavailableError
+
+    doc_id = request.match_info["doc_id"]
+    start = _query_int(request, "start", 0, 0, _CHAR_OFFSET_CEILING)
+    max_chars = _query_int(request, "max_chars", 12000, 0, _CHAR_OFFSET_CEILING)
+    try:
+        result = await _api(request).get_document_markdown_page(
+            doc_id,
+            start=start,
+            max_chars=max_chars,
+            confirmed=_query_flag(request, "confirmed"),
+        )
+    except FullTextConfirmationRequiredError as exc:
+        return web.json_response(_fulltext_confirmation_payload(exc), status=409)
+    except FullTextDocumentUnavailableError as exc:
+        return web.json_response({"error": str(exc), "reason": exc.reason}, status=404)
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    if result is None:
+        return web.json_response({"error": "document not found"}, status=404)
+    return web.json_response(result)
 
 
 async def handle_document_chunks(request: web.Request) -> web.Response:
@@ -548,7 +765,7 @@ async def handle_quota(request: web.Request) -> web.Response:
 
 # ── 预留端口路由（Reserved）──────────────────────────────────────
 #
-# 这些路由对应 core/api 的预留方法。现在就在 URL 层把「插座」装好，前端据此预留入口。
+# 这些路由对应 kacore/api 的预留方法。现在就在 URL 层把「插座」装好，前端据此预留入口。
 # 统一用 _reserved() 包裹：方法已实现则正常返回，未实现（NotImplementedError）则回 501 +
 # available_in，使前端可显示「将在 vX.Y.0 接入」而无需改动布局。
 
@@ -587,10 +804,14 @@ async def handle_notion_init(request: web.Request) -> web.Response:
     return web.json_response(result, status=status)
 
 
+async def handle_notion_status(request: web.Request) -> web.Response:
+    return web.json_response(await _api(request).get_notion_push_status())
+
+
 async def handle_notion_push_note(request: web.Request) -> web.Response:
     body = await request.json() if request.can_read_body else {}
     if not isinstance(body, dict):
-        return web.json_response({"status": "error", "message": "无效请求体"}, status=400)
+        return web.json_response({"status": "error", "message": "Invalid request body"}, status=400)
     content = str(body.get("content", ""))
     tags = body.get("tags") if isinstance(body.get("tags"), list) else []
     citations = body.get("citations") if isinstance(body.get("citations"), list) else []
@@ -636,29 +857,108 @@ async def handle_update_config(request: web.Request) -> web.Response:
         return web.json_response({"status": "error", "message": str(exc)}, status=400)
 
 
-async def handle_discord_settings_get(request: web.Request) -> web.Response:
-    return web.json_response(await _api(request).get_discord_settings())
+# ── 设置 / 模型供应商 ───────────────────────────────────────────
 
 
-async def handle_discord_settings_put(request: web.Request) -> web.Response:
+async def _json_body(request: web.Request) -> dict[str, Any] | None:
     try:
-        body = await request.json()
-        return web.json_response(await _api(request).update_discord_settings(dict(body)))
-    except (TypeError, ValueError) as exc:
+        body = await request.json() if request.can_read_body else {}
+    except Exception:
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def _settings_error(exc: Exception) -> web.Response:
+    """ValueError（含校验失败）→ 400；KeyError（连接不存在）→ 404；未装配 → 501。"""
+    if isinstance(exc, KeyError):
+        return web.json_response({"status": "error", "message": str(exc.args[0])}, status=404)
+    if isinstance(exc, ValueError):
         return web.json_response({"status": "error", "message": str(exc)}, status=400)
+    return web.json_response({"status": "error", "message": str(exc)}, status=501)
 
 
-async def handle_discord_token_put(request: web.Request) -> web.Response:
+async def handle_settings_schema(request: web.Request) -> web.Response:
     try:
-        body = await request.json()
-        token = str(body.get("token") or "")
-        return web.json_response(await _api(request).set_discord_token(token))
-    except (RuntimeError, ValueError) as exc:
-        return web.json_response({"status": "error", "message": str(exc)}, status=400)
+        return web.json_response(_api(request).get_settings_schema(request.query.get("home")))
+    except RuntimeError as exc:
+        return _settings_error(exc)
 
 
-async def handle_discord_token_delete(request: web.Request) -> web.Response:
-    return web.json_response(await _api(request).delete_discord_token())
+async def handle_settings_patch(request: web.Request) -> web.Response:
+    body = await _json_body(request)
+    if body is None or not isinstance(body.get("key"), str):
+        return web.json_response({"status": "error", "message": "key required"}, status=400)
+    denied = guard_secret_setting(request, body["key"])
+    if denied is not None:
+        return denied
+    try:
+        result = await _api(request).update_setting(body["key"], body.get("value"))
+    except (ValueError, RuntimeError) as exc:
+        return _settings_error(exc)
+    after_setting_change(request, body["key"], body.get("value"))
+    return web.json_response(result)
+
+
+async def handle_providers_list(request: web.Request) -> web.Response:
+    try:
+        return web.json_response(_api(request).list_providers())
+    except RuntimeError as exc:
+        return _settings_error(exc)
+
+
+async def handle_providers_create(request: web.Request) -> web.Response:
+    body = await _json_body(request)
+    if body is None:
+        return web.json_response({"status": "error", "message": "invalid JSON body"}, status=400)
+    denied = guard_secret_fields(request, body)
+    if denied is not None:
+        return denied
+    try:
+        return web.json_response(_api(request).create_provider(body), status=201)
+    except (ValueError, TypeError, RuntimeError) as exc:
+        return _settings_error(ValueError(str(exc)) if isinstance(exc, TypeError) else exc)
+
+
+async def handle_providers_patch(request: web.Request) -> web.Response:
+    body = await _json_body(request)
+    if body is None:
+        return web.json_response({"status": "error", "message": "invalid JSON body"}, status=400)
+    denied = guard_secret_fields(request, body)
+    if denied is not None:
+        return denied
+    try:
+        return web.json_response(
+            await _api(request).update_provider(request.match_info["provider_id"], body)
+        )
+    except (KeyError, ValueError, RuntimeError) as exc:
+        return _settings_error(exc)
+
+
+async def handle_providers_delete(request: web.Request) -> web.Response:
+    try:
+        return web.json_response(
+            _api(request).delete_provider(request.match_info["provider_id"])
+        )
+    except (KeyError, ValueError, RuntimeError) as exc:
+        return _settings_error(exc)
+
+
+async def handle_providers_test(request: web.Request) -> web.Response:
+    try:
+        return web.json_response(
+            await _api(request).test_provider(request.match_info["provider_id"])
+        )
+    except (KeyError, RuntimeError) as exc:
+        return _settings_error(exc)
+
+
+async def handle_providers_models(request: web.Request) -> web.Response:
+    try:
+        return web.json_response(
+            await _api(request).refresh_provider_models(request.match_info["provider_id"])
+        )
+    except (KeyError, RuntimeError) as exc:
+        return _settings_error(exc)
 
 
 async def handle_plugin_restart(request: web.Request) -> web.Response:
@@ -668,6 +968,16 @@ async def handle_plugin_restart(request: web.Request) -> web.Response:
         return web.json_response(result)
     except Exception as exc:  # noqa: BLE001
         _mw_logger.error("Plugin restart failed to schedule: %s", exc, exc_info=True)
+        return web.json_response({"status": "error", "message": str(exc)}, status=503)
+
+
+async def handle_clear_milvus_lock(request: web.Request) -> web.Response:
+    _mw_logger.info("Milvus lock clear requested")
+    try:
+        result = await _api(request).clear_milvus_lock()
+        return web.json_response(result)
+    except Exception as exc:  # noqa: BLE001
+        _mw_logger.error("Milvus lock clear failed: %s", exc, exc_info=True)
         return web.json_response({"status": "error", "message": str(exc)}, status=503)
 
 
@@ -760,6 +1070,11 @@ async def handle_zotero_active(request: web.Request) -> web.Response:
     return web.json_response({"job": _api(request).get_active_zotero_sync_job()})
 
 
+async def handle_notion_active(request: web.Request) -> web.Response:
+    # 进度面板轮询：返回当前 running/partial/error 的 Notion 推送任务快照（无任务 → null）。
+    return web.json_response({"job": _api(request).get_active_notion_sync_job()})
+
+
 async def handle_backup(request: web.Request) -> web.Response:
     body = await request.json() if request.can_read_body else {}
     force = bool(body.get("force", False)) if isinstance(body, dict) else False
@@ -808,6 +1123,78 @@ async def handle_graph_build(request: web.Request) -> web.Response:
         return web.json_response(result)
     except ValueError as exc:
         _mw_logger.warning("Graph build rejected: %s", exc)
+        return web.json_response({"status": "error", "message": str(exc)}, status=400)
+
+
+async def handle_codex_graph_build(request: web.Request) -> web.Response:
+    body = await request.json() if request.can_read_body else {}
+    collection = body.get("collection") if isinstance(body, dict) else None
+    confirmed = bool(body.get("confirmed")) if isinstance(body, dict) else False
+    try:
+        return web.json_response(
+            await _api(request).build_graph_with_codex(collection, confirmed=confirmed)
+        )
+    except ValueError as exc:
+        return web.json_response({"status": "error", "message": str(exc)}, status=400)
+    except RuntimeError as exc:
+        return web.json_response({"status": "error", "message": str(exc)}, status=409)
+
+
+async def handle_codex_graph_next(request: web.Request) -> web.Response:
+    try:
+        return web.json_response(
+            await _api(request).get_next_codex_graph_task(request.match_info["job_id"])
+        )
+    except KeyError as exc:
+        return web.json_response({"status": "error", "message": str(exc)}, status=404)
+    except ValueError as exc:
+        return web.json_response({"status": "error", "message": str(exc)}, status=400)
+
+
+async def handle_codex_graph_submit(request: web.Request) -> web.Response:
+    body = await request.json() if request.can_read_body else {}
+    if not isinstance(body, dict) or not isinstance(body.get("result"), dict):
+        return web.json_response(
+            {"status": "error", "message": "task_id and result object are required"},
+            status=400,
+        )
+    task_id = str(body.get("task_id") or "")
+    if not task_id:
+        return web.json_response(
+            {"status": "error", "message": "task_id and result object are required"},
+            status=400,
+        )
+    try:
+        return web.json_response(
+            await _api(request).submit_codex_graph_task(
+                request.match_info["job_id"], task_id, body["result"]
+            )
+        )
+    except KeyError as exc:
+        return web.json_response({"status": "error", "message": str(exc)}, status=404)
+    except ValueError as exc:
+        return web.json_response({"status": "error", "message": str(exc)}, status=400)
+    except Exception as exc:
+        _mw_logger.error("Codex graph task submission failed: %s", exc, exc_info=True)
+        return web.json_response({"status": "error", "message": str(exc)}, status=500)
+
+
+async def handle_codex_graph_retry(request: web.Request) -> web.Response:
+    body = await request.json() if request.can_read_body else {}
+    task_id = str(body.get("task_id") or "") if isinstance(body, dict) else ""
+    if not task_id:
+        return web.json_response(
+            {"status": "error", "message": "task_id is required"}, status=400
+        )
+    try:
+        return web.json_response(
+            await _api(request).retry_codex_graph_task(
+                request.match_info["job_id"], task_id
+            )
+        )
+    except KeyError as exc:
+        return web.json_response({"status": "error", "message": str(exc)}, status=404)
+    except ValueError as exc:
         return web.json_response({"status": "error", "message": str(exc)}, status=400)
 
 
@@ -864,6 +1251,19 @@ async def handle_graph_build_resume(request: web.Request) -> web.Response:
         return web.json_response({"status": "error", "message": str(exc)}, status=404)
 
 
+async def handle_graph_build_cancel(request: web.Request) -> web.Response:
+    job_id = request.match_info["job_id"]
+    body = await request.json() if request.can_read_body else {}
+    cleanup = bool(body.get("cleanup", True)) if isinstance(body, dict) else True
+    try:
+        result = await _api(request).cancel_build_job(job_id, cleanup=cleanup)
+        return web.json_response(result)
+    except KeyError as exc:
+        return web.json_response({"status": "error", "message": str(exc)}, status=404)
+    except ValueError as exc:
+        return web.json_response({"status": "error", "message": str(exc)}, status=400)
+
+
 async def handle_graph_probe(request: web.Request) -> web.Response:
     body = await request.json() if request.can_read_body else {}
     if not isinstance(body, dict) or body.get("confirmed") is not True:
@@ -872,9 +1272,9 @@ async def handle_graph_probe(request: web.Request) -> web.Response:
         )
     collection = body.get("collection") or "default"
     text = (
-        (body.get("text") or "LightRAG probe document for Knowledge Repository.")
+        (body.get("text") or "LightRAG probe document for Knowledge Arch.")
         if isinstance(body, dict)
-        else "LightRAG probe document for Knowledge Repository."
+        else "LightRAG probe document for Knowledge Arch."
     )
     doc_id = (
         (body.get("doc_id") or "kr-lightrag-probe-doc")
@@ -949,71 +1349,6 @@ async def handle_ask_progress(request: web.Request) -> web.Response:
     if progress is None:
         return web.json_response({"error": "not found"}, status=404)
     return web.json_response(progress)
-
-
-async def handle_chat_turn(request: web.Request) -> web.StreamResponse:
-    """POST /api/chat/turn — 普通 Ask 与 Research 共用的统一 SSE 事件流。"""
-    api = _api(request)
-    if not api.conversation_available():
-        return web.json_response(
-            {"error": "统一对话服务不可用。"},
-            status=409,
-        )
-    body = await request.json()
-    message = str(body.get("message") or "").strip()
-    conversation_id = str(body.get("conversation_id") or "").strip()
-    if not message or not conversation_id:
-        return web.json_response(
-            {"error": "message 与 conversation_id 均为必填"}, status=400
-        )
-    from kacore.domain.conversation import ConversationTurn
-
-    turn = ConversationTurn(
-        conversation_id=conversation_id,
-        message=message,
-        channel="web",
-        collection=str(body.get("collection") or "") or None,
-        document_id=str(body.get("document_id") or "") or None,
-        retrieval_mode=str(body.get("retrieval_mode") or "default"),
-        answer_language=str(body.get("answer_language") or "auto"),
-        use_english_retrieval=bool(body.get("use_english_retrieval", True)),
-    )
-
-    response = web.StreamResponse(
-        headers={
-            "Content-Type": "text/event-stream; charset=utf-8",
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        }
-    )
-    await response.prepare(request)
-    try:
-        async for event in api.conversation_stream(turn):
-            payload = json.dumps(event, ensure_ascii=False)
-            await response.write(f"data: {payload}\n\n".encode())
-    except ConnectionResetError:
-        pass  # 客户端断开，静默结束
-    await response.write_eof()
-    return response
-
-
-async def handle_chat_session_get(request: web.Request) -> web.Response:
-    cid = request.match_info.get("conversation_id", "").strip()
-    if not cid:
-        return web.json_response({"error": "conversation_id required"}, status=400)
-    return web.json_response(await _api(request).get_chat_session(cid))
-
-
-async def handle_chat_session_patch(request: web.Request) -> web.Response:
-    cid = request.match_info.get("conversation_id", "").strip()
-    if not cid:
-        return web.json_response({"error": "conversation_id required"}, status=400)
-    try:
-        body = await request.json()
-        result = await _api(request).update_chat_session(cid, dict(body))
-    except (TypeError, ValueError) as exc:
-        return web.json_response({"error": str(exc)}, status=400)
-    return web.json_response(result)
 
 
 async def handle_chat_history_get(request: web.Request) -> web.Response:
@@ -1092,6 +1427,31 @@ async def handle_system_info(request: web.Request) -> web.Response:
     """GET /api/system/info — 返回后端运行环境信息（调试面板用）。"""
     try:
         return web.json_response(_api(request).get_system_info())
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+async def handle_model_runtime(request: web.Request) -> web.Response:
+    """GET /api/system/models — 本地模型驻留状态 + 尽力而为的显存读数（模型面板轮询）。"""
+    try:
+        return web.json_response(await _api(request).get_model_runtime())
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+async def handle_model_unload(request: web.Request) -> web.Response:
+    """POST /api/system/models/unload — 立即卸载本地模型并清空显存缓存。
+
+    body: `{"kinds": ["embedding", "rerank"]}`，缺省或空表示全部。
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    raw_kinds = body.get("kinds") if isinstance(body, dict) else None
+    kinds = [str(k) for k in raw_kinds] if isinstance(raw_kinds, list) else None
+    try:
+        return web.json_response(await _api(request).unload_models(kinds))
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
 
@@ -1233,14 +1593,26 @@ async def handle_logs(request: web.Request) -> web.Response:
     """GET /api/logs?after=<float>&limit=<int> — 返回内存日志缓冲区中的最新日志行。"""
     handler = cast("MemoryLogHandler | None", request.app.get(_LOG_HANDLER_KEY))
     if handler is None:
-        return web.json_response({"lines": [], "server_ts": time.time()})
+        return web.json_response(
+            {
+                "lines": [],
+                "server_ts": time.time(),
+                "oldest_seq": 0,
+                "latest_seq": 0,
+                "dropped_count": 0,
+            }
+        )
     try:
         after_ts = float(request.query.get("after", "0"))
-        limit = min(int(request.query.get("limit", "200")), 1000)
+        after_seq_raw = request.query.get("after_seq")
+        after_seq = int(after_seq_raw) if after_seq_raw is not None else None
+        limit = min(int(request.query.get("limit", "200")), 2000)
+        if after_seq is not None and after_seq < 0:
+            raise ValueError
     except ValueError:
         return web.json_response({"error": "invalid params"}, status=400)
-    lines = handler.get_lines(after_ts=after_ts, limit=limit)
-    return web.json_response({"lines": lines, "server_ts": time.time()})
+    batch = handler.get_batch(after_seq=after_seq, after_ts=after_ts, limit=limit)
+    return web.json_response({**batch, "server_ts": time.time()})
 
 
 async def handle_ask(request: web.Request) -> web.Response:
@@ -1253,13 +1625,23 @@ async def handle_ask(request: web.Request) -> web.Response:
     if not question:
         return web.json_response({"error": "question required"}, status=400)
     collection = body.get("collection") or None
-    top_k = _parse_int(body.get("top_k"), "top_k", 5, 1, 20)
+    top_k = _parse_int(body.get("top_k"), "top_k", 6, 1, 20)
     conversation_id = body.get("conversation_id") or None
-    persona_enabled = bool(body.get("persona_enabled") or False)
     retrieval_mode = body.get("retrieval_mode") or "default"
     use_english_retrieval = bool(body.get("use_english_retrieval") or False)
     answer_language = str(body.get("answer_language") or "auto")
-    from kacore.api import GraphMixedQueryError, LightRAGNotReadyError
+    # doc_id / confirmed 服务于 retrieval_mode="fulltext"。前端从 v1.0.x 起就一直在发
+    # doc_id，但这里从未读取过——全文检索因此始终跑不通（模式名也不在白名单里）。
+    doc_id = str(body.get("doc_id") or "") or None
+    confirmed = bool(body.get("confirmed") or False)
+    from kacore.api import (
+        AskTaskTimeoutError,
+        FullTextConfirmationRequiredError,
+        FullTextDocumentUnavailableError,
+        FullTextGenerationFailedError,
+        GraphMixedQueryError,
+        LightRAGNotReadyError,
+    )
 
     try:
         result = await _api(request).ask(
@@ -1267,13 +1649,38 @@ async def handle_ask(request: web.Request) -> web.Response:
             collection=collection,
             top_k=top_k,
             conversation_id=conversation_id,
-            persona_enabled=persona_enabled,
             retrieval_mode=retrieval_mode,
             use_english_retrieval=use_english_retrieval,
             answer_language=answer_language,
+            doc_id=doc_id,
+            confirmed=confirmed,
             scope_type=str(body.get("scope_type") or ""),
             scope_key=str(body.get("scope_key") or ""),
             scope_library_id=str(body.get("scope_library_id") or ""),
+        )
+    except FullTextConfirmationRequiredError as exc:
+        # 409 不是失败，是一次询问：正文超过确认阈值，前端据此弹窗，用户同意后带
+        # confirmed=true 重发同一请求。此时后端尚未调用 LLM、尚未写任何 chat_history。
+        return web.json_response(_fulltext_confirmation_payload(exc), status=409)
+    except FullTextDocumentUnavailableError as exc:
+        return web.json_response(
+            {
+                "status": "fulltext_document_unavailable",
+                "message": str(exc),
+                "doc_id": exc.doc_id,
+                "reason": exc.reason,
+            },
+            status=404,
+        )
+    except FullTextGenerationFailedError as exc:
+        return web.json_response(
+            {
+                "status": "fulltext_generation_failed",
+                "message": exc.reason,
+                "doc_id": exc.doc_id,
+                "total_chars": exc.total_chars,
+            },
+            status=502,
         )
     except LightRAGNotReadyError as exc:
         return web.json_response(
@@ -1294,8 +1701,54 @@ async def handle_ask(request: web.Request) -> web.Response:
             },
             status=502,
         )
+    except AskTaskTimeoutError as exc:
+        # 202：请求仍在后台运行（未取消），不是失败——前端据此改为轮询
+        # /api/ask/progress + /api/chat/history 找回迟到的答案，而不是弹错误后放弃。
+        return web.json_response(
+            {
+                "status": "ask_task_timeout",
+                "message": str(exc),
+                "conversation_id": exc.conversation_id,
+                "timeout_seconds": exc.timeout_seconds,
+            },
+            status=202,
+        )
     except ValueError as exc:
         return web.json_response({"status": "error", "message": str(exc)}, status=400)
+    return web.json_response(result)
+
+
+async def handle_ask_evidence(request: web.Request) -> web.Response:
+    """POST /api/ask/evidence — Codex 分档召回证据；不调用插件 LLM。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"error": "JSON object required"}, status=400)
+    question = str(body.get("question") or "").strip()
+    raw_queries = body.get("queries")
+    if raw_queries is None:
+        queries = None
+    elif isinstance(raw_queries, list) and all(isinstance(item, str) for item in raw_queries):
+        queries = list(raw_queries)
+    else:
+        return web.json_response({"error": "queries must be a list of strings"}, status=400)
+    try:
+        result = await _api(request).retrieve_agent_evidence(
+            question=question,
+            queries=queries,
+            collection=str(body.get("collection") or "") or None,
+            retrieval_mode=str(body.get("retrieval_mode") or "default"),
+            round_number=_parse_int(body.get("round"), "round", 1, 1, 20),
+            scope_type=str(body.get("scope_type") or ""),
+            scope_key=str(body.get("scope_key") or ""),
+            scope_library_id=str(body.get("scope_library_id") or ""),
+        )
+    except ValueError as exc:
+        return web.json_response({"status": "error", "message": str(exc)}, status=400)
+    except RuntimeError as exc:
+        return web.json_response({"status": "unavailable", "message": str(exc)}, status=503)
     return web.json_response(result)
 
 
@@ -1432,33 +1885,52 @@ def _graph_query_dict(payload: bytes) -> dict:
 
 def build_app(
     *,
-    api: KnowledgeRepositoryApi,
-    static_dir: Path,
+    api: KnowledgeRepositoryApi | None = None,
+    api_provider: Callable[[], KnowledgeRepositoryApi | None] | None = None,
     upload_dir: Path,
-    auth_required: bool = True,
-    username: str = "admin",
-    password: str = "",
+    token: str,
+    allowed_origins: Iterable[str] = DEFAULT_ALLOWED_ORIGINS,
+    shutdown_callback: Callable[[], None] | None = None,
+    log_handler: MemoryLogHandler | None = None,
+    agent_access: AgentAccessLike | None = None,
+    app_version: str = "",
 ) -> web.Application:
-    """构造 aiohttp 应用：注入 api、配置认证与静态目录。
+    """构造 aiohttp 应用：注入业务门面、token 与 CORS 白名单。
 
-    auth_required=True 且 password 为空时拒绝构造（避免无密码暴露）。
+    api 与 api_provider 二选一：固定门面（测试）或每次请求现取（进程薄壳——服务软重启会
+    重建门面，HTTP 服务本身不重启）。token 为空时拒绝构造（避免无鉴权暴露）。
+    shutdown_callback 为空时 /api/shutdown 返回 501。agent_access 为空时不认 agent token。
     """
-    if auth_required and not password:
-        raise ValueError(
-            "web console password is empty; set a password or pass auth_required=False"
-        )
+    if not token:
+        raise ValueError("an access token is required")
+    if (api is None) == (api_provider is None):
+        raise ValueError("exactly one of api / api_provider is required")
+    if api_provider is None:
+        fixed_api = api
 
-    app = web.Application(middlewares=[_error_middleware, _auth_middleware])
-    app[_API_KEY] = api
+        def api_provider() -> KnowledgeRepositoryApi | None:
+            return fixed_api
+
+    app = web.Application(
+        middlewares=[
+            _cors_middleware,
+            _request_observability_middleware,
+            _error_middleware,
+            _auth_middleware,
+        ]
+    )
+    app[_API_KEY] = api_provider
     app[_UPLOAD_DIR_KEY] = upload_dir
-    app[_AUTH_REQUIRED_KEY] = auth_required
-    app[_USERNAME_KEY] = username
-    app[_PASSWORD_KEY] = password
-    app[_SESSIONS_KEY] = set()
+    app[_TOKEN_KEY] = token
+    app[_ORIGINS_KEY] = frozenset(allowed_origins)
+    app[_SHUTDOWN_KEY] = shutdown_callback
 
-    app.router.add_get("/api/auth", handle_auth)
-    app.router.add_post("/api/login", handle_login)
-    app.router.add_post("/api/logout", handle_logout)
+    from kacore.log_capture import install as _install_log_handler
+
+    app[_LOG_HANDLER_KEY] = log_handler or _install_log_handler()
+
+    app.router.add_get("/api/health", handle_health)
+    app.router.add_post("/api/shutdown", handle_shutdown)
     app.router.add_get("/api/collections", handle_list_collections)
     app.router.add_post("/api/collections", handle_create_collection)
     app.router.add_patch("/api/collections/by-key/{coll_key}", handle_patch_collection)
@@ -1476,8 +1948,11 @@ def build_app(
     app.router.add_patch("/api/documents/{doc_id}", handle_classify_document)
     app.router.add_patch("/api/documents/{doc_id}/meta", handle_document_meta_patch)
     app.router.add_delete("/api/documents/{doc_id}", handle_delete_document)
+    app.router.add_post("/api/documents/reprocess-cleaning", handle_reprocess_cleaning)
+    app.router.add_get("/api/documents/{doc_id}/footnotes", handle_document_footnotes)
     app.router.add_post("/api/documents/{doc_id}/reextract", handle_reextract_document)
     app.router.add_get("/api/documents/{doc_id}/content", handle_document_content)
+    app.router.add_get("/api/documents/{doc_id}/content/page", handle_document_content_page)
     app.router.add_get("/api/documents/{doc_id}/chunks", handle_document_chunks)
     app.router.add_get("/api/documents/{doc_id}/annotations", handle_document_annotations)
     app.router.add_get("/api/documents/{doc_id}/notes", handle_document_notes_get)
@@ -1492,11 +1967,16 @@ def build_app(
     app.router.add_get("/api/quota", handle_quota)
     app.router.add_get("/api/config/effective", handle_effective_config)
     app.router.add_post("/api/config/update", handle_update_config)
-    app.router.add_get("/api/channels/discord", handle_discord_settings_get)
-    app.router.add_put("/api/channels/discord", handle_discord_settings_put)
-    app.router.add_put("/api/channels/discord/token", handle_discord_token_put)
-    app.router.add_delete("/api/channels/discord/token", handle_discord_token_delete)
+    app.router.add_get("/api/settings/schema", handle_settings_schema)
+    app.router.add_patch("/api/settings", handle_settings_patch)
+    app.router.add_get("/api/providers", handle_providers_list)
+    app.router.add_post("/api/providers", handle_providers_create)
+    app.router.add_patch("/api/providers/{provider_id}", handle_providers_patch)
+    app.router.add_delete("/api/providers/{provider_id}", handle_providers_delete)
+    app.router.add_post("/api/providers/{provider_id}/test", handle_providers_test)
+    app.router.add_post("/api/providers/{provider_id}/models", handle_providers_models)
     app.router.add_post("/api/plugin/restart", handle_plugin_restart)
+    app.router.add_post("/api/milvus/clear-lock", handle_clear_milvus_lock)
     app.router.add_post("/api/config/test-embedding", handle_test_embedding)
     app.router.add_post("/api/documents/rebuild-index", handle_rebuild_index_pending)
     app.router.add_get("/api/documents/rebuild-index/active", handle_milvus_build_active)
@@ -1506,7 +1986,9 @@ def build_app(
     app.router.add_post("/api/sync/{target}", handle_sync)
     app.router.add_post("/api/notion/init", handle_notion_init)
     app.router.add_post("/api/notion/push-note", handle_notion_push_note)
+    app.router.add_get("/api/sync/notion/status", handle_notion_status)
     app.router.add_get("/api/sync/status", handle_sync_status)
+    app.router.add_get("/api/sync/notion/active", handle_notion_active)
     app.router.add_get("/api/zotero/config", handle_zotero_config)
     app.router.add_get("/api/zotero/probe", handle_zotero_probe)
     app.router.add_post("/api/zotero/server-key", handle_zotero_server_key_post)
@@ -1521,11 +2003,16 @@ def build_app(
     app.router.add_get("/api/r2/job", handle_r2_job)
     app.router.add_post("/api/graph/build/estimate", handle_graph_build_estimate)
     app.router.add_post("/api/graph/build", handle_graph_build)
+    app.router.add_post("/api/graph/codex-build", handle_codex_graph_build)
+    app.router.add_get("/api/graph/codex-build/{job_id}/next", handle_codex_graph_next)
+    app.router.add_post("/api/graph/codex-build/{job_id}/submit", handle_codex_graph_submit)
+    app.router.add_post("/api/graph/codex-build/{job_id}/retry", handle_codex_graph_retry)
     app.router.add_get("/api/graph/build/active", handle_graph_build_active)
     app.router.add_get("/api/graph/build/history", handle_graph_build_history)
     app.router.add_get("/api/graph/build/{job_id}", handle_graph_build_job)
     app.router.add_post("/api/graph/build/{job_id}/pause", handle_graph_build_pause)
     app.router.add_post("/api/graph/build/{job_id}/resume", handle_graph_build_resume)
+    app.router.add_post("/api/graph/build/{job_id}/cancel", handle_graph_build_cancel)
     app.router.add_post("/api/graph/probe", handle_graph_probe)
     app.router.add_get("/api/graph/query", handle_graph_query)
     app.router.add_get("/api/graph/stats", handle_graph_stats)
@@ -1533,6 +2020,8 @@ def build_app(
     app.router.add_get("/api/metrics", handle_metrics)
     app.router.add_get("/api/ask/progress/{cid}", handle_ask_progress)
     app.router.add_get("/api/system/info", handle_system_info)
+    app.router.add_get("/api/system/models", handle_model_runtime)
+    app.router.add_post("/api/system/models/unload", handle_model_unload)
     app.router.add_get("/api/files/list", handle_files_list)
     app.router.add_get("/api/fs/browse", handle_fs_browse)
     app.router.add_get("/api/models/local", handle_list_local_models)
@@ -1543,60 +2032,27 @@ def build_app(
     app.router.add_post("/api/dependencies/recheck", handle_dependency_recheck)
     app.router.add_get("/api/logs", handle_logs)
     app.router.add_post("/api/logs/events", handle_log_event)
+    app.router.add_post("/api/ask/evidence", handle_ask_evidence)
     app.router.add_post("/api/ask", handle_ask)
     app.router.add_get("/api/console/scope-state", handle_console_scope_state_get)
     app.router.add_put("/api/console/scope-state", handle_console_scope_state_upsert)
     app.router.add_patch("/api/console/scope-state", handle_console_scope_state_upsert)
-    app.router.add_post("/api/chat/turn", handle_chat_turn)
-    app.router.add_get("/api/chat/session/{conversation_id}", handle_chat_session_get)
-    app.router.add_patch("/api/chat/session/{conversation_id}", handle_chat_session_patch)
     app.router.add_get("/api/chat/history", handle_chat_history_get)
     app.router.add_delete("/api/chat/history", handle_chat_history_clear)
     app.router.add_patch(
         "/api/chat/history/{conv_id}/messages/{msg_idx}/lock", handle_chat_message_lock
     )
 
-    # 安装内存日志 handler（幂等，重复调用安全）
-    from kacore.log_capture import install as _install_log_handler
+    from web.desktop_routes import register_desktop_routes
 
-    app[_LOG_HANDLER_KEY] = _install_log_handler(maxlen=500)
+    register_desktop_routes(app, _api)
 
-    # 静态文件服务：兼容 Next.js export 产物（pages/ 下存在子目录 index.html）
-    # 和旧的单文件 HTML 产物。
-    if static_dir.exists():
-        # Next.js 资源包（_next/static/…）直接映射，避免走 SPA 回退逻辑
-        next_dir = static_dir / "_next"
-        if next_dir.is_dir():
-            app.router.add_static("/_next/", next_dir)
+    from web.agent_routes import register_agent_routes
 
-        _static_root = static_dir.resolve()
+    register_agent_routes(app, _api, agent_access, app_version)
 
-        async def handle_spa(request: web.Request) -> web.StreamResponse:
-            """SPA 路径回退：按 Next.js export 目录结构查找 index.html，否则回退根页面。"""
-            rel = request.match_info.get("path", "").strip("/")
-            try:
-                if rel:
-                    # 安全检查：防止路径穿越
-                    direct = (static_dir / rel).resolve()
-                    direct.relative_to(_static_root)
-                    if direct.is_file():
-                        return web.FileResponse(direct)
-                    subindex = direct / "index.html"
-                    if subindex.is_file():
-                        return web.FileResponse(subindex)
-                    html = static_dir / f"{rel}.html"
-                    if html.is_file():
-                        return web.FileResponse(html)
-            except (ValueError, OSError):
-                pass
-            root_index = static_dir / "index.html"
-            if root_index.is_file():
-                return web.FileResponse(root_index)
-            return web.Response(status=404, text="Not Found")
-
-        app.router.add_get("/", handle_spa)
-        app.router.add_get("/{path:.*}", handle_spa)
+    # 日志 handler 已在路由装配前注入；生产由组合根传入，独立测试/开发则幂等安装默认实例。
     return app
 
 
-__all__ = ["build_app", "SESSION_COOKIE"]
+__all__ = ["ACCESS_TOKEN_QUERY", "DEFAULT_ALLOWED_ORIGINS", "build_app"]

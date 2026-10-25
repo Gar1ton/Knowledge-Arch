@@ -1,6 +1,12 @@
 "use client";
-import React, { createContext, useContext, useEffect, useRef, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { getConsoleScopeState, upsertConsoleScopeState } from "@/lib/api";
+
+/** 主窗口的页面：工作台（三栏）或数据流。 */
+export type ConsoleView = "workspace" | "flow";
+/** 偏好设置窗口的分组。 */
+export type PrefsGroup =
+  | "general" | "appearance" | "storage" | "local_models" | "components" | "diagnostics";
 
 interface HighlightedChunk {
   docId: string;
@@ -20,14 +26,13 @@ interface ConsoleContextValue {
   noteDocId: string | null;
   setNoteDocId: (id: string | null) => void;
 
-  settingOpen: boolean;
-  setSettingOpen: (v: boolean) => void;
+  view: ConsoleView;
+  setView: (v: ConsoleView) => void;
 
-  astrBotOpen: boolean;
-  setAstrBotOpen: (v: boolean) => void;
-
-  workflowOpen: boolean;
-  setWorkflowOpen: (v: boolean) => void;
+  /** 打开中的偏好设置分组；null = 窗口关闭。 */
+  prefsGroup: PrefsGroup | null;
+  openPrefs: (group?: PrefsGroup) => void;
+  closePrefs: () => void;
 }
 
 const ConsoleContext = createContext<ConsoleContextValue>({
@@ -39,12 +44,11 @@ const ConsoleContext = createContext<ConsoleContextValue>({
   setHighlightedChunk: () => {},
   noteDocId: null,
   setNoteDocId: () => {},
-  settingOpen: false,
-  setSettingOpen: () => {},
-  astrBotOpen: false,
-  setAstrBotOpen: () => {},
-  workflowOpen: false,
-  setWorkflowOpen: () => {},
+  view: "workspace",
+  setView: () => {},
+  prefsGroup: null,
+  openPrefs: () => {},
+  closePrefs: () => {},
 });
 
 export function ConsoleProvider({ children }: { children: React.ReactNode }) {
@@ -52,9 +56,10 @@ export function ConsoleProvider({ children }: { children: React.ReactNode }) {
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [highlightedChunk, setHighlightedChunk] = useState<HighlightedChunk | null>(null);
   const [noteDocId, setNoteDocId] = useState<string | null>(null);
-  const [settingOpen, setSettingOpen] = useState(false);
-  const [astrBotOpen, setAstrBotOpen] = useState(false);
-  const [workflowOpen, setWorkflowOpen] = useState(false);
+  const [view, setView] = useState<ConsoleView>("workspace");
+  const [prefsGroup, setPrefsGroup] = useState<PrefsGroup | null>(null);
+  const openPrefs = useCallback((group: PrefsGroup = "general") => setPrefsGroup(group), []);
+  const closePrefs = useCallback(() => setPrefsGroup(null), []);
   const hydratedRef = useRef(false);
 
   useEffect(() => {
@@ -154,9 +159,8 @@ export function ConsoleProvider({ children }: { children: React.ReactNode }) {
         selectedDocId, setSelectedDocId,
         highlightedChunk, setHighlightedChunk,
         noteDocId, setNoteDocId,
-        settingOpen, setSettingOpen,
-        astrBotOpen, setAstrBotOpen,
-        workflowOpen, setWorkflowOpen,
+        view, setView,
+        prefsGroup, openPrefs, closePrefs,
       }}
     >
       {children}

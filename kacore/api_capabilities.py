@@ -1,18 +1,21 @@
 """能力与可选依赖管理 API 子门面。
 
-本 mixin 只暴露系统能力查询、依赖列表、安装与重检能力；运行时依赖由
-KnowledgeRepositoryApi 通过构造器注入。
+本 mixin 只暴露系统能力查询、依赖列表、组件安装 / 卸载与重检能力；运行时依赖由
+KnowledgeRepositoryApi 通过构造器注入。组件经 ExtrasManager 用 uv 装进数据目录的
+`extras/<pack>/`（安装包内的 Python 只读，不能再往运行时里 pip install）。
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
 from kacore.capabilities import (
     dependency_statuses,
     detect_capabilities,
+    milvus_lock_error_hint,
+    milvus_runtime_status,
+    resolve_dependency,
     resolve_install_spec,
 )
 from kacore.milvus_build import (
@@ -24,6 +27,7 @@ from kacore.milvus_build import (
 
 if TYPE_CHECKING:
     from kacore.config import Config
+    from kacore.extras.manager import ExtrasManager
     from kacore.index_compatibility import IndexCompatibilityStore
     from kacore.milvus_build import MilvusBuildJob
     from kacore.pipelines.zotero_sync_pipeline import ZoteroSyncPipeline
@@ -33,6 +37,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("KnowledgeRepositoryApi")
 
+# Milvus 的安装规格（取自白名单，唯一真相源），用于识别「这次装的是 Milvus」。
+_MILVUS_INSTALL_SPEC = resolve_install_spec("milvus")
+
 
 class CapabilitiesApiMixin:
     """系统能力查询与可选依赖安装/重检；组合进 KnowledgeRepositoryApi 使用。"""
@@ -40,11 +47,13 @@ class CapabilitiesApiMixin:
     _config: Config | None
     _source_store: SourceDocumentStore
     _vector_store: VectorStore | None
+    _vector_store_init_error: str | None
     _embedding_provider: EmbeddingProvider | None
     _index_compatibility: IndexCompatibilityStore | None
     _embedding_fingerprint: str | None
     _zotero_pipeline: ZoteroSyncPipeline | None
     _milvus_build_job: MilvusBuildJob | None
+    _extras_manager: ExtrasManager | None
 
     async def get_capabilities(self) -> dict[str, Any]:
         """返回数据流各环节、依赖状态与运行态诊断。"""
@@ -54,16 +63,30 @@ class CapabilitiesApiMixin:
         await self._overlay_milvus_runtime_health(data)
         self._overlay_zotero_config_state(data)
         self._overlay_reranker_runtime_status(data)
-        # 运行壳标识：前端据此决定设置页哪些节可编辑（standalone 无 AstrBot 面板）。
-        data["shell"] = getattr(self, "shell", "plugin")
-        data["conversation_available"] = bool(
-            getattr(self, "conversation_available", lambda: False)()
-        )
         return data
 
     def list_dependencies(self) -> list[dict[str, Any]]:
         """列出可选依赖及其安装版本状态。"""
         return dependency_statuses()
+
+    def list_components(self) -> dict[str, Any]:
+        """偏好设置 › 组件页：安装器是否可用 + 每个组件的安装状态。"""
+        if self._extras_manager is None:
+            return {
+                "installer_available": False,
+                "installer": "",
+                "extras_dir": "",
+                "components": [],
+            }
+        return self._extras_manager.status()
+
+    def uninstall_component(self, package: str) -> dict[str, Any]:
+        """删除一个已装组件（白名单校验同安装；重启服务后生效）。"""
+        if self._extras_manager is None:
+            raise RuntimeError("This environment cannot manage components in the app.")
+        result = self._extras_manager.uninstall(package)
+        logger.info("component uninstall: %s → %s", package, result.get("status"))
+        return result
 
     async def recheck_dependencies(self) -> dict[str, Any]:
         """清除 import 缓存后重新探测，并返回最新能力快照。"""
@@ -147,6 +170,61 @@ class CapabilitiesApiMixin:
             elif stage.get("id") == "ask" and health["rebuild_required"]:
                 detail["fallback_reason"] = health["reason"]
 
+    def vector_store_unavailable_reason(self) -> str:
+        """向量库不可用时的确切原因 + 下一步；可用时返回空串。
+
+        为何存在：旧文案对所有情况都说「请安装 Milvus 并重启服务，或配置 embedding provider」，
+        而真实原因可能是①后端根本没选 milvus ②milvus-lite 缺失（装了 pymilvus 也没用）
+        ③embedding 探针失败/超时 ④依赖齐全但装配报错。用户照着一句话去装，往往完全无效。
+        判断顺序即排查顺序：先看配置，再看依赖，最后看运行态。
+        """
+        if self._config is not None and self._config.get_vector_db_config().backend != "milvus":
+            return (
+                "The vector store backend is lexical (SQLite keyword recall only); there is no "
+                "Milvus index to rebuild."
+            )
+
+        runtime = milvus_runtime_status()
+        if not runtime["ready"]:
+            return f"The local Milvus vector store is unavailable: {runtime['hint']}"
+
+        if self._config is not None:
+            emb = self._config.get_embedding_config()
+            if emb.provider == "external" and not emb.base_url:
+                return (
+                    "No online embedding connection is chosen yet: pick one in the Embedding "
+                    "node of the data flow, then restart the service."
+                )
+
+        if self._embedding_provider is None:
+            return (
+                "The embedding provider is not ready (startup probe failed or timed out), so "
+                "the vector index cannot be rebuilt: check the diagnostics on the data flow "
+                "page, fix the embedding settings, or wait for the local model download to "
+                "finish and restart the service."
+            )
+
+        if self._vector_store is None:
+            if self._vector_store_init_error:
+                lock_hint = milvus_lock_error_hint(self._vector_store_init_error)
+                if lock_hint:
+                    return (
+                            "Milvus dependencies are ready, but the vector store failed to start: "
+                            f"{self._vector_store_init_error}. {lock_hint}"
+                        
+                    )
+                return (
+                        "Milvus dependencies are ready, but the vector store failed to start: "
+                        f"{self._vector_store_init_error}. Fix it and restart the service."
+                    
+                )
+            return (
+                "Milvus dependencies are ready, but the vector store failed to start: check "
+                "the Milvus error in the terminal log, fix it and restart the service."
+            )
+
+        return ""
+
     async def _milvus_runtime_health(self) -> dict[str, Any]:
         stats = await self._source_store.get_corpus_stats()
         pending_count = int(stats.get("pending_reindex_count", 0))
@@ -161,8 +239,12 @@ class CapabilitiesApiMixin:
             and self._index_compatibility.is_milvus_compatible(self._embedding_fingerprint)
         )
         reason = ""
+        lock_hint: str | None = None
         if self._vector_store is None:
-            reason = "Milvus vector store is not initialized."
+            reason = self._vector_store_init_error or "Milvus vector store is not initialized."
+            lock_hint = milvus_lock_error_hint(self._vector_store_init_error or "")
+            if lock_hint:
+                reason = f"{reason}\n{lock_hint}"
         elif self._embedding_provider is None:
             reason = "Embedding provider is not initialized."
         elif self._index_compatibility is None or not self._embedding_fingerprint:
@@ -187,16 +269,16 @@ class CapabilitiesApiMixin:
             if build_stage == MILVUS_BUILD_STAGE_CLEANING:
                 done = build_job.processed_clean_docs + build_job.failed_docs
                 total = build_job.total_clean_docs or build_job.total_docs
-                reason = f"正在清洗数据…（{done}/{total}，{build_progress_percent}%）"
+                reason = f"Cleaning data… ({done}/{total}, {build_progress_percent}%)"
             elif build_stage == MILVUS_BUILD_STAGE_INDEXING:
                 done = build_job.processed_index_docs
                 total = build_job.total_index_docs or build_job.total_docs
-                reason = f"正在构建向量库索引…（{done}/{total}，{build_progress_percent}%）"
+                reason = f"Building the vector index… ({done}/{total}, {build_progress_percent}%)"
             elif build_stage == MILVUS_BUILD_STAGE_FINALIZING:
-                reason = f"正在收尾向量库构建…（{build_progress_percent}%）"
+                reason = f"Finishing the vector index build… ({build_progress_percent}%)"
             else:
                 done = build_job.processed_docs + build_job.failed_docs
-                reason = f"正在构建向量库索引…（{done}/{build_job.total_docs}）"
+                reason = f"Building the vector index… ({done}/{build_job.total_docs})"
 
         return {
             "compatible": compatible,
@@ -205,57 +287,95 @@ class CapabilitiesApiMixin:
             "document_count": document_count,
             "chunk_count": chunk_count,
             "reason": reason,
+            "lock_detected": bool(lock_hint),
             "building": building,
             "build_stage": build_stage,
             "build_progress_percent": build_progress_percent,
         }
 
     async def install_dependency(self, package: str) -> dict[str, Any]:
-        """安装白名单内可选依赖，并把 pip 输出转发到 logger。"""
-        spec = resolve_install_spec(package)
-        return await self._run_pip_install(spec)
+        """安装白名单内的组件（经 ExtrasManager 用 uv 装进数据目录），输出转发到 logger。
 
-    async def _run_pip_install(self, spec: str) -> dict[str, Any]:
-        """以当前解释器运行 pip install。"""
-        import sys
-
-        logger.info("Installing optional dependency: %s", spec)
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                spec,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
+        milvus 会同时装上 `milvus-lite`：pymilvus 的 `milvus_lite` extra 仍带着 2.x C++ wheel
+        时代的 `sys_platform != "win32"` 标记，Windows 上会被静默跳过（退出码仍是 0）。
+        白名单外的包名抛 ValueError（HTTP 层转 400）。
+        """
+        dep = resolve_dependency(package)
+        specs = dep.install_specs
+        operation_id = self._runtime_events.start(
+            category="system",
+            operation="dependency_install",
+            msg="optional component install started",
+            metadata={"package": dep.key, "spec_count": len(specs)},
+        )
+        result = await self._run_extras_install(dep.key, specs)
+        verified = self._verify_install_runtime(specs, result)
+        if verified.get("status") == "ok":
+            self._runtime_events.finish(
+                operation_id=operation_id,
+                category="system",
+                operation="dependency_install",
+                msg="optional component install finished",
+                metadata={"package": dep.key, "returncode": verified.get("returncode")},
             )
-        except Exception as exc:
-            logger.error("Failed to launch pip for %s: %s", spec, exc)
-            return {"status": "error", "package": spec, "message": str(exc)}
-
-        assert proc.stdout is not None
-        async for raw in proc.stdout:
-            line = raw.decode(errors="replace").rstrip()
-            if line:
-                logger.info("[pip] %s", line)
-        returncode = await proc.wait()
-        ok = returncode == 0
-        if ok:
-            logger.info("pip install succeeded: %s (restart plugin to load)", spec)
         else:
-            logger.error("pip install failed (exit %s): %s", returncode, spec)
+            self._runtime_events.fail(
+                operation_id=operation_id,
+                category="system",
+                operation="dependency_install",
+                msg="optional component install failed",
+                error=str(verified.get("message") or "unknown error"),
+                metadata={"package": dep.key, "returncode": verified.get("returncode")},
+            )
+        return verified
+
+    def _verify_install_runtime(
+        self, specs: tuple[str, ...], result: dict[str, Any]
+    ) -> dict[str, Any]:
+        """安装器退出码为 0 不等于功能可用：装完再验一次真实 import 名。
+
+        典型反例：`pip install pymilvus[milvus_lite]` 在 Windows 上跳过 milvus-lite 仍返回 0，
+        依赖面板于是显示「已安装」，而任何本地向量库操作都会抛
+        `ConnectionConfigException: milvus-lite is required for local database connections`。
+        """
+        if result.get("status") != "ok" or _MILVUS_INSTALL_SPEC not in specs:
+            return result
+        import importlib
+
+        importlib.invalidate_caches()
+        runtime = milvus_runtime_status()
+        if runtime["ready"]:
+            return result
+        logger.error((
+            "Component installed, but the Milvus runtime is still unavailable: %s"
+        ), runtime["hint"])
         return {
-            "status": "ok" if ok else "error",
-            "package": spec,
-            "returncode": returncode,
-            "restart_required": ok,
-            "message": (
-                "已安装，需重启插件生效；Docker 部署请注意依赖持久化。"
-                if ok
-                else f"安装失败，退出码 {returncode}，详见终端日志。"
-            ),
+            **result,
+            "status": "error",
+            "restart_required": False,
+            "message": f"Installed, but Milvus is still unavailable: {runtime['hint']}",
         }
+
+    async def _run_extras_install(self, key: str, specs: tuple[str, ...]) -> dict[str, Any]:
+        """委派 ExtrasManager 安装（失败回滚由它保证）；uv 输出逐行写进日志页。"""
+        spec = " ".join(specs)
+        if self._extras_manager is None:
+            return {
+                "status": "error",
+                "package": spec,
+                "returncode": None,
+                "restart_required": False,
+                "message": "This environment cannot install components in the app.",
+            }
+        logger.info("Installing component %s: %s", key, spec)
+        result = await self._extras_manager.install(
+            key, on_line=lambda line: logger.info("[uv] %s", line)
+        )
+        if result.get("status") == "ok":
+            logger.info("component install succeeded: %s (restart service to load)", key)
+        else:
+            logger.error("component install failed: %s — %s", key, result.get("message"))
+        return result
 
 
 __all__ = ["CapabilitiesApiMixin"]

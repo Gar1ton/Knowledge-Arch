@@ -30,11 +30,8 @@ def apply_pending_restore(data_dir: Path, config: Config) -> bool:
     if not snapshot_id or not payload.is_dir():
         raise RuntimeError("R2 pending restore marker is invalid")
 
-    portable_path = payload / "config" / "portable_config.json"
-    current_runtime = _read_json(data_dir / "runtime_config.json")
-    portable = _read_json(portable_path)
-    staged_runtime = payload / "config" / "runtime_config.json"
-    _write_json_atomic(staged_runtime, _merge_portable_config(current_runtime, portable))
+    staged_settings = payload / "config" / "settings.json"
+    _stage_merged_settings(data_dir, payload / "config", staged_settings)
 
     source_cfg = config.get_source_store_config()
     vector_cfg = config.get_vector_db_config()
@@ -51,7 +48,7 @@ def apply_pending_restore(data_dir: Path, config: Config) -> bool:
             data_dir / "index_compatibility.json",
         ),
         (payload / "lightrag", graph_root),
-        (staged_runtime, data_dir / "runtime_config.json"),
+        (staged_settings, data_dir / "settings.json"),
     ]
     rollback = data_dir / _ROLLBACK_DIR / snapshot_id
     if rollback.exists():
@@ -118,16 +115,32 @@ def rollback_applied_restore(data_dir: Path) -> bool:
     return True
 
 
-def _merge_portable_config(current: dict[str, Any], portable: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(current)
-    for section, values in portable.items():
-        if not isinstance(values, dict):
-            continue
-        existing = merged.get(section)
-        target = dict(existing) if isinstance(existing, dict) else {}
-        target.update(values)
-        merged[section] = target
-    return merged
+def _stage_merged_settings(data_dir: Path, config_dir: Path, staged: Path) -> None:
+    """当前 settings.json + 快照里的可携设置 → staged 文件（随其它恢复项一起换入、可回滚）。
+
+    新快照带 portable_settings.json（新键）；插件版快照只有 portable_config.json（旧键），
+    经 legacy_keys 翻译后再合并。机密不在快照里，加密库保持本机内容。
+    """
+    from kacore.settings.json_file import JsonFileSettingsBackend
+    from kacore.settings.memory import MemorySecretStore
+    from kacore.settings.store import SettingsStore
+
+    current = data_dir / "settings.json"
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    _write_json_atomic(staged, _read_json(current))
+    new_format = config_dir / "portable_settings.json"
+    legacy_format = config_dir / "portable_config.json"
+    if new_format.exists():
+        portable = _read_json(new_format)
+    elif legacy_format.exists():
+        from kacore.settings.legacy_keys import apply_translation, translate
+
+        legacy_store = SettingsStore.in_memory()
+        apply_translation(legacy_store, translate(_read_json(legacy_format)))
+        portable = legacy_store.portable_document()
+    else:
+        return
+    SettingsStore(JsonFileSettingsBackend(staged), MemorySecretStore()).merge_portable(portable)
 
 
 def _write_json_atomic(path: Path, value: object) -> None:

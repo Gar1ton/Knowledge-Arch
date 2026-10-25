@@ -1,13 +1,15 @@
 "use client";
-/* Extracted from app/(console)/flow/page.tsx — do NOT modify components/flow/ files. */
+/* 主窗口「数据流」页：节点拓扑 + 每个节点的设置面板（SettingSpec 驱动）。 */
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { FlowDiagram } from "@/components/flow/FlowDiagram";
 import { AlertIcon, CheckIcon, XIcon } from "@/components/flow/Icons";
 import { SWITCH_MAP, type FlowStageId } from "@/components/flow/model";
 import type { QuickConfigUpdate } from "@/components/flow/QuickConfigPanel";
+import { settingKeyFor } from "@/components/settings/settingValues";
 import { useToast } from "@/components/ui/Toast";
 import { useI18n } from "@/lib/i18n";
 import {
+  ApiError,
   getCapabilities,
   getEffectiveConfig,
   getZoteroConfig,
@@ -15,21 +17,37 @@ import {
   rebuildIndexPending,
   recheckDependencies,
   restartPlugin,
-  updateConfigValue,
   type CapabilitiesData,
   type DependencyStatus,
   type EffectiveConfig,
   type PipelineStage,
 } from "@/lib/api";
+import {
+  getSettingsSchema,
+  installFailureText,
+  listProviders,
+  patchSetting,
+  worstConsequence,
+  type Consequence,
+  type ProvidersList,
+  type SettingItem,
+} from "@/lib/settingsApi";
 
 type Banner = { kind: "restart" | "rebuild" | "install"; msg?: string } | null;
 type RefreshOptions = { recheck?: boolean; includeZotero?: boolean; notify?: boolean };
+
+/** 后端忙（重建索引、加载模型）时刷新会超时；这是抖动不是故障，不该弹错误 toast。 */
+function isClientTimeout(reason: unknown): boolean {
+  return reason instanceof ApiError && reason.timedOut;
+}
 
 export function FlowPageContent({ onClose }: { onClose?: () => void } = {}) {
   const { t, lang } = useI18n();
   const { toast } = useToast();
   const [caps, setCaps] = useState<CapabilitiesData | null>(null);
   const [config, setConfig] = useState<EffectiveConfig | null>(null);
+  const [settingsItems, setSettingsItems] = useState<SettingItem[]>([]);
+  const [providers, setProviders] = useState<ProvidersList>({ providers: [], presets: [], kinds: [] });
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [installingKey, setInstallingKey] = useState<string | null>(null);
@@ -62,11 +80,15 @@ export function FlowPageContent({ onClose }: { onClose?: () => void } = {}) {
     if (refreshInFlight.current) return;
     refreshInFlight.current = true;
     try {
-      const [capsResult, configResult] = await Promise.allSettled([
+      const [capsResult, configResult, schemaResult, providersResult] = await Promise.allSettled([
         options.recheck ? recheckDependencies() : getCapabilities(),
         getEffectiveConfig(1_500),
+        getSettingsSchema("flow"),
+        listProviders(),
       ]);
       if (!mountedRef.current) return;
+      if (schemaResult.status === "fulfilled") setSettingsItems(schemaResult.value.items);
+      if (providersResult.status === "fulfilled") setProviders(providersResult.value);
       if (capsResult.status === "fulfilled") {
         const freshCaps = capsResult.value;
         const askStage = freshCaps.pipeline.find((stage) => stage.id === "ask");
@@ -86,12 +108,12 @@ export function FlowPageContent({ onClose }: { onClose?: () => void } = {}) {
         }
         rerankStatusRef.current = nextRerankKey;
         setCaps(freshCaps);
-      } else if (options.notify) {
+      } else if (options.notify && !isClientTimeout(capsResult.reason)) {
         toast(capsResult.reason instanceof Error ? capsResult.reason.message : String(capsResult.reason), "error");
       }
       if (configResult.status === "fulfilled") {
         setConfig(configResult.value);
-      } else if (options.notify) {
+      } else if (options.notify && !isClientTimeout(configResult.reason)) {
         toast(configResult.reason instanceof Error ? configResult.reason.message : String(configResult.reason), "error");
       }
       if (options.includeZotero) {
@@ -136,19 +158,23 @@ export function FlowPageContent({ onClose }: { onClose?: () => void } = {}) {
     };
   }, [refreshFlow]);
 
+  const applyConsequence = useCallback((stageId: string, consequence: Consequence) => {
+    if (consequence === "rebuild") setBanner({ kind: "rebuild" });
+    else if (consequence === "restart") setBanner({ kind: "restart" });
+    else toast(t("flow_saved"), "ok");
+    if (consequence !== "none") {
+      setRestartPendingIds((prev) => new Set(prev).add(stageId));
+    }
+  }, [t, toast]);
+
   const handleSwitch = useCallback(async (stage: PipelineStage, value: string) => {
     const map = SWITCH_MAP[stage.id as keyof typeof SWITCH_MAP];
     if (!map || value === stage.current) return;
     const writeValue: string | boolean = map.toBool ? value === "on" : value;
     setSavingId(stage.id);
     try {
-      const result = await updateConfigValue(map.section, map.key, writeValue);
-      if (result.rebuild_required) setBanner({ kind: "rebuild" });
-      else if (result.restart_required) setBanner({ kind: "restart" });
-      else toast(t("flow_saved"), "ok");
-      if (result.rebuild_required || result.restart_required) {
-        setRestartPendingIds((prev) => new Set(prev).add(stage.id));
-      }
+      const result = await patchSetting(map.key, writeValue);
+      applyConsequence(stage.id, result.consequence);
       await refreshFlow({ includeZotero: true });
       setJustActivatedId(`${stage.id}-${value}`);
       if (flashTimer.current) clearTimeout(flashTimer.current);
@@ -158,7 +184,7 @@ export function FlowPageContent({ onClose }: { onClose?: () => void } = {}) {
     } finally {
       setSavingId(null);
     }
-  }, [refreshFlow, t, toast]);
+  }, [applyConsequence, refreshFlow, t, toast]);
 
   const handleQuickConfigSave = useCallback(async (stageId: FlowStageId, updates: QuickConfigUpdate[]) => {
     if (updates.length === 0) return;
@@ -166,21 +192,21 @@ export function FlowPageContent({ onClose }: { onClose?: () => void } = {}) {
     try {
       const results = [];
       for (const update of updates) {
-        results.push(await updateConfigValue(update.section, update.key, update.value));
+        results.push(await patchSetting(settingKeyFor(update.section, update.key), update.value));
       }
-      if (results.some((r) => r.rebuild_required)) setBanner({ kind: "rebuild" });
-      else if (results.some((r) => r.restart_required)) setBanner({ kind: "restart" });
-      else toast(t("flow_saved"), "ok");
-      if (results.some((r) => r.rebuild_required || r.restart_required)) {
-        setRestartPendingIds((prev) => new Set(prev).add(stageId));
-      }
+      applyConsequence(stageId, worstConsequence(results));
       await refreshFlow({ includeZotero: true });
     } catch (err: unknown) {
       toast(`${t("flow_save_failed")}: ${err instanceof Error ? err.message : String(err)}`, "error");
+      await refreshFlow({ includeZotero: true });
     } finally {
       setSavingId(null);
     }
-  }, [refreshFlow, t, toast]);
+  }, [applyConsequence, refreshFlow, t, toast]);
+
+  const handleNotify = useCallback((message: string, kind: "ok" | "error" | "info") => {
+    toast(message, kind);
+  }, [toast]);
 
   const handleInstall = useCallback(async (dep: DependencyStatus) => {
     setInstallingKey(dep.key);
@@ -191,7 +217,7 @@ export function FlowPageContent({ onClose }: { onClose?: () => void } = {}) {
         setBanner({ kind: "install", msg: t("flow_deps_restart_hint") });
         toast(t("flow_deps_restart_hint"), "ok");
       } else {
-        toast(result.message || t("flow_save_failed"), "error");
+        toast(installFailureText(result, t) || t("flow_save_failed"), "error");
       }
       await refreshFlow({ recheck: true, includeZotero: true });
     } catch (err: unknown) {
@@ -247,6 +273,10 @@ export function FlowPageContent({ onClose }: { onClose?: () => void } = {}) {
     poll();
   }, [refreshFlow, t, toast]);
 
+  const handleMilvusLockHelp = useCallback(() => {
+    toast(t("flow_milvus_lock_help"), "info");
+  }, [t, toast]);
+
   const handleManualRefresh = useCallback(() => {
     return refreshFlow({ recheck: true, includeZotero: true, notify: true });
   }, [refreshFlow]);
@@ -273,9 +303,9 @@ export function FlowPageContent({ onClose }: { onClose?: () => void } = {}) {
               className={`flow-restart-btn ${restartPendingIds.size > 0 ? "is-pending" : ""}`}
               disabled={restarting}
               onClick={handleRestartPlugin}
-              title={t("flow_restart_plugin_hint")}
+              title={t("flow_restart_service_hint")}
             >
-              {restarting ? t("flow_restart_running") : t("flow_restart_plugin")}
+              {restarting ? t("flow_restart_running") : t("flow_restart_service")}
               {restartPendingIds.size > 0 && <span className="flow-restart-badge">{restartPendingIds.size}</span>}
             </button>
             <div className="flow-topo-legend">
@@ -309,6 +339,10 @@ export function FlowPageContent({ onClose }: { onClose?: () => void } = {}) {
           stages={caps.pipeline}
           dependencies={caps.dependencies}
           config={config}
+          settingsItems={settingsItems}
+          providers={providers.providers}
+          presets={providers.presets}
+          onNotify={handleNotify}
           lang={lang}
           t={t}
           savingId={savingId}
@@ -322,6 +356,7 @@ export function FlowPageContent({ onClose }: { onClose?: () => void } = {}) {
           onRefresh={handleManualRefresh}
           onInstall={handleInstall}
           onRebuildIndex={handleRebuildIndex}
+          onClearMilvusLock={handleMilvusLockHelp}
           onClose={onClose}
         />
       )}

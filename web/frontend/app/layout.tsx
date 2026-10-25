@@ -1,13 +1,15 @@
 import type { Metadata } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import { JetBrains_Mono, PT_Sans } from "next/font/google";
 import localFont from "next/font/local";
 import { RootProvider } from "fumadocs-ui/provider/next";
 import "./globals.css";
 
-const inter = Inter({
-  variable: "--font-inter",
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
+// PT Sans 只有 400 / 700 两档：500 / 600 由浏览器就近取档。
+const ptSans = PT_Sans({
+  variable: "--font-pt-sans",
+  subsets: ["latin", "latin-ext"],
+  weight: ["400", "700"],
+  style: ["normal", "italic"],
   display: "swap",
 });
 
@@ -26,8 +28,8 @@ const bitcount = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "Knowledge Arch · 控制台",
-  description: "Knowledge Arch 知识库控制台",
+  title: "Knowledge Arch",
+  description: "Knowledge Arch: a local-first academic knowledge base",
 };
 
 /*
@@ -47,9 +49,9 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html
-      lang="zh"
+      lang="en"
       suppressHydrationWarning
-      className={`${inter.variable} ${jetbrainsMono.variable} ${bitcount.variable}`}
+      className={`${ptSans.variable} ${jetbrainsMono.variable} ${bitcount.variable}`}
     >
       <body>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
@@ -58,7 +60,7 @@ export default function RootLayout({
           search={{ enabled: false }}
           theme={{
             attribute: "class",
-            defaultTheme: "light",
+            defaultTheme: "dark",
             enableSystem: true,
             disableTransitionOnChange: true,
           }}

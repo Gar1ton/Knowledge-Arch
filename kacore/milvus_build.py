@@ -1,7 +1,7 @@
 """Milvus 向量库重建任务的进度模型（domain-light，无 I/O）。
 
 为什么存在：`rebuild_vector_store`（全量）/ `rebuild_index_pending`（增量）原本是同步阻塞、
-无进度反馈的。本模块定义一个**纯内存**的构建任务快照对象，由 `core/api.py` 的后台任务在逐
+无进度反馈的。本模块定义一个**纯内存**的构建任务快照对象，由 `kacore/api.py` 的后台任务在逐
 文档循环中更新，并经 HTTP 暴露给前端轮询，从而复刻 LightRAG 构建进度条的体验。
 
 与 LightRAG `BuildJob` 不同：Milvus 构建**无暂停**（必须构建成功）。进度单位是「阶段文档」：

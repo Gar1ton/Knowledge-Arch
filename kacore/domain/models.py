@@ -61,9 +61,9 @@ class DocumentOrigin(str, Enum):
 class DocumentLifecycle(str, Enum):
     """文档生命态。
 
-    ACTIVE 为正常参与检索的文档；DETACHED 为 strict_mirror 同步模式下被脱管的文档——
-    其制品/Milvus 索引已移除但 **LRAG workspace 保留**，切回 conservative/archive 模式重扫后
-    可恢复为 ACTIVE。检索默认过滤 DETACHED。
+    ACTIVE 为正常参与检索的文档；DETACHED 为 conservative 同步模式下被脱管的文档——
+    其 Milvus 索引已移除但文档记录/制品包与 **LRAG workspace 保留**，Zotero 侧恢复该文档后
+    重扫可恢复为 ACTIVE；切到 strict_mirror 后重扫会将其硬删除。检索默认过滤 DETACHED。
     """
 
     ACTIVE = "active"
@@ -362,6 +362,7 @@ NOTION_PUSH_PENDING = "pending"
 NOTION_PUSH_SYNCED = "synced"
 NOTION_PUSH_DEGRADED = "degraded"
 NOTION_PUSH_FAILED = "failed"
+NOTION_PUSH_ARCHIVED = "archived"
 NOTION_OUTBOX_PUSHED = "pushed"
 
 
@@ -375,8 +376,8 @@ class NotionEntityRecord:
         - page_id 为 Notion 页面 id（幂等 upsert 第一优先查找路径；空串=尚未建页）。
         - metadata_hash 记上次成功推送的属性指纹（属性变更检测）；content_hash 记
           上次成功推送的正文指纹（是否重写正文块的依据）。二者分工独立。
-        - status ∈ {pending, synced, degraded, failed}；degraded/failed 时
-          message 携带原因。
+        - status ∈ {pending, synced, degraded, failed, archived}；archived 表示
+          Strict 模式已归档远端 detached 页面；degraded/failed 时 message 携带原因。
     """
 
     entity_type: str
@@ -486,6 +487,7 @@ __all__ = [
     "NOTION_PUSH_SYNCED",
     "NOTION_PUSH_DEGRADED",
     "NOTION_PUSH_FAILED",
+    "NOTION_PUSH_ARCHIVED",
     "NOTION_OUTBOX_PUSHED",
     "QuotaUsage",
     "QuotaWarning",

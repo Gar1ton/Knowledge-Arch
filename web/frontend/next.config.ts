@@ -4,6 +4,9 @@ const isDev = process.env.NODE_ENV !== "production";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // Deterministic build ID so repeated desktop builds of the same source produce the
+  // same static export (Next.js otherwise generates a random ID on every build).
+  generateBuildId: async () => "knowledge-arch",
   // WSL2/Windows 路径规范化问题：强制本地编译以确保 React Client Manifest 路径一致
   transpilePackages: ["fumadocs-ui", "fumadocs-core"],
   ...(isDev ? {} : { output: "export" as const }),
@@ -13,8 +16,8 @@ const nextConfig: NextConfig = {
     ? {
         allowedDevOrigins: ["127.0.0.1", "localhost"],
         async rewrites() {
-          const host = process.env.KR_API_HOST ?? "127.0.0.1";
-          const port = process.env.KR_API_PORT ?? "26618";
+          const host = process.env.KA_API_HOST ?? "127.0.0.1";
+          const port = process.env.KA_API_PORT ?? "26618";
           return [
             {
               source: "/api/:path*",

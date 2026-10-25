@@ -9,18 +9,19 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from static_retriever import StaticRetriever
 
 from kacore.api import KnowledgeRepositoryApi, LightRAGNotReadyError
 from kacore.domain.models import (
     Collection,
     DocumentChunk,
+    DocumentLifecycle,
     DocumentOrigin,
     SourceDocument,
     SyncRecord,
     SyncStatus,
     SyncTargetKind,
 )
-from kacore.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
 from kacore.repository.source_store.memory import InMemorySourceDocumentStore
 from kacore.repository.sync_targets.memory import InMemorySyncTarget
 
@@ -42,12 +43,14 @@ async def _make_api() -> KnowledgeRepositoryApi:
     store = InMemorySourceDocumentStore()
     await store.add_document(_doc("d1", "c1", ["t"]))
     await store.add_document(_doc("d2", "c2"))
-    kb = InMemoryKnowledgeBaseReader({"kb1": [DocumentChunk("c0", "x", 0, "alpha", "h0")]})
+    kb = StaticRetriever({"kb1": [DocumentChunk("c0", "x", 0, "alpha", "h0")]})
     targets = {
         SyncTargetKind.R2: InMemorySyncTarget(SyncTargetKind.R2, 10, base_used_bytes=4),
         SyncTargetKind.NOTION: InMemorySyncTarget(SyncTargetKind.NOTION, 0),
     }
-    return KnowledgeRepositoryApi(source_store=store, kb_reader=kb, sync_targets=targets)
+    return KnowledgeRepositoryApi(
+        source_store=store, retrieval_orchestrator=kb, sync_targets=targets
+    )
 
 
 async def test_list_documents_and_filter() -> None:
@@ -113,7 +116,6 @@ async def test_list_document_chunks_rebuilds_legacy_preview_chunks() -> None:
     ingest = FakeIngestManager()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         ingest_manager=ingest,  # type: ignore[arg-type]
     )
 
@@ -126,6 +128,66 @@ async def test_list_document_chunks_rebuilds_legacy_preview_chunks() -> None:
     assert chunks[0].metadata["chunk_schema"] == "clean_md_structural_v3"
     assert context["matched_chunk_id"] == "doc-preview_c0000"
     assert rebuilt_doc is not None and rebuilt_doc.needs_reindex is True
+
+
+async def test_get_chunk_context_alone_rebuilds_legacy_chunks_once() -> None:
+    """get_chunk_context 必须和 list_document_chunks 一样自动重切旧 schema 的 chunk
+    （两个读入口行为保持一致），且只重切一次——不是每次进入都重切一遍。"""
+    store = InMemorySourceDocumentStore()
+    doc = _doc("doc-preview", "papers")
+    await store.add_document(doc)
+    await store.replace_chunks(
+        "doc-preview",
+        [DocumentChunk("doc-preview-0001", "doc-preview", 0, "legacy text", "old")],
+    )
+
+    class FakeIngestManager:
+        calls = 0
+
+        @staticmethod
+        def chunk_needs_rebuild(
+            document_id: str,
+            chunks: list[DocumentChunk],
+            local_meta: dict | None = None,
+        ) -> bool:
+            del document_id, local_meta
+            return any(
+                chunk.metadata.get("chunk_schema") != "clean_md_structural_v3"
+                for chunk in chunks
+            )
+
+        async def rebuild_document_chunks_from_artifact(self, document_id: str) -> int:
+            self.calls += 1
+            rebuilt = [
+                DocumentChunk(
+                    f"{document_id}_c0000",
+                    document_id,
+                    0,
+                    "current structural chunk",
+                    "new",
+                    metadata={
+                        "chunk_schema": "clean_md_structural_v3",
+                        "start_char": 0,
+                        "end_char": 24,
+                    },
+                )
+            ]
+            await store.replace_chunks(document_id, rebuilt)
+            return len(rebuilt)
+
+    ingest = FakeIngestManager()
+    api = KnowledgeRepositoryApi(
+        source_store=store,
+        ingest_manager=ingest,  # type: ignore[arg-type]
+    )
+
+    # 直接调 get_chunk_context（不先调 list_document_chunks），它自己就必须触发重切。
+    first = await api.get_chunk_context("doc-preview", "doc-preview_c0000")
+    second = await api.get_chunk_context("doc-preview", "doc-preview_c0000")
+
+    assert ingest.calls == 1  # 第二次调用命中已重切且已落盘的 chunk，不再重切
+    assert first["matched_chunk_id"] == "doc-preview_c0000"
+    assert second["matched_chunk_id"] == "doc-preview_c0000"
 
 
 async def test_document_and_collection_notes_are_zotero_shaped() -> None:
@@ -186,7 +248,10 @@ async def test_classify_missing_returns_false() -> None:
 
 async def test_kb_facade() -> None:
     api = await _make_api()
-    assert await api.list_kb_collections() == ["kb1"]
+    # 可检索集合来自源文档库（自动建的 default 之外，测试仓储里还有 c1/c2）。
+    assert await api.list_kb_collections() == sorted(
+        c.name for c in await api.list_collections()
+    )
     hits = await api.search_kb("kb1", "alpha", top_k=5)
     assert [c.chunk_id for c in hits] == ["c0"]
 
@@ -244,7 +309,6 @@ async def test_delete_document_cleans_remote_and_managed_file(tmp_path: Path) ->
     target._objects["c/d1"] = b"pdf"
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         sync_targets={SyncTargetKind.R2: target},
         managed_documents_dir=managed_dir,
     )
@@ -295,7 +359,6 @@ async def test_zotero_reset_removes_linked_artifacts_but_not_external_original(
     await store.add_document(local_doc)
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         managed_documents_dir=managed_dir,
     )
 
@@ -318,9 +381,33 @@ async def test_list_quota() -> None:
 async def test_list_quota_empty_when_no_targets() -> None:
     store = InMemorySourceDocumentStore()
     api = KnowledgeRepositoryApi(
-        source_store=store, kb_reader=InMemoryKnowledgeBaseReader({})
+        source_store=store
     )
     assert await api.list_quota() == []
+
+
+async def test_notion_failed_ledger_is_visible_without_sync_records_and_takes_precedence() -> None:
+    from kacore.config import Config
+    from kacore.domain.models import NotionEntityRecord
+
+    store = InMemorySourceDocumentStore()
+    for i in range(106):
+        await store.upsert_notion_entity(NotionEntityRecord(
+            "document", str(i), status="failed", message="Notion token 无效",
+        ))
+    api = KnowledgeRepositoryApi(
+        source_store=store, config=Config({}),
+    )
+    assert len(await api.get_sync_status()) == 106
+    await store.upsert_sync_record(SyncRecord("0", SyncTargetKind.NOTION, status=SyncStatus.SYNCED))
+    await store.upsert_sync_record(SyncRecord("0", SyncTargetKind.R2, status=SyncStatus.SYNCED))
+    rows = await api.get_sync_status()
+    assert len(rows) == 107
+    notion = next(row for row in rows if row["doc_id"] == "0" and row["target"] == "notion")
+    assert notion["status"] == "failed"
+    summary = await api.get_notion_push_status()
+    assert summary["documents"]["failed"] == 106
+    assert summary["errors"] == [{"message": "Notion token 无效", "count": 106}]
 
 
 async def test_sync_all_fans_out_to_each_target() -> None:
@@ -334,23 +421,26 @@ async def test_sync_all_fans_out_to_each_target() -> None:
     class StubNotionPipeline:
         calls = []
 
-        async def push_all(self, force=False):
+        async def push_all(self, force=False, *, progress=None):
             self.calls.append(force)
-            return {"status": "success", "documents": {}, "qa": {}}
+            return {"status": "success", "documents": {}, "qa": {}, "pruned": {}}
 
     pipeline = StubPipeline()
     notion_pipeline = StubNotionPipeline()
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         sync_pipeline=pipeline,  # type: ignore[arg-type]
     )
     api.attach_notion_sync_pipeline(notion_pipeline)
     result = await api.sync_documents("all", ["d1"])
     assert result["status"] == "success"
     assert set(result["targets"]) == {"r2", "notion"}
-    # Notion 走独立推送管线（push_all），R2 走 SyncPipeline.sync
+    # Notion 现为后台单任务：快照 status=running 表示已启动（视为非失败）
+    assert result["targets"]["notion"]["status"] == "running"
+    # R2 走 SyncPipeline.sync；Notion 后台推送最终跑一次 push_all(force=False)
     assert pipeline.calls == [(SyncTargetKind.R2, ["d1"])]
+    if api._notion_sync_task is not None:
+        await api._notion_sync_task
     assert notion_pipeline.calls == [False]
 
 
@@ -374,7 +464,6 @@ def _notion_api(store: InMemorySourceDocumentStore, notion_pipeline) -> Knowledg
 
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"notion_sync": {"enabled": True}}),
     )
     api.attach_notion_sync_pipeline(notion_pipeline)
@@ -384,13 +473,12 @@ def _notion_api(store: InMemorySourceDocumentStore, notion_pipeline) -> Knowledg
 async def test_notion_init_without_pipeline_reports_unavailable() -> None:
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
     )
 
     result = await api.initialize_notion_database()
 
     assert result["status"] == "unavailable"
-    assert "未装配" in result["message"]
+    assert "not set up" in result["message"]
 
 
 async def test_push_note_to_notion_outbox_path() -> None:
@@ -434,12 +522,69 @@ async def test_push_note_to_notion_disabled_returns_hint() -> None:
     store = InMemorySourceDocumentStore()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"notion_sync": {"enabled": False}}),
     )
     api.attach_notion_sync_pipeline(_StubNotionPipeline())
     result = await api.push_note_to_notion("x")
     assert result["status"] == "disabled"
+
+
+async def test_sync_notion_push_runs_background_job_and_exposes_active() -> None:
+    class StubNotionPipeline:
+        def __init__(self) -> None:
+            self.calls: list[bool] = []
+
+        async def push_all(self, force=False, *, progress=None):
+            self.calls.append(force)
+            if progress is not None:
+                progress.docs_total = 1
+                progress.record_document("created")
+            return {"status": "success", "documents": {}, "qa": {}, "pruned": {}, "warnings": []}
+
+    api = KnowledgeRepositoryApi(
+        source_store=InMemorySourceDocumentStore(),
+    )
+    pipeline = StubNotionPipeline()
+    api.attach_notion_sync_pipeline(pipeline)
+
+    snapshot = await api.sync_notion_push()
+    assert snapshot["type"] == "notion_sync"
+    assert snapshot["status"] == "running"
+    # 后台任务完成后落定 success；终态可见窗口内 get_active 仍返回快照
+    assert api._notion_sync_task is not None
+    await api._notion_sync_task
+    active = api.get_active_notion_sync_job()
+    assert active is not None
+    assert active["status"] == "success"
+    assert active["docs_created"] == 1
+    assert pipeline.calls == [False]
+
+
+async def test_sync_notion_push_is_single_flight() -> None:
+    release = asyncio.Event()
+
+    class BlockingNotionPipeline:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def push_all(self, force=False, *, progress=None):
+            self.calls += 1
+            await release.wait()
+            return {"status": "success", "documents": {}, "qa": {}, "pruned": {}, "warnings": []}
+
+    api = KnowledgeRepositoryApi(
+        source_store=InMemorySourceDocumentStore(),
+    )
+    pipeline = BlockingNotionPipeline()
+    api.attach_notion_sync_pipeline(pipeline)
+
+    first = await api.sync_notion_push()
+    second = await api.sync_notion_push()  # running 任务未结束 → 复用同一快照
+    assert first["job_id"] == second["job_id"]
+    assert second["status"] == "running"
+    release.set()
+    await api._notion_sync_task
+    assert pipeline.calls == 1  # 单任务：只真正跑一次 push_all
 
 
 # ── ask() ────────────────────────────────────────────────────────
@@ -461,65 +606,60 @@ async def test_ask_with_mock_llm_calls_generate() -> None:
     class MockLLM:
         called: bool = False
 
-        async def generate(self, prompt: str, system_prompt: str = "") -> str:
+        async def generate_result(self, prompt: str, system_prompt: str = "", **_kw):
+            from kacore.domain.llm_generation import GenerationResult
+
             MockLLM.called = True
-            return "Mock answer [1]"
+            return GenerationResult(text="Mock answer [1]")
 
     store = InMemorySourceDocumentStore()
     await store.add_document(_doc("d1", "kb1"))
-    kb = InMemoryKnowledgeBaseReader({"kb1": [DocumentChunk("c0", "d1", 0, "relevant text", "h0")]})
+    kb = StaticRetriever({"kb1": [DocumentChunk("c0", "d1", 0, "relevant text", "h0")]})
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=kb,
+        retrieval_orchestrator=kb,
         llm_adapter=MockLLM(),  # type: ignore[arg-type]
     )
     result = await api.ask(question="relevant", collection="kb1")
     assert MockLLM.called
-    assert result["answer"] == "Mock answer [1]"
+    # v1.1.0：[n] 被确定性改写为 Harvard 短引；测试文档无书目元数据故降级为 Anon./n.d.。
+    assert result["answer"].startswith("Mock answer (Anon., n.d.)")
+    assert result["references"] == ["Anon. (n.d.) d1."]
     assert len(result["sources"]) == 1
 
 
-async def test_ask_with_persona_enabled() -> None:
-    """开启 persona_enabled 时 ask() 应从 LLMAdapter 绑定的 context 中动态提取并拼接 Persona。"""
-
-    class MockContext:
-        def get_active_persona_prompt(self) -> str:
-            return "Active Persona Prompt: You are a cute cat."
+async def test_ask_uses_plain_rag_system_prompt_without_persona() -> None:
+    """未配置系统提示词时 ask() 只发送 RAG 约束，不拼任何人格前缀。"""
 
     class MockLLM:
-        called: bool = False
         captured_system_prompt: str = ""
 
-        def __init__(self) -> None:
-            self._context = MockContext()
+        async def generate_result(self, prompt: str, system_prompt: str = "", **_kw):
+            from kacore.domain.llm_generation import GenerationResult
 
-        async def generate(self, prompt: str, system_prompt: str = "") -> str:
-            MockLLM.called = True
             self.captured_system_prompt = system_prompt
-            return "Mock answer [1]"
+            return GenerationResult(text="Mock answer [1]")
 
     store = InMemorySourceDocumentStore()
     await store.add_document(_doc("d1", "kb1"))
-    kb = InMemoryKnowledgeBaseReader({"kb1": [DocumentChunk("c0", "d1", 0, "relevant text", "h0")]})
-    
+    kb = StaticRetriever({"kb1": [DocumentChunk("c0", "d1", 0, "relevant text", "h0")]})
     mock_llm = MockLLM()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=kb,
+        retrieval_orchestrator=kb,
         llm_adapter=mock_llm,  # type: ignore[arg-type]
     )
-    
-    _ = await api.ask(question="relevant", collection="kb1", persona_enabled=True)
-    assert MockLLM.called
-    assert "Active Persona Prompt: You are a cute cat." in mock_llm.captured_system_prompt
-    assert "RAG Constraints" in mock_llm.captured_system_prompt
+
+    await api.ask(question="relevant", collection="kb1")
+    assert mock_llm.captured_system_prompt.startswith("You are a helpful academic assistant.")
+    assert "RAG Constraints" not in mock_llm.captured_system_prompt
 
 
 async def test_ask_returns_empty_message_when_no_chunks() -> None:
     """知识库无内容时 ask() 应返回未找到相关内容的提示。"""
     store = InMemorySourceDocumentStore()
-    kb = InMemoryKnowledgeBaseReader({})
-    api = KnowledgeRepositoryApi(source_store=store, kb_reader=kb)
+    kb = StaticRetriever({})
+    api = KnowledgeRepositoryApi(source_store=store, retrieval_orchestrator=kb)
     result = await api.ask(question="anything")
     assert result["sources"] == []
     assert result["answer"]  # 有内容（降级提示）
@@ -569,11 +709,13 @@ async def test_graph_mixed_uses_context_and_one_outer_llm_call(
     class LLM:
         calls = 0
 
-        async def generate(self, prompt: str, system_prompt: str = "") -> str:
+        async def generate_result(self, prompt: str, system_prompt: str = "", **_kw):
+            from kacore.domain.llm_generation import GenerationResult
+
             self.calls += 1
             assert "graph context" in prompt
             assert "chunk evidence" in prompt
-            return "answer"
+            return GenerationResult(text="answer")
 
     store = InMemorySourceDocumentStore()
     await store.add_document(_doc("d1", "papers"))
@@ -583,7 +725,6 @@ async def test_graph_mixed_uses_context_and_one_outer_llm_call(
     llm = LLM()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
         retrieval_orchestrator=Orchestrator(),  # type: ignore[arg-type]
         index_compatibility=compatibility,
@@ -614,7 +755,6 @@ async def test_graph_mixed_requires_ready_lightrag() -> None:
     await store.add_document(_doc("d1", "papers"))
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
     )
     with pytest.raises(LightRAGNotReadyError, match="workspace"):
@@ -652,7 +792,6 @@ async def test_lightrag_build_resets_incompatible_workspace(tmp_path: Path) -> N
     compatibility.mark_lightrag_compatible("papers", "old-fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
         index_compatibility=compatibility,
         embedding_fingerprint="new-fp",
@@ -690,7 +829,6 @@ async def test_graph_stats_skip_pending_lightrag_workspace(tmp_path: Path) -> No
     registry = Registry()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=registry,  # type: ignore[arg-type]
         index_compatibility=compatibility,
         embedding_fingerprint="fp",
@@ -738,7 +876,6 @@ async def test_lightrag_build_only_indexes_pending_docs_when_workspace_is_compat
     compatibility.mark_lightrag_compatible("papers", "fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
         index_compatibility=compatibility,
         embedding_fingerprint="fp",
@@ -772,10 +909,12 @@ async def test_graph_mixed_can_answer_with_only_lightrag_context(tmp_path: Path)
     class LLM:
         calls = 0
 
-        async def generate(self, prompt: str, system_prompt: str = "") -> str:
+        async def generate_result(self, prompt: str, system_prompt: str = "", **_kw):
+            from kacore.domain.llm_generation import GenerationResult
+
             self.calls += 1
             assert "only graph context" in prompt
-            return "answer"
+            return GenerationResult(text="answer")
 
     store = InMemorySourceDocumentStore()
     await store.add_document(_doc("d1", "papers"))
@@ -785,7 +924,6 @@ async def test_graph_mixed_can_answer_with_only_lightrag_context(tmp_path: Path)
     llm = LLM()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
         retrieval_orchestrator=Orchestrator(),  # type: ignore[arg-type]
         index_compatibility=compatibility,
@@ -827,7 +965,6 @@ async def test_embedding_change_marks_docs_pending_and_rebuilds_incompatible_mil
     vector_store = CountingVectorStore()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=vector_store,
         embedding_provider=MockEmbeddingProvider(dimension=4),
@@ -876,7 +1013,6 @@ async def test_rerank_config_update_hot_swaps_deep_thinking(
     probe = HotSwapProbe()
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"rerank": {"provider": "noop"}}),
         deep_thinking_orchestrator=probe,  # type: ignore[arg-type]
     )
@@ -900,7 +1036,6 @@ async def test_zotero_config_same_value_save_reports_no_consequence() -> None:
     await store.add_document(_doc("d1", "papers"))
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"zotero_sync": {"storage_mode": "zotmoov", "zotmoov_root": "/data/z"}}),
     )
 
@@ -946,7 +1081,6 @@ async def test_vector_db_sync_and_rebuild(tmp_path: Path) -> None:
 
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=config,
         vector_store=v_store,
         embedding_provider=embedding,
@@ -993,7 +1127,6 @@ async def test_capabilities_reports_milvus_rebuild_required(tmp_path: Path) -> N
 
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=InMemoryVectorStore(),
         embedding_provider=MockEmbeddingProvider(dimension=4),
@@ -1030,7 +1163,6 @@ async def test_capabilities_uses_aggregate_chunk_count(tmp_path: Path) -> None:
 
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=InMemoryVectorStore(),
         embedding_provider=MockEmbeddingProvider(dimension=4),
@@ -1092,7 +1224,6 @@ async def test_rebuild_index_pending_retries_transient_embedding_failure(tmp_pat
     embedding = FlakyEmbedding()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=vector_store,
         embedding_provider=embedding,  # type: ignore[arg-type]
@@ -1144,7 +1275,6 @@ async def test_start_milvus_rebuild_progresses_to_success(tmp_path: Path) -> Non
     compatibility.mark_milvus_compatible("fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=InMemoryVectorStore(),
         embedding_provider=MockEmbeddingProvider(dimension=4),
@@ -1224,7 +1354,6 @@ async def test_start_milvus_rebuild_cleans_legacy_chunks_before_indexing(
     compatibility.mark_milvus_compatible("fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=vector_store,
         embedding_provider=MockEmbeddingProvider(dimension=4),
@@ -1259,7 +1388,6 @@ async def test_start_milvus_rebuild_is_single_flight(tmp_path: Path) -> None:
     store = InMemorySourceDocumentStore()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=InMemoryVectorStore(),
         embedding_provider=MockEmbeddingProvider(dimension=4),
@@ -1272,6 +1400,141 @@ async def test_start_milvus_rebuild_is_single_flight(tmp_path: Path) -> None:
     snapshot = await api.start_milvus_rebuild()
     assert snapshot["job_id"] == existing.job_id
     assert api._milvus_build_task is None  # 未创建新后台任务
+
+
+async def test_mark_needs_reindex_notifies_auto_reindex_scheduler() -> None:
+    """自动重建的唯一信号收口：所有标记路径都经 `_mark_document_needs_reindex`。"""
+
+    class RecordingScheduler:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def notify(self) -> None:
+            self.calls += 1
+
+    store = InMemorySourceDocumentStore()
+    await store.add_document(_doc("d1", "papers"))
+    api = KnowledgeRepositoryApi(
+        source_store=store,
+    )
+    scheduler = RecordingScheduler()
+    api.attach_auto_reindex_scheduler(scheduler)
+
+    await api._mark_document_needs_reindex("d1")
+    assert scheduler.calls == 1
+
+    # 文档不存在 → 什么都没排队，不该打信号。
+    await api._mark_document_needs_reindex("missing")
+    assert scheduler.calls == 1
+
+
+async def test_notify_auto_reindex_survives_scheduler_error() -> None:
+    """打信号失败不得影响主流程（标记本身必须已经落库）。"""
+
+    class ExplodingScheduler:
+        def notify(self) -> None:
+            raise RuntimeError("boom")
+
+    store = InMemorySourceDocumentStore()
+    await store.add_document(_doc("d1", "papers"))
+    api = KnowledgeRepositoryApi(
+        source_store=store,
+    )
+    api.attach_auto_reindex_scheduler(ExplodingScheduler())
+
+    await api._mark_document_needs_reindex("d1")
+    pending = await store.list_pending_reindex_documents()
+    assert [d.doc_id for d in pending] == ["d1"]
+
+
+async def test_enabling_auto_rebuild_wakes_the_scheduler(tmp_path: Path) -> None:
+    """刚把开关打开就该唤醒调度器——否则积压队列要等下一份新文档才被排空。"""
+    from kacore.config import Config
+
+    class RecordingScheduler:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def notify(self) -> None:
+            self.calls += 1
+
+    api = KnowledgeRepositoryApi(
+        source_store=InMemorySourceDocumentStore(),
+        config=Config({"vector_db": {"backend": "milvus", "auto_rebuild_enabled": False}}),
+        config_persist=lambda section, key, value: None,
+    )
+    scheduler = RecordingScheduler()
+    api.attach_auto_reindex_scheduler(scheduler)
+
+    await api.update_config_value("vector_db", "auto_rebuild_enabled", True)
+    assert scheduler.calls == 1
+    # 关掉开关不该打信号（没有活要干）。
+    await api.update_config_value("vector_db", "auto_rebuild_enabled", False)
+    assert scheduler.calls == 1
+
+
+async def test_run_milvus_rebuild_to_completion_reuses_running_job(tmp_path: Path) -> None:
+    """自动重建借单飞语义搭上手动重建的同一个 job，不并发起第二次。"""
+    from kacore.config import Config
+    from kacore.index_compatibility import IndexCompatibilityStore
+    from kacore.repository.vector_store.memory import InMemoryVectorStore
+    from tests.backend.test_embedding import MockEmbeddingProvider
+
+    store = InMemorySourceDocumentStore()
+    doc = _doc("d1", "papers")
+    doc.needs_reindex = True
+    await store.add_document(doc)
+    await store.replace_chunks("d1", [DocumentChunk("c1", "d1", 0, "evidence", "h1")])
+    compatibility = IndexCompatibilityStore(tmp_path / "compat.json")
+    compatibility.mark_milvus_compatible("fp")
+    api = KnowledgeRepositoryApi(
+        source_store=store,
+        config=Config({"vector_db": {"backend": "milvus"}}),
+        vector_store=InMemoryVectorStore(),
+        embedding_provider=MockEmbeddingProvider(dimension=4),
+        index_compatibility=compatibility,
+        embedding_fingerprint="fp",
+    )
+
+    started = await api.start_milvus_rebuild()
+    first_task = api._milvus_build_task
+
+    snapshot = await api.run_milvus_rebuild_to_completion()
+    assert snapshot["job_id"] == started["job_id"]  # 同一个 job，未新建
+    assert api._milvus_build_task is first_task
+    assert snapshot["status"] == "success"
+    assert await store.list_pending_reindex_documents() == []
+
+
+async def test_run_milvus_rebuild_to_completion_returns_terminal_snapshot(
+    tmp_path: Path,
+) -> None:
+    """调度器靠这个终态快照判成败，因此它必须是**跑完之后**的快照。"""
+    from kacore.config import Config
+    from kacore.index_compatibility import IndexCompatibilityStore
+    from kacore.repository.vector_store.memory import InMemoryVectorStore
+    from tests.backend.test_embedding import MockEmbeddingProvider
+
+    store = InMemorySourceDocumentStore()
+    doc = _doc("d1", "papers")
+    doc.needs_reindex = True
+    await store.add_document(doc)
+    await store.replace_chunks("d1", [DocumentChunk("c1", "d1", 0, "evidence", "h1")])
+    compatibility = IndexCompatibilityStore(tmp_path / "compat.json")
+    compatibility.mark_milvus_compatible("fp")
+    api = KnowledgeRepositoryApi(
+        source_store=store,
+        config=Config({"vector_db": {"backend": "milvus"}}),
+        vector_store=InMemoryVectorStore(),
+        embedding_provider=MockEmbeddingProvider(dimension=4),
+        index_compatibility=compatibility,
+        embedding_fingerprint="fp",
+    )
+
+    snapshot = await api.run_milvus_rebuild_to_completion()
+    assert snapshot["status"] == "success"
+    assert snapshot["processed_docs"] == 1
+    assert snapshot["finished_at"]  # 已写终态时间戳 = 确实等到了任务结束
 
 
 async def test_capabilities_degraded_while_milvus_building(tmp_path: Path) -> None:
@@ -1289,7 +1552,6 @@ async def test_capabilities_degraded_while_milvus_building(tmp_path: Path) -> No
     compatibility.mark_milvus_compatible("fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=InMemoryVectorStore(),
         embedding_provider=MockEmbeddingProvider(dimension=4),
@@ -1310,7 +1572,7 @@ async def test_capabilities_degraded_while_milvus_building(tmp_path: Path) -> No
     assert vs["detail"]["building"] is True
     assert vs["detail"]["rebuild_required"] is True
     assert vs["detail"]["build_stage"] == "data_cleaning"
-    assert "清洗数据" in vs["detail"]["reason"]
+    assert "Cleaning data" in vs["detail"]["reason"]
 
 
 async def test_start_milvus_rebuild_partial_failure(
@@ -1342,7 +1604,6 @@ async def test_start_milvus_rebuild_partial_failure(
     compatibility.mark_milvus_compatible("fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=InMemoryVectorStore(),
         embedding_provider=AlwaysFailEmbedding(),  # type: ignore[arg-type]
@@ -1393,7 +1654,6 @@ async def test_start_milvus_rebuild_cleaning_failure_skips_index(
     compatibility.mark_milvus_compatible("fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=vector_store,
         embedding_provider=MockEmbeddingProvider(dimension=4),
@@ -1437,7 +1697,6 @@ async def test_lightrag_readiness_fully_ready(tmp_path: Path) -> None:
     compatibility.mark_lightrag_compatible("papers", "fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
         index_compatibility=compatibility,
         embedding_fingerprint="fp",
@@ -1465,7 +1724,6 @@ async def test_lightrag_readiness_partially_indexed(tmp_path: Path) -> None:
     compatibility.mark_lightrag_compatible("papers", "fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
         index_compatibility=compatibility,
         embedding_fingerprint="fp",
@@ -1488,7 +1746,6 @@ async def test_build_graph_raises_when_not_confirmed() -> None:
     await store.add_document(_doc("d1", "papers"))
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
     )
 
@@ -1519,7 +1776,6 @@ async def test_build_graph_partial_failure_when_insert_raises(tmp_path: Path) ->
     await store.replace_chunks("d1", [DocumentChunk("c1", "d1", 0, "content", "h1")])
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
     )
     api._graph_build_jobs["job"] = BuildJob(job_id="job", collection="papers")
@@ -1561,7 +1817,6 @@ async def test_build_graph_reports_lrag_chunk_progress() -> None:
     await store.replace_chunks("d1", [DocumentChunk("c1", "d1", 0, "content", "h1")])
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
     )
     api._graph_build_jobs["job"] = BuildJob(job_id="job", collection="papers")
@@ -1590,7 +1845,6 @@ async def test_probe_lightrag_core_delegates_to_registry() -> None:
 
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
     )
 
@@ -1627,7 +1881,6 @@ async def test_query_graph_delegates_to_registry_when_ready(tmp_path: Path) -> N
     compatibility.mark_lightrag_compatible("papers", "fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
         index_compatibility=compatibility,
         embedding_fingerprint="fp",
@@ -1642,10 +1895,66 @@ async def test_query_graph_delegates_to_registry_when_ready(tmp_path: Path) -> N
 
 # ── Deep Thinking 模式端到端 ────────────────────────────────
 class _MockSynthLLM:
-    async def generate(
+    async def generate_result(
         self, prompt: str, system_prompt: str = "", *, allow_mock: bool = True
-    ) -> str:
-        return "deep answer [1]"
+    ):
+        from kacore.domain.llm_generation import GenerationResult
+
+        return GenerationResult(text="deep answer [1]")
+
+
+async def test_ask_task_timeout_lets_background_task_finish_and_persist() -> None:
+    """总超时到点时 ask() 抛 AskTaskTimeoutError，但不取消后台任务——它会跑完并正常写入
+    chat_history；前端据此改为轮询 /api/ask/progress + /api/chat/history 找回迟到的答案
+    （而不是像旧行为那样，前端超时后这份答案就再也回不到页面上）。
+    """
+    import asyncio
+
+    from kacore.api import AskTaskTimeoutError
+    from kacore.domain.deep_thinking import DeepThinkingOutcome
+
+    class _SlowDeepThinking:
+        async def run(
+            self,
+            collection,
+            query,
+            scope=None,
+            progress=None,
+            answer_language="auto",
+            answer_question=None,
+        ):
+            await asyncio.sleep(0.15)
+            return DeepThinkingOutcome(
+                evidence=[DocumentChunk("c0", "d1", 0, "ev", "h0")],
+                answer="迟到的答案 [1]",
+                verified=True,
+                actual_mode="milvus_deep",
+            )
+
+    store = InMemorySourceDocumentStore()
+    await store.add_document(_doc("d1", "papers"))
+    kb = StaticRetriever({"papers": []})
+    api = KnowledgeRepositoryApi(
+        source_store=store,
+        retrieval_orchestrator=kb,
+        deep_thinking_orchestrator=_SlowDeepThinking(),  # type: ignore[arg-type]
+    )
+    # 绕开 config 只接受整秒的限制，直接把总超时压到远小于 orchestrator 的 0.15s 耗时。
+    api._ask_task_timeout_seconds = lambda: 0.02  # type: ignore[method-assign]
+
+    with pytest.raises(AskTaskTimeoutError) as exc_info:
+        await api.ask(question="q", collection="papers", retrieval_mode="deep_thinking")
+    assert exc_info.value.timeout_seconds == 0.02
+
+    conversation_id = exc_info.value.conversation_id
+    assert await store.get_chat_messages(conversation_id) == []  # 超时那一刻还没写库
+
+    await asyncio.sleep(0.3)  # 放弃等待≠取消：后台任务应已跑完并落库。
+    history = await store.get_chat_messages(conversation_id)
+    assert any(
+        m["role"] == "assistant" and "迟到的答案 (Anon., n.d.)" in m["content"]
+        for m in history
+    )
 
 
 class _MockDeepThinking:
@@ -1681,8 +1990,8 @@ async def test_resolve_ask_collections_global_covers_all_active() -> None:
     store = InMemorySourceDocumentStore()
     for name in ["_uncategorized", "a", "b", "c", "d", "e", "f"]:
         await store.upsert_collection(Collection(name=name))
-    kb = InMemoryKnowledgeBaseReader({})
-    api = KnowledgeRepositoryApi(source_store=store, kb_reader=kb, sync_targets={})
+    kb = StaticRetriever({})
+    api = KnowledgeRepositoryApi(source_store=store, retrieval_orchestrator=kb, sync_targets={})
     cols = await api._resolve_ask_collections(None, None)
     assert set(cols) == {"a", "b", "c", "d", "e", "f"}
     assert "_uncategorized" not in cols
@@ -1701,7 +2010,7 @@ async def test_search_exact_mentions_wrapper_scopes_by_name() -> None:
         "doc-child", [DocumentChunk("ch-0", "doc-child", 0, "body has EXACT_TERM_A", "h0")]
     )
     api = KnowledgeRepositoryApi(
-        source_store=store, kb_reader=InMemoryKnowledgeBaseReader({}), sync_targets={}
+        source_store=store, sync_targets={}
     )
     assert {h["doc_id"] for h in await api.search_exact_mentions(["EXACT_TERM_A"])} == {"doc-child"}
     assert {
@@ -1749,12 +2058,12 @@ async def test_deep_thinking_returns_trace_and_synthesizes() -> None:
     )
     store = InMemorySourceDocumentStore()
     await store.add_document(_doc("d1", "papers"))
-    kb = InMemoryKnowledgeBaseReader(
+    kb = StaticRetriever(
         {"papers": [DocumentChunk("c0", "d1", 0, "evidence text", "h0")]}
     )
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=kb,
+        retrieval_orchestrator=kb,
         llm_adapter=_MockSynthLLM(),  # type: ignore[arg-type]
         deep_thinking_orchestrator=_MockDeepThinking(outcome),  # type: ignore[arg-type]
     )
@@ -1763,7 +2072,7 @@ async def test_deep_thinking_returns_trace_and_synthesizes() -> None:
     )
     assert result["actual_retrieval_mode"] == "milvus_deep"
     # v0.30.0：告警不再拼在正文开头，改为结构化 answer_notice 字段（正文保持连贯）。
-    assert result["answer"] == "deep answer [1]"
+    assert result["answer"].startswith("deep answer (Anon., n.d.)")
     assert result["answer_notice"].startswith("**提示：以下回答尚未完成证据校验。**")
     assert len(result["sources"]) == 1
     trace = result["thinking_trace"]
@@ -1801,10 +2110,10 @@ async def test_deep_thinking_trace_serializes_discovered_and_origin() -> None:
     )
     store = InMemorySourceDocumentStore()
     await store.add_document(_doc("d1", "papers"))
-    kb = InMemoryKnowledgeBaseReader({"papers": [DocumentChunk("c0", "d1", 0, "ev", "h0")]})
+    kb = StaticRetriever({"papers": [DocumentChunk("c0", "d1", 0, "ev", "h0")]})
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=kb,
+        retrieval_orchestrator=kb,
         llm_adapter=_MockSynthLLM(),  # type: ignore[arg-type]
         deep_thinking_orchestrator=_MockDeepThinking(outcome),  # type: ignore[arg-type]
     )
@@ -1824,9 +2133,11 @@ async def test_deep_thinking_verify_disabled_uses_deep_synth_fallback() -> None:
         def __init__(self) -> None:
             self.system_prompts: list[str] = []
 
-        async def generate(self, prompt, system_prompt="", *, allow_mock=True):
+        async def generate_result(self, prompt, system_prompt="", *, allow_mock=True):
+            from kacore.domain.llm_generation import GenerationResult
+
             self.system_prompts.append(system_prompt)
-            return "deep fallback answer [1]"
+            return GenerationResult(text="deep fallback answer [1]")
 
     outcome = DeepThinkingOutcome(
         evidence=[DocumentChunk("c0", "d1", 0, "ev", "h0")],
@@ -1836,16 +2147,16 @@ async def test_deep_thinking_verify_disabled_uses_deep_synth_fallback() -> None:
     )
     store = InMemorySourceDocumentStore()
     await store.add_document(_doc("d1", "papers"))
-    kb = InMemoryKnowledgeBaseReader({"papers": [DocumentChunk("c0", "d1", 0, "ev", "h0")]})
+    kb = StaticRetriever({"papers": [DocumentChunk("c0", "d1", 0, "ev", "h0")]})
     llm = _RecordingLLM()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=kb,
+        retrieval_orchestrator=kb,
         llm_adapter=llm,  # type: ignore[arg-type]
         deep_thinking_orchestrator=_MockDeepThinking(outcome),  # type: ignore[arg-type]
     )
     result = await api.ask(question="综述", collection="papers", retrieval_mode="deep_thinking")
-    assert result["answer"].endswith("deep fallback answer [1]")
+    assert result["answer"].startswith("deep fallback answer (Anon., n.d.)")
     assert any("mechanism" in s.lower() for s in llm.system_prompts)
 
 
@@ -1859,10 +2170,10 @@ async def test_deep_thinking_degraded_reports_mode() -> None:
     )
     store = InMemorySourceDocumentStore()
     await store.add_document(_doc("d1", "papers"))
-    kb = InMemoryKnowledgeBaseReader({"papers": []})
+    kb = StaticRetriever({"papers": []})
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=kb,
+        retrieval_orchestrator=kb,
         llm_adapter=_MockSynthLLM(),  # type: ignore[arg-type]
         deep_thinking_orchestrator=_MockDeepThinking(outcome),  # type: ignore[arg-type]
     )
@@ -1906,11 +2217,11 @@ async def test_enhanced_mode_returns_trace_and_verified_answer() -> None:
     await store.add_document(_doc("d1", "papers"))
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({"papers": []}),
+        retrieval_orchestrator=StaticRetriever({"papers": []}),
         enhanced_recall_orchestrator=orch,  # type: ignore[arg-type]
     )
     result = await api.ask(question="q", collection="papers", retrieval_mode="enhanced")
-    assert result["answer"] == "enhanced answer [1]"
+    assert result["answer"].startswith("enhanced answer (Anon., n.d.)")
     assert result["actual_retrieval_mode"] == "enhanced_recall"
     assert "enhanced_recall" in result["retrieval_engines"]
     assert len(result["sources"]) == 1
@@ -1929,7 +2240,6 @@ async def test_enhanced_mode_allows_global_scope_without_collection() -> None:
     orch = _MockDeepThinking(outcome)
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         enhanced_recall_orchestrator=orch,  # type: ignore[arg-type]
     )
     result = await api.ask(question="q", collection=None, retrieval_mode="enhanced")
@@ -1956,7 +2266,7 @@ async def test_deep_thinking_english_retrieval_keeps_original_answer_question() 
     await store.add_document(_doc("d1", "papers"))
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({"papers": []}),
+        retrieval_orchestrator=StaticRetriever({"papers": []}),
         llm_adapter=_TranslateOnlyLLM(),  # type: ignore[arg-type]
         deep_thinking_orchestrator=deep,  # type: ignore[arg-type]
     )
@@ -1968,7 +2278,7 @@ async def test_deep_thinking_english_retrieval_keeps_original_answer_question() 
         use_english_retrieval=True,
     )
 
-    assert result["answer"] == "verified answer [1]"
+    assert result["answer"].startswith("verified answer (Anon., n.d.)")
     assert deep.query == "translated retrieval query"
     assert deep.answer_question == "用户原始问题"
 
@@ -1998,7 +2308,7 @@ async def test_english_retrieval_skips_translation_for_non_cjk_question() -> Non
     await store.add_document(_doc("d1", "papers"))
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({"papers": []}),
+        retrieval_orchestrator=StaticRetriever({"papers": []}),
         llm_adapter=llm,  # type: ignore[arg-type]
         deep_thinking_orchestrator=deep,  # type: ignore[arg-type]
     )
@@ -2010,7 +2320,7 @@ async def test_english_retrieval_skips_translation_for_non_cjk_question() -> Non
         use_english_retrieval=True,
     )
 
-    assert result["answer"] == "verified answer [1]"
+    assert result["answer"].startswith("verified answer (Anon., n.d.)")
     assert llm.translate_calls == 0
     assert deep.query == "english only question"  # 检索 query 保持原文。
 
@@ -2031,15 +2341,15 @@ async def test_deep_thinking_uses_verified_answer_when_present() -> None:
     )
     store = InMemorySourceDocumentStore()
     await store.add_document(_doc("d1", "papers"))
-    kb = InMemoryKnowledgeBaseReader({"papers": []})
+    kb = StaticRetriever({"papers": []})
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=kb,
+        retrieval_orchestrator=kb,
         llm_adapter=_ShouldNotSynth(),  # type: ignore[arg-type]
         deep_thinking_orchestrator=_MockDeepThinking(outcome),  # type: ignore[arg-type]
     )
     result = await api.ask(question="q", collection="papers", retrieval_mode="deep_thinking")
-    assert result["answer"] == "verified answer [1]"
+    assert result["answer"].startswith("verified answer (Anon., n.d.)")
     assert result["thinking_trace"]["verified"] is True
 
 
@@ -2047,8 +2357,10 @@ async def test_deep_thinking_degraded_answer_gets_notice_field() -> None:
     from kacore.domain.deep_thinking import DeepThinkingOutcome
 
     class _SynthLLM:
-        async def generate(self, prompt, system_prompt="", *, allow_mock=True):
-            return "有限回答 [1]"
+        async def generate_result(self, prompt, system_prompt="", *, allow_mock=True):
+            from kacore.domain.llm_generation import GenerationResult
+
+            return GenerationResult(text="有限回答 [1]")
 
     outcome = DeepThinkingOutcome(
         evidence=[DocumentChunk("c0", "d1", 0, "baseline text", "h0")],
@@ -2060,7 +2372,7 @@ async def test_deep_thinking_degraded_answer_gets_notice_field() -> None:
     await store.add_document(_doc("d1", "papers"))
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({"papers": []}),
+        retrieval_orchestrator=StaticRetriever({"papers": []}),
         llm_adapter=_SynthLLM(),  # type: ignore[arg-type]
         deep_thinking_orchestrator=_MockDeepThinking(outcome),  # type: ignore[arg-type]
     )
@@ -2068,14 +2380,14 @@ async def test_deep_thinking_degraded_answer_gets_notice_field() -> None:
     result = await api.ask(question="综述问题", collection="papers", retrieval_mode="deep_thinking")
 
     # v0.30.0：正文不再被告警前缀打断，降级说明进结构化 answer_notice。
-    assert result["answer"] == "有限回答 [1]"
+    assert result["answer"].startswith("有限回答 (Anon., n.d.)")
     assert result["answer_notice"].startswith("**提示：深度思考证据不足")
     assert "关键检查项未满足" in result["answer_notice"]
-    # 存库版自包含：notice 以分隔线追加在答案尾部，历史回放不丢提示。
+    # 存库版自包含：v1.1.0 起 notice 以分隔线**前置**在答案之前，历史回放与实时渲染同序。
     history = await store.get_chat_messages(result["conversation_id"])
     stored = [m for m in history if m["role"] == "assistant"][-1]["content"]
-    assert stored.startswith("有限回答 [1]")
-    assert "深度思考证据不足" in stored
+    assert stored.startswith("**提示：深度思考证据不足")
+    assert stored.index("深度思考证据不足") < stored.index("有限回答")
 
 
 async def test_deep_thinking_unverified_missing_gets_notice_field() -> None:
@@ -2092,7 +2404,7 @@ async def test_deep_thinking_unverified_missing_gets_notice_field() -> None:
     await store.add_document(_doc("d1", "papers"))
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({"papers": []}),
+        retrieval_orchestrator=StaticRetriever({"papers": []}),
         llm_adapter=_MockSynthLLM(),  # type: ignore[arg-type]
         deep_thinking_orchestrator=_MockDeepThinking(outcome),  # type: ignore[arg-type]
     )
@@ -2100,7 +2412,7 @@ async def test_deep_thinking_unverified_missing_gets_notice_field() -> None:
     result = await api.ask(question="综述问题", collection="papers", retrieval_mode="deep_thinking")
 
     # v0.30.0：正文纯净；notice 只留缺口计数（告警瘦身沿袭 v0.25.9），明细在 thinking_trace。
-    assert result["answer"] == "草稿回答 [1]"
+    assert result["answer"].startswith("草稿回答 (Anon., n.d.)")
     assert result["answer_notice"].startswith("**提示：以下回答未完全通过证据校验。**")
     assert "共 2 项" in result["answer_notice"]
     assert "缺少定义" not in result["answer_notice"]
@@ -2123,7 +2435,7 @@ async def test_verified_answer_has_empty_notice() -> None:
     await store.add_document(_doc("d1", "papers"))
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({"papers": []}),
+        retrieval_orchestrator=StaticRetriever({"papers": []}),
         deep_thinking_orchestrator=_MockDeepThinking(outcome),  # type: ignore[arg-type]
     )
     result = await api.ask(question="q", collection="papers", retrieval_mode="deep_thinking")
@@ -2134,7 +2446,7 @@ async def test_llm_unavailable_fallback_is_formatted_excerpts() -> None:
     """v0.30.0：合成失败降级不再是碎片拼接——引导行 + [n] 标题 + 句边界截断摘录。"""
     api = await _make_api()  # 无 llm_adapter → 走降级排版分支。
     result = await api.ask(question="alpha", collection="kb1")
-    assert result["answer"].startswith("⚠️ LLM 暂不可用，未能合成回答。")
+    assert result["answer"].startswith("⚠️ The LLM is unavailable, so no answer could be written.")
     assert "**[1] " in result["answer"]
 
 
@@ -2154,9 +2466,901 @@ async def test_restart_plugin_schedules_reload() -> None:
 
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         reload_callback=_reload,
     )
     result = await api.restart_plugin()
     assert result["status"] == "restarting"
     await asyncio.wait_for(reloaded.wait(), timeout=3.0)
+
+
+async def test_clear_milvus_lock_unsupported_without_callback() -> None:
+    """未注入 clear_milvus_lock_callback 时返回 unsupported，不报错。"""
+    api = await _make_api()
+    result = await api.clear_milvus_lock()
+    assert result["status"] == "unsupported"
+
+
+async def test_clear_milvus_lock_delegates_to_callback() -> None:
+    """注入回调时薄委派：返回值原样透传，不在 api 层重复做守卫判断。"""
+    async def _clear() -> dict:
+        return {"status": "ok", "message": "锁定标记已清除，请重启插件以重新装配 Milvus。"}
+
+    api = KnowledgeRepositoryApi(
+        source_store=InMemorySourceDocumentStore(),
+        clear_milvus_lock_callback=_clear,
+    )
+    result = await api.clear_milvus_lock()
+    assert result["status"] == "ok"
+
+
+async def test_capabilities_excludes_detached_documents_from_vector_stats(tmp_path: Path) -> None:
+    from kacore.config import Config
+    from kacore.index_compatibility import IndexCompatibilityStore
+    from kacore.repository.vector_store.memory import InMemoryVectorStore
+    from tests.backend.test_embedding import MockEmbeddingProvider
+
+    store = InMemorySourceDocumentStore()
+    active = _doc("active", "papers")
+    active.needs_reindex = True
+    detached = _doc("detached", "papers")
+    detached.lifecycle_state = DocumentLifecycle.DETACHED
+    detached.needs_reindex = True
+    await store.add_document(active)
+    await store.add_document(detached)
+    await store.replace_chunks(
+        "active", [DocumentChunk("active-0", "active", 0, "active", "h0")]
+    )
+    await store.replace_chunks(
+        "detached",
+        [
+            DocumentChunk("detached-0", "detached", 0, "old", "h1"),
+            DocumentChunk("detached-1", "detached", 1, "old", "h2"),
+        ],
+    )
+    compatibility = IndexCompatibilityStore(tmp_path / "compat.json")
+    compatibility.mark_milvus_compatible("fp")
+    api = KnowledgeRepositoryApi(
+        source_store=store,
+        config=Config({"vector_db": {"backend": "milvus"}}),
+        vector_store=InMemoryVectorStore(),
+        embedding_provider=MockEmbeddingProvider(dimension=4),
+        index_compatibility=compatibility,
+        embedding_fingerprint="fp",
+    )
+
+    caps = await api.get_capabilities()
+    vector_stage = next(stage for stage in caps["pipeline"] if stage["id"] == "vector_store")
+    assert vector_stage["detail"]["document_count"] == 1
+    assert vector_stage["detail"]["pending_reindex_count"] == 1
+    assert vector_stage["detail"]["chunk_count"] == 1
+
+
+# ── 向量库不可用时的精确原因（v1.0.9）────────────────────────────
+
+
+async def test_rebuild_reports_missing_milvus_lite_instead_of_generic_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """回归：装了 pymilvus 但缺 milvus-lite 时，重建入口必须说清缺什么、怎么修。
+
+    旧文案对所有情况都说「请安装 Milvus 并重启插件，或配置 embedding provider」，
+    用户照着再装一次 `pymilvus[milvus_lite]` 在 Windows 上仍然什么都不会发生。
+    """
+    from kacore.config import Config
+
+    monkeypatch.setattr(
+        "kacore.capabilities.module_available", lambda name: name == "pymilvus"
+    )
+    api = KnowledgeRepositoryApi(
+        source_store=InMemorySourceDocumentStore(),
+        config=Config({"vector_db": {"backend": "milvus"}}),
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await api.rebuild_index_pending()
+    assert "milvus-lite" in str(excinfo.value)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await api.start_milvus_rebuild()
+    assert "milvus-lite" in str(excinfo.value)
+
+
+async def test_rebuild_reports_embedding_not_ready_when_deps_are_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """依赖齐全但 embedding 探针失败/超时时，原因指向 embedding 而不是「去装 Milvus」。"""
+    from kacore.config import Config
+
+    monkeypatch.setattr("kacore.capabilities.module_available", lambda name: True)
+    api = KnowledgeRepositoryApi(
+        source_store=InMemorySourceDocumentStore(),
+        config=Config({"vector_db": {"backend": "milvus"}}),
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await api.rebuild_index_pending()
+    assert "embedding provider is not ready" in str(excinfo.value)
+
+
+async def test_rebuild_reports_lexical_backend_without_telling_user_to_install_milvus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """后端选的是 lexical 时，没有 Milvus 索引可重建——不该把用户送去装依赖。"""
+    from kacore.config import Config
+
+    monkeypatch.setattr("kacore.capabilities.module_available", lambda name: False)
+    api = KnowledgeRepositoryApi(
+        source_store=InMemorySourceDocumentStore(),
+        config=Config({"vector_db": {"backend": "lexical"}}),
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await api.rebuild_index_pending()
+    message = str(excinfo.value)
+    assert "lexical" in message
+    assert "安装" not in message
+
+
+async def test_install_dependency_installs_milvus_lite_explicitly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """回归 v1.0.9：一键安装 Milvus 必须显式带上 milvus-lite。
+
+    pymilvus 的 milvus_lite extra 仍带着 2.x C++ wheel 时代的 `sys_platform != "win32"`
+    标记，只写 `pymilvus[milvus_lite]` 在 Windows 上等于什么都没装（退出码仍是 0）。
+    Milvus Lite 3.0 起是纯 Python 包，全平台可装，显式列出即可绕开那条失效标记。
+    """
+    api = KnowledgeRepositoryApi(
+        source_store=InMemorySourceDocumentStore(),
+    )
+    seen: list[tuple[str, ...]] = []
+
+    async def _capture(key: str, specs: tuple[str, ...]) -> dict:
+        seen.append(specs)
+        return {"status": "ok", "package": " ".join(specs), "returncode": 0,
+                "restart_required": True, "message": "ok"}
+
+    monkeypatch.setattr(api, "_run_extras_install", _capture)
+    monkeypatch.setattr("kacore.capabilities.module_available", lambda name: True)
+
+    result = await api.install_dependency("milvus")
+    assert result["status"] == "ok"
+    assert any("milvus-lite" in spec for spec in seen[0])
+    assert any(spec.startswith("pymilvus[milvus_lite]") for spec in seen[0])
+
+
+async def test_install_dependency_flags_pip_success_that_left_milvus_unusable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """pip 退出码 0 ≠ 功能可用：装完仍缺 milvus-lite 时必须报错而不是「重启即可生效」。"""
+    monkeypatch.setattr(
+        "kacore.capabilities.module_available", lambda name: name == "pymilvus"
+    )
+    api = KnowledgeRepositoryApi(
+        source_store=InMemorySourceDocumentStore(),
+    )
+
+    async def _ok_install(key: str, specs: tuple[str, ...]) -> dict:
+        return {
+            "status": "ok",
+            "package": " ".join(specs),
+            "returncode": 0,
+            "restart_required": True,
+            "message": "已安装，重启服务后生效。",
+        }
+
+    monkeypatch.setattr(api, "_run_extras_install", _ok_install)
+
+    result = await api.install_dependency("milvus")
+    assert result["status"] == "error"
+    assert result["restart_required"] is False
+    assert "milvus-lite" in result["message"]
+
+
+# ── v1.1.0 Harvard 引用：书目元数据打通与改写落点 ──────────────
+
+
+class _HarvardLLM:
+    async def generate_result(self, prompt: str, system_prompt: str = "", **_kw):
+        from kacore.domain.llm_generation import GenerationResult
+
+        return GenerationResult(text="核心结论见 [1]。")
+
+
+def _local_doc_with_meta(doc_id: str, collection: str, meta: dict) -> SourceDocument:
+    doc = _doc(doc_id, collection)
+    doc.title = str(meta.get("title") or doc_id)
+    doc.local_meta = dict(meta)
+    return doc
+
+
+async def test_ask_enriches_local_document_from_local_meta() -> None:
+    """回归 v1.1.0 前的门控缺陷：书目富化曾只对 origin=zotero 开放，本地文档永远拿不到作者年份。"""
+    store = InMemorySourceDocumentStore()
+    await store.add_document(
+        _local_doc_with_meta(
+            "d1",
+            "kb1",
+            {
+                "title": "本地讲义",
+                "creators": ["Vaswani, Ashish", "Shazeer, Noam"],
+                "year": "2017",
+                "venue": "NeurIPS",
+                "doi": "10.5555/aaa",
+            },
+        )
+    )
+    kb = StaticRetriever(
+        {"kb1": [DocumentChunk("c0", "d1", 0, "relevant text", "h0", metadata={"pages": [4]})]}
+    )
+    api = KnowledgeRepositoryApi(
+        source_store=store, retrieval_orchestrator=kb, llm_adapter=_HarvardLLM()  # type: ignore[arg-type]
+    )
+
+    result = await api.ask(question="relevant", collection="kb1")
+
+    source = result["sources"][0]
+    assert source["creators"] == ["Vaswani, Ashish", "Shazeer, Noam"]
+    assert source["year"] == "2017"
+    assert source["harvard_in_text"] == "Vaswani and Shazeer, 2017, p. 4"
+    # venue/doi 曾被读出后直接丢弃，现在必须进到参考文献条目里。
+    assert result["references"] == [
+        "Vaswani, A. and Shazeer, N. (2017) '本地讲义', NeurIPS. doi: 10.5555/aaa."
+    ]
+    assert "(Vaswani and Shazeer, 2017, p. 4)" in result["answer"]
+    assert "[1]" not in result["answer"]
+
+
+async def test_ask_normalizes_filename_style_title_in_reference_list() -> None:
+    """末尾书目不得输出 `Anon. (n.d.) Hui (2021) - Title.pdf.` 这类重复文件名。"""
+    store = InMemorySourceDocumentStore()
+    doc = _doc("d1", "kb1")
+    doc.title = "Hui (2021) - Art and Cosmotechnics.pdf"
+    await store.add_document(doc)
+    kb = StaticRetriever(
+        {"kb1": [DocumentChunk("c0", "d1", 0, "relevant text", "h0")]}
+    )
+    api = KnowledgeRepositoryApi(
+        source_store=store, retrieval_orchestrator=kb, llm_adapter=_HarvardLLM()  # type: ignore[arg-type]
+    )
+
+    result = await api.ask(question="relevant", collection="kb1")
+
+    assert "(Hui, 2021)" in result["answer"]
+    assert result["references"] == ["Hui (2021) Art and Cosmotechnics."]
+    assert ".pdf" not in result["answer"]
+
+
+async def test_ask_enriches_zotero_document_with_full_bibliography() -> None:
+    from kacore.domain.models import ZoteroItem
+
+    store = InMemorySourceDocumentStore()
+    doc = _doc("z1", "kb1")
+    doc.title = "Attention is all you need"
+    doc.origin = DocumentOrigin.ZOTERO
+    doc.library_id = "1"
+    doc.zotero_item_key = "K1"
+    await store.add_document(doc)
+    await store.upsert_zotero_item(
+        ZoteroItem(
+            item_key="K1",
+            library_id="1",
+            item_type="journalArticle",
+            title="Attention is all you need",
+            creators=["Vaswani, Ashish", "Shazeer, Noam", "Parmar, Niki", "Uszkoreit, Jakob"],
+            year="2017",
+            venue="NeurIPS",
+            doi="10.5555/bbb",
+        )
+    )
+    kb = StaticRetriever(
+        {"kb1": [DocumentChunk("c0", "z1", 0, "relevant text", "h0", metadata={"pages": [3, 4]})]}
+    )
+    api = KnowledgeRepositoryApi(
+        source_store=store, retrieval_orchestrator=kb, llm_adapter=_HarvardLLM()  # type: ignore[arg-type]
+    )
+
+    result = await api.ask(question="relevant", collection="kb1")
+
+    # 正文内 4 位作者缩写为 et al.，参考文献表仍列全。
+    assert "(Vaswani et al., 2017, pp. 3-4)" in result["answer"]
+    assert result["references"] == [
+        "Vaswani, A., Shazeer, N., Parmar, N. and Uszkoreit, J. (2017) "
+        "'Attention is all you need', NeurIPS. doi: 10.5555/bbb."
+    ]
+
+
+async def test_ask_falls_back_to_filename_hint_when_zotero_item_missing() -> None:
+    """独立附件（无 parent item）在 `zotero_items` 镜像表里查不到——这正是 Anon./n.d. 的根因。
+
+    同步管线会把文件名解析出的书目猜测写进 `local_meta`；`_document_biblio_meta()` 应在 Zotero
+    镜像查不到数据时回退读它，而不是直接空手返回。
+    """
+    store = InMemorySourceDocumentStore()
+    doc = _doc("z1", "kb1")
+    doc.title = "A Standalone Paper"
+    doc.origin = DocumentOrigin.ZOTERO
+    doc.library_id = "1"
+    doc.zotero_item_key = "MISSINGKEY"  # 独立附件回退用的是附件自己的 key，查不到镜像行
+    doc.local_meta = {
+        "chunk_schema": "clean_md_structural_v3",
+        "creators": ["Smith"],
+        "year": "2020",
+    }
+    await store.add_document(doc)
+    kb = StaticRetriever(
+        {"kb1": [DocumentChunk("c0", "z1", 0, "relevant text", "h0", metadata={"pages": [1]})]}
+    )
+    api = KnowledgeRepositoryApi(
+        source_store=store, retrieval_orchestrator=kb, llm_adapter=_HarvardLLM()  # type: ignore[arg-type]
+    )
+
+    result = await api.ask(question="relevant", collection="kb1")
+
+    assert "(Smith, 2020, p. 1)" in result["answer"]
+    assert "Anon." not in result["answer"]
+    assert result["references"] == ["Smith (2020) A Standalone Paper."]
+
+
+async def test_ask_prefers_real_zotero_creators_over_filename_hint() -> None:
+    """有真实 Zotero 书目数据时，文件名解析出的 hint 绝不能覆盖它——权威数据永远优先。"""
+    from kacore.domain.models import ZoteroItem
+
+    store = InMemorySourceDocumentStore()
+    doc = _doc("z1", "kb1")
+    doc.title = "Attention is all you need"
+    doc.origin = DocumentOrigin.ZOTERO
+    doc.library_id = "1"
+    doc.zotero_item_key = "K1"
+    # 诱导性 hint：如果合并逻辑写反了（hint 优先），这里会暴露成 "Decoy, 1999"。
+    doc.local_meta = {
+        "chunk_schema": "clean_md_structural_v3",
+        "creators": ["Decoy"],
+        "year": "1999",
+    }
+    await store.add_document(doc)
+    await store.upsert_zotero_item(
+        ZoteroItem(
+            item_key="K1",
+            library_id="1",
+            item_type="journalArticle",
+            title="Attention is all you need",
+            creators=["Vaswani, Ashish"],
+            year="2017",
+        )
+    )
+    kb = StaticRetriever(
+        {"kb1": [DocumentChunk("c0", "z1", 0, "relevant text", "h0", metadata={"pages": [1]})]}
+    )
+    api = KnowledgeRepositoryApi(
+        source_store=store, retrieval_orchestrator=kb, llm_adapter=_HarvardLLM()  # type: ignore[arg-type]
+    )
+
+    result = await api.ask(question="relevant", collection="kb1")
+
+    assert "(Vaswani, 2017, p. 1)" in result["answer"]
+    assert "Decoy" not in result["answer"]
+
+
+async def test_ask_references_are_embedded_in_stored_history() -> None:
+    store = InMemorySourceDocumentStore()
+    await store.add_document(_local_doc_with_meta("d1", "kb1", {"title": "T", "year": "2020"}))
+    chunk = DocumentChunk("c0", "d1", 0, "relevant text", "h0")
+    kb = StaticRetriever({"kb1": [chunk]})
+    api = KnowledgeRepositoryApi(
+        source_store=store, retrieval_orchestrator=kb, llm_adapter=_HarvardLLM()  # type: ignore[arg-type]
+    )
+
+    result = await api.ask(question="relevant", collection="kb1")
+
+    history = await store.get_chat_messages(result["conversation_id"])
+    stored = [m for m in history if m["role"] == "assistant"][-1]["content"]
+    assert "**References**" in stored
+    assert "Anon. (2020) T." in stored
+
+
+async def test_ask_without_llm_keeps_excerpt_headers_unrewritten() -> None:
+    """无-LLM 摘录分支自己排版 `**[1] 标题**`，那不是引用。
+
+    改写会把版式毁成 `**(Anon., n.d.) 标题**`，故该分支必须置 citable=False。
+    """
+    store = InMemorySourceDocumentStore()
+    await store.add_document(_doc("d1", "kb1"))
+    kb = StaticRetriever({"kb1": [DocumentChunk("c0", "d1", 0, "relevant text", "h0")]})
+    api = KnowledgeRepositoryApi(source_store=store, retrieval_orchestrator=kb)
+
+    result = await api.ask(question="relevant", collection="kb1")
+
+    assert "**[1] " in result["answer"]
+    assert result["references"] == []
+    # 即便不改写正文，sources 仍需带上 harvard 字段供前端与 skill 使用。
+    assert result["sources"][0]["harvard_in_text"] == "Anon., n.d."
+
+
+async def test_agent_evidence_carries_harvard_strings() -> None:
+    """codex skill 出口：agent 自己写正文，需要成品 Harvard 串而非原始 creators。"""
+
+    class _MockAgentEvidence:
+        def limits(self, mode: str) -> dict:
+            return {"max_rounds": 3, "top_k": 8}
+
+        async def run(self, **_kw):
+            class _Outcome:
+                evidence = [
+                    DocumentChunk("c0", "d1", 0, "text", "h0", metadata={"pages": [9]})
+                ]
+                queries = ["q"]
+                kept_chunk_ids = ["c0"]
+                engines: list[str] = []
+                fallback_reasons: list[str] = []
+
+            return _Outcome()
+
+    store = InMemorySourceDocumentStore()
+    await store.add_document(
+        _local_doc_with_meta(
+            "d1", "kb1", {"title": "讲义", "creators": ["Li, Ming"], "year": "2025"}
+        )
+    )
+    api = KnowledgeRepositoryApi(
+        source_store=store,
+        retrieval_orchestrator=StaticRetriever({"kb1": []}),
+        agent_evidence_orchestrator=_MockAgentEvidence(),  # type: ignore[arg-type]
+    )
+
+    result = await api.retrieve_agent_evidence(
+        question="q", collection="kb1", retrieval_mode="deep_thinking"
+    )
+
+    item = result["evidence"][0]
+    assert item["harvard_in_text"] == "Li, 2025, p. 9"
+    assert item["harvard_reference"] == "Li, M. (2025) 讲义."
+
+
+async def test_update_document_meta_normalizes_creators_and_year() -> None:
+    store = InMemorySourceDocumentStore()
+    await store.add_document(_doc("d1", "kb1"))
+    api = KnowledgeRepositoryApi(
+        source_store=store, retrieval_orchestrator=StaticRetriever({"kb1": []})
+    )
+
+    doc = await api.update_document_meta(
+        "d1", {"creators": "Li, Ming\nWang, Wei", "year": 2020, "abstract": "a"}
+    )
+
+    assert doc is not None
+    assert doc.local_meta["creators"] == ["Li, Ming", "Wang, Wei"]
+    assert doc.local_meta["year"] == "2020"
+
+
+# ── 全文检索（fulltext）────────────────────────────────────────
+
+_FULLTEXT_TAIL = "SENTINEL_DOCUMENT_TAIL"
+
+
+class _RecordingFullTextLLM:
+    """记录送入的 prompt，用于断言正文未被截断。"""
+
+    def __init__(self, text: str = "全文答案 [1]", status: str = "") -> None:
+        self.prompts: list[str] = []
+        self.system_prompts: list[str] = []
+        self._text = text
+        self._status = status
+
+    async def generate_result(self, prompt, system_prompt="", *, allow_mock=True):
+        from kacore.domain.llm_generation import GenerationResult
+
+        assert allow_mock is False, "全文合成必须禁用 mock 兜底，否则超窗会返回假答案"
+        self.prompts.append(prompt)
+        self.system_prompts.append(system_prompt)
+        return GenerationResult(text=self._text, status=self._status)
+
+
+async def _make_fulltext_api(
+    tmp_path: Path, body: str, llm: object | None = None
+) -> KnowledgeRepositoryApi:
+    """构造一个 d1 带 clean.md 制品的 api；body 尾部自动追加哨兵串。"""
+    store = InMemorySourceDocumentStore()
+    doc = _doc("d1", "papers")
+    bundle = tmp_path / "d1"
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "clean.md").write_text(f"{body}{_FULLTEXT_TAIL}", encoding="utf-8")
+    doc.file_path = str(bundle / "original.pdf")
+    doc.markdown_rel_path = "clean.md"
+    await store.add_document(doc)
+    return KnowledgeRepositoryApi(
+        source_store=store,
+        retrieval_orchestrator=StaticRetriever({"papers": []}),
+        llm_adapter=llm,  # type: ignore[arg-type]
+    )
+
+
+async def test_ask_fulltext_requires_doc_id(tmp_path: Path) -> None:
+    api = await _make_fulltext_api(tmp_path, "short body")
+    with pytest.raises(ValueError, match="requires a doc_id"):
+        await api.ask(question="q", retrieval_mode="fulltext")
+
+
+async def test_ask_fulltext_under_threshold_runs_without_confirmation(tmp_path: Path) -> None:
+    """低于阈值零摩擦：不需要 confirmed 即可直接出答案。"""
+    llm = _RecordingFullTextLLM()
+    api = await _make_fulltext_api(tmp_path, "short body ", llm)
+
+    result = await api.ask(question="q", retrieval_mode="fulltext", doc_id="d1")
+
+    assert result["actual_retrieval_mode"] == "fulltext"
+    assert result["retrieval_engines"] == ["fulltext"]
+    assert result["fallback_reason"] is None
+    assert len(result["sources"]) == 1
+    assert result["sources"][0]["chunk_id"] == ""
+    assert result["sources"][0]["doc_id"] == "d1"
+
+
+async def test_ask_fulltext_over_threshold_requires_confirmation(tmp_path: Path) -> None:
+    """超阈值时抛确认门，且**未调用 LLM、未写入任何 chat_history**。"""
+    from kacore.api import FullTextConfirmationRequiredError
+    from kacore.retrieval_modes import FULLTEXT_CONFIRM_THRESHOLD_CHARS
+
+    llm = _RecordingFullTextLLM()
+    body = "x" * (FULLTEXT_CONFIRM_THRESHOLD_CHARS + 1)
+    api = await _make_fulltext_api(tmp_path, body, llm)
+
+    with pytest.raises(FullTextConfirmationRequiredError) as excinfo:
+        await api.ask(question="q", retrieval_mode="fulltext", doc_id="d1")
+
+    exc = excinfo.value
+    assert exc.total_chars == len(body) + len(_FULLTEXT_TAIL)
+    assert exc.requested_chars == exc.total_chars
+    assert exc.threshold_chars == FULLTEXT_CONFIRM_THRESHOLD_CHARS
+    assert exc.estimated_tokens > 0
+    assert llm.prompts == [], "被确认门拦下时绝不能已经烧掉一次 LLM 调用"
+    assert api._source_store._chat_history == {}, "被拦下时不得留下任何聊天记录"
+
+
+async def test_ask_fulltext_confirmed_sends_whole_document_to_llm(tmp_path: Path) -> None:
+    """确认后整篇送入：prompt 必须含文档**末尾**哨兵串，证明没有被截断。"""
+    from kacore.retrieval_modes import FULLTEXT_CONFIRM_THRESHOLD_CHARS
+
+    llm = _RecordingFullTextLLM()
+    body = "x" * (FULLTEXT_CONFIRM_THRESHOLD_CHARS + 5000)
+    api = await _make_fulltext_api(tmp_path, body, llm)
+
+    result = await api.ask(
+        question="q", retrieval_mode="fulltext", doc_id="d1", confirmed=True
+    )
+
+    assert result["answer"]
+    assert len(llm.prompts) == 1
+    # 整篇原样入 prompt：首尾都在，且完整 body 是一个连续子串（没有中间被砍）。
+    assert _FULLTEXT_TAIL in llm.prompts[0]
+    assert f"{body}{_FULLTEXT_TAIL}" in llm.prompts[0]
+
+
+async def test_ask_fulltext_renders_harvard_reference_for_whole_document(
+    tmp_path: Path,
+) -> None:
+    """整篇文档答案走同一条 Harvard 机器：[1] 被改写、参考文献表恰好一条。"""
+    llm = _RecordingFullTextLLM(text="结论如此 [1]")
+    api = await _make_fulltext_api(tmp_path, "body ", llm)
+    doc = await api._source_store.get_document("d1")
+    assert doc is not None
+    doc.local_meta = {"creators": ["Li, Ming"], "year": "2025"}
+    await api._source_store.update_document(doc)
+
+    result = await api.ask(question="q", retrieval_mode="fulltext", doc_id="d1")
+
+    assert "(Li, 2025)" in result["answer"]
+    assert "[1]" not in result["answer"]
+    assert len(result["references"]) == 1
+
+
+async def test_ask_fulltext_source_text_is_clipped_not_whole_document(
+    tmp_path: Path,
+) -> None:
+    """回归锁：sources 会随 chat_history 落库，正文绝不能整篇塞进 source['text']。"""
+    llm = _RecordingFullTextLLM()
+    api = await _make_fulltext_api(tmp_path, "句子。" * 5000, llm)
+
+    result = await api.ask(question="q", retrieval_mode="fulltext", doc_id="d1")
+
+    assert len(result["sources"][0]["text"]) < 1000
+
+
+async def test_ask_fulltext_missing_document_and_missing_artifact(tmp_path: Path) -> None:
+    from kacore.api import FullTextDocumentUnavailableError
+
+    api = await _make_fulltext_api(tmp_path, "body")
+
+    with pytest.raises(FullTextDocumentUnavailableError) as missing:
+        await api.ask(question="q", retrieval_mode="fulltext", doc_id="nope")
+    assert missing.value.reason == "document_not_found"
+
+    (tmp_path / "d1" / "clean.md").unlink()
+    with pytest.raises(FullTextDocumentUnavailableError) as broken:
+        await api.ask(question="q", retrieval_mode="fulltext", doc_id="d1")
+    assert broken.value.reason == "artifact_missing"
+
+
+async def test_ask_fulltext_llm_failure_does_not_return_mock_answer(tmp_path: Path) -> None:
+    """LLM 报错/空返回一律转成明确错误，绝不返回离线占位文本或半篇答案。"""
+    from kacore.api import FullTextGenerationFailedError
+
+    class _BoomLLM:
+        async def generate_result(self, prompt, system_prompt="", *, allow_mock=True):
+            raise RuntimeError("context length exceeded")
+
+    api = await _make_fulltext_api(tmp_path, "body ", _BoomLLM())
+    with pytest.raises(FullTextGenerationFailedError) as boom:
+        await api.ask(question="q", retrieval_mode="fulltext", doc_id="d1")
+    assert boom.value.total_chars > 0
+
+    empty_api = await _make_fulltext_api(tmp_path, "body ", _RecordingFullTextLLM(text=""))
+    with pytest.raises(FullTextGenerationFailedError, match="context window"):
+        await empty_api.ask(question="q", retrieval_mode="fulltext", doc_id="d1")
+
+
+async def test_document_markdown_page_accepts_more_than_40000_chars(tmp_path: Path) -> None:
+    """v1.1.1：40000 硬上限已拆除（旧实现还会静默夹取）。"""
+    api = await _make_fulltext_api(tmp_path, "y" * 50000)
+
+    page = await api.get_document_markdown_page("d1", max_chars=50000)
+
+    assert page is not None
+    assert len(page["content"]) == 50000
+
+
+async def test_document_markdown_page_zero_max_chars_reads_to_end(tmp_path: Path) -> None:
+    api = await _make_fulltext_api(tmp_path, "z" * 100)
+
+    page = await api.get_document_markdown_page("d1", max_chars=0)
+
+    assert page is not None
+    assert page["has_more"] is False
+    assert len(page["content"]) == page["total_chars"] == 100 + len(_FULLTEXT_TAIL)
+
+
+async def test_document_markdown_page_gate_and_confirmed_bypass(tmp_path: Path) -> None:
+    """门禁按**本次返回量**判定：小分页零摩擦，整篇读需确认。"""
+    from kacore.api import FullTextConfirmationRequiredError
+    from kacore.retrieval_modes import FULLTEXT_CONFIRM_THRESHOLD_CHARS
+
+    api = await _make_fulltext_api(tmp_path, "w" * (FULLTEXT_CONFIRM_THRESHOLD_CHARS + 100))
+
+    # 一篇超长文档，但这次只取 12000 字符 → 不触发门禁。
+    small = await api.get_document_markdown_page("d1", max_chars=12000)
+    assert small is not None and len(small["content"]) == 12000
+
+    with pytest.raises(FullTextConfirmationRequiredError):
+        await api.get_document_markdown_page("d1", max_chars=0)
+
+    whole = await api.get_document_markdown_page("d1", max_chars=0, confirmed=True)
+    assert whole is not None
+    assert whole["content"].endswith(_FULLTEXT_TAIL)
+
+
+async def test_document_markdown_page_rejects_negative_max_chars(tmp_path: Path) -> None:
+    api = await _make_fulltext_api(tmp_path, "body")
+    with pytest.raises(ValueError, match="zero or greater"):
+        await api.get_document_markdown_page("d1", max_chars=-1)
+
+
+class _FakeIngestManagerForReprocess:
+    """一次性重新清洗脚本的 IngestManager 测试替身：控制哪些文档失败/不支持。"""
+
+    def __init__(self) -> None:
+        self.reextract_calls: list[str] = []
+        self.fail_docs: set[str] = set()
+        self.not_pdf_docs: set[str] = set()
+
+    async def reextract_document(self, doc_id: str) -> dict:
+        self.reextract_calls.append(doc_id)
+        if doc_id in self.not_pdf_docs:
+            raise ValueError("reextract_document only supports PDF files")
+        if doc_id in self.fail_docs:
+            raise RuntimeError(f"boom: {doc_id}")
+        return {"chunk_count": 1, "converter_version": "v2"}
+
+
+class _FakeVectorStoreForReprocess:
+    def __init__(self) -> None:
+        self.upserted_doc_ids: list[str] = []
+
+    def set_doc_collection_mapping(self, doc_id: str, collection: str) -> None:
+        pass
+
+    async def retain_document_chunks(self, doc_id, chunk_ids) -> None:
+        pass
+
+    async def upsert_chunks(self, chunks, embeddings) -> None:
+        self.upserted_doc_ids.extend(c.doc_id for c in chunks)
+
+
+class _FakeEmbeddingProviderForReprocess:
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [[0.0] for _ in texts]
+
+
+async def test_reprocess_documents_with_stale_cleaning() -> None:
+    """一次性重新清洗脚本：按 chunk_kind 标记跳过已是新版本的文档，跳过非 PDF
+    文档（无需重新提取），重新提取成功后立刻重新索引，失败单独记录不影响其它文档。
+    """
+    from kacore.managers.artifact_provenance import PROCESSING_VERSION
+
+    store = InMemorySourceDocumentStore()
+    await store.add_document(_doc("d1_old", "c"))  # 旧版 chunk，无 chunk_kind
+    await store.replace_chunks(
+        "d1_old", [DocumentChunk("c0", "d1_old", 0, "old text", "h0", metadata={})]
+    )
+    new_doc = _doc("d2_new", "c")
+    new_doc.local_meta["processing_version"] = PROCESSING_VERSION
+    await store.add_document(new_doc)  # 文档处理版本，不再扫描 chunk_kind。
+    await store.replace_chunks(
+        "d2_new",
+        [DocumentChunk("c0", "d2_new", 0, "new text", "h0", metadata={"chunk_kind": "body"})],
+    )
+    not_pdf = SourceDocument(
+        doc_id="d3_txt", title="t", file_path="/data/d3.txt", content_type="text/markdown",
+        size_bytes=1, content_hash="h", collection="c",
+    )
+    await store.add_document(not_pdf)
+    await store.replace_chunks(
+        "d3_txt", [DocumentChunk("c0", "d3_txt", 0, "text doc", "h0", metadata={})]
+    )
+    await store.add_document(_doc("d4_fail", "c"))  # 重新提取会失败
+    await store.replace_chunks(
+        "d4_fail", [DocumentChunk("c0", "d4_fail", 0, "will fail", "h0", metadata={})]
+    )
+    await store.add_document(_doc("d5_empty", "c"))  # 无任何 chunk（从未成功切过）
+
+    ingest = _FakeIngestManagerForReprocess()
+    ingest.not_pdf_docs.add("d3_txt")
+    ingest.fail_docs.add("d4_fail")
+    vector_store = _FakeVectorStoreForReprocess()
+    api = KnowledgeRepositoryApi(
+        source_store=store,
+        ingest_manager=ingest,  # type: ignore[arg-type]
+        vector_store=vector_store,  # type: ignore[arg-type]
+        embedding_provider=_FakeEmbeddingProviderForReprocess(),  # type: ignore[arg-type]
+    )
+
+    result = await api.reprocess_documents_with_stale_cleaning()
+
+    assert sorted(result["reprocessed"]) == ["d1_old", "d5_empty"]
+    assert result["skipped_already_new"] == ["d2_new"]
+    assert result["skipped_not_pdf"] == ["d3_txt"]
+    assert result["failed"] == [{"doc_id": "d4_fail", "error": "boom: d4_fail"}]
+    assert result["total_documents"] == 5
+    # 新处理版本与非 PDF 在抽取前跳过；单篇抽取失败仍会记录。
+    assert sorted(ingest.reextract_calls) == ["d1_old", "d4_fail", "d5_empty"]
+    # 重新索引会读取 store 里实际的 chunks；假的 reextract_document 不写入新 chunk，
+    # 所以 d5_empty（本来就没有 chunk）重新索引时读到空列表、不会调用 upsert——这符合
+    # 「无 chunk 就没什么可索引」的真实行为，本测试只验证 d1_old（有真实 chunk）被索引。
+    assert sorted(vector_store.upserted_doc_ids) == ["d1_old"]
+
+
+async def test_reprocess_documents_with_stale_cleaning_without_vector_store() -> None:
+    """没有配置向量库/embedding（如未启用 Milvus）时，仍应完成重新抽取，只是跳过索引。"""
+    store = InMemorySourceDocumentStore()
+    await store.add_document(_doc("d1_old", "c"))
+    await store.replace_chunks(
+        "d1_old", [DocumentChunk("c0", "d1_old", 0, "old text", "h0", metadata={})]
+    )
+    ingest = _FakeIngestManagerForReprocess()
+    api = KnowledgeRepositoryApi(
+        source_store=store,
+        ingest_manager=ingest,  # type: ignore[arg-type]
+    )
+
+    result = await api.reprocess_documents_with_stale_cleaning()
+
+    assert result["reprocessed"] == ["d1_old"]
+    assert ingest.reextract_calls == ["d1_old"]
+
+
+async def test_reprocess_documents_with_stale_cleaning_requires_ingest_manager() -> None:
+    api = KnowledgeRepositoryApi(
+        source_store=InMemorySourceDocumentStore()
+    )
+    with pytest.raises(RuntimeError, match="IngestManager"):
+        await api.reprocess_documents_with_stale_cleaning()
+
+
+async def test_mark_stale_processing_documents_needs_reindex_is_one_shot() -> None:
+    """升级后首次扫描：旧 processing_version 文档进 needs_reindex 队列并唤醒调度器；
+    当前版本不动；第二次扫描为 0（一次性语义）。"""
+    from kacore.managers.artifact_provenance import PROCESSING_VERSION
+
+    store = InMemorySourceDocumentStore()
+    legacy_no_version = _doc("legacy-no-version")
+    legacy_old_version = _doc("legacy-old-version")
+    legacy_old_version.local_meta = {"processing_version": "cleaning-v1"}
+    current = _doc("current")
+    current.local_meta = {"processing_version": PROCESSING_VERSION}
+    for doc in (legacy_no_version, legacy_old_version, current):
+        await store.add_document(doc)
+    api = KnowledgeRepositoryApi(
+        source_store=store,
+        sync_targets={},
+    )
+
+    class FakeScheduler:
+        notified = 0
+
+        def notify(self) -> None:
+            self.notified += 1
+
+    scheduler = FakeScheduler()
+    api.attach_auto_reindex_scheduler(scheduler)
+
+    assert await api.mark_stale_processing_documents_needs_reindex() == 2
+    pending = {d.doc_id for d in await store.list_pending_reindex_documents()}
+    assert pending == {"legacy-no-version", "legacy-old-version"}
+    assert scheduler.notified == 1
+
+    assert await api.mark_stale_processing_documents_needs_reindex() == 0
+    assert scheduler.notified == 1  # 没扫到东西就不打信号。
+
+
+async def test_zotero_pull_marks_stale_documents_after_sync() -> None:
+    """增量同步整篇跳过未变更文档，因此拉取结束必须补一次旧数据扫描并唤醒调度器。"""
+    from datetime import datetime, timezone
+
+    from kacore.pipelines.zotero_sync_pipeline import ZoteroSyncResult
+    from kacore.zotero_sync_job import ZOTERO_SYNC_SUCCESS, ZoteroSyncJob
+
+    store = InMemorySourceDocumentStore()
+    await store.add_document(_doc("legacy"))  # 无 processing_version = 旧分块逻辑处理过
+    api = KnowledgeRepositoryApi(
+        source_store=store,
+        sync_targets={},
+    )
+
+    class FakePipeline:
+        async def pull(self, *, incremental: bool, progress: ZoteroSyncJob) -> ZoteroSyncResult:
+            del incremental, progress
+            return ZoteroSyncResult(
+                sync_mode="conservative",
+                storage_mode="linked",
+                started_at=datetime.now(timezone.utc),
+                skipped_unchanged=1,
+            )
+
+    class FakeScheduler:
+        notified = 0
+
+        def notify(self) -> None:
+            self.notified += 1
+
+    scheduler = FakeScheduler()
+    api.attach_zotero_pipeline(FakePipeline())
+    api.attach_auto_reindex_scheduler(scheduler)
+
+    job = ZoteroSyncJob(incremental=True)
+    await api._run_zotero_pull(job, incremental=True)
+
+    assert job.status == ZOTERO_SYNC_SUCCESS
+    assert api._last_zotero_sync is not None
+    assert api._last_zotero_sync["stale_marked"] == 1
+    assert [d.doc_id for d in await store.list_pending_reindex_documents()] == ["legacy"]
+    assert scheduler.notified == 1
+
+
+async def test_notion_initialize_persists_both_data_sources_and_exposes_auto_sync() -> None:
+    class Pipeline:
+        async def initialize_databases(self, **kwargs) -> dict:
+            return {
+                "status": "success", "database_id": "articles", "qa_database_id": "qa",
+                "data_source_id": "articles-source", "qa_data_source_id": "qa-source",
+            }
+    api = _notion_api(InMemorySourceDocumentStore(), Pipeline())
+    persisted = []
+    api._config_persist = lambda section, key, value: persisted.append((section, key, value))
+    result = await api.initialize_notion_database()
+    assert result["status"] == "success"
+    assert ("notion_sync", "data_source_id", "articles-source") in persisted
+    assert ("notion_sync", "qa_data_source_id", "qa-source") in persisted
+    status = await api.get_notion_push_status()
+    assert status["data_source_id"] == "articles-source"
+    assert status["qa_data_source_id"] == "qa-source"
+    assert status["auto_sync_enabled"] is True
+    assert status["auto_sync_interval_sec"] == 300

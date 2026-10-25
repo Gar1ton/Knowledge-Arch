@@ -1,36 +1,25 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# web/frontend — Knowledge Arch 界面
 
-## Getting Started
+Next.js（App Router）静态导出，由桌面壳加载。主窗口有「工作台」（文件 / 文档 / 问答三栏）与
+「数据流」两页；偏好设置（⌘, / Ctrl+,）有通用、外观、存储、本地模型、组件、诊断六组。
 
-First, run the development server:
+## Notion
+
+Notion 设置包含本地变更自动同步开关和周期补偿间隔（默认 300 秒）。间隔设为 0
+只关闭周期补偿；关闭全部自动推送请关闭自动同步开关。共享进度条显示本轮笔记
+检查/标记数、调用尝试数、耗时及模型 token（0）。`npm run build` 产出静态导出
+`out/`，由桌面壳打进安装包加载。运行升级和筛选视图见 [Notion 同步指南](../../docs/NOTION_SYNC.md)。
+
+## 开发
+
+界面通过 `lib/backend.ts` 取后端地址与 token：桌面壳里由 `invoke("backend_info")` 提供；
+`next dev` 下走同源 `/api/*` 代理，token 取 `NEXT_PUBLIC_KA_TOKEN`。完整步骤见
+[`dev/README.md`](https://github.com/Gar1ton/Knowledge-Arch/blob/developer/dev/README.md)。
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+NEXT_PUBLIC_KA_TOKEN=dev-token npm run dev -- -p 26619
+npm run lint && npx tsc --noEmit && npm run build   # 产物在 out/，由桌面壳打包
 ```
 
-Open [http://localhost:26619](http://localhost:26619) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+设置项一律由后端 SettingSpec 驱动（`GET /api/settings/schema`），文案键为
+`set_<设置键中的点换成下划线>`，放在 `lib/i18nDesktop.ts`。

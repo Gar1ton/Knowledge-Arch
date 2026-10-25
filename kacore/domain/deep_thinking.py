@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kacore.domain.models import DocumentChunk
@@ -93,12 +93,16 @@ class DeepThinkingOutcome:
     est_total_tokens: int = 0
     # verification 启用时由 orchestrator 合成并校验后产出；否则 None，由 api.ask 合成。
     answer: str | None = None
+    # answer 对应的 GenerationResult.status（kacore.domain.llm_generation 的 STATUS_*）；
+    # 空字符串 = 未知/不适用（如 answer 为 None、或走 api.ask 侧合成时未回填）。
+    answer_generation_status: str = ""
     verified: bool = False
     # 硬缺失（臆造/矛盾/跨来源错配/关键项未满足）——驱动正文告警与 verified=False。
     verify_missing: list[str] = field(default_factory=list)
     # 软项（部分支持·有据推断 + 信息缺口）——仅入「思考过程」展示，不堆告警墙。
     verify_notes: list[str] = field(default_factory=list)
     degraded_reason: str = ""  # 降级原因；空字符串表示未降级
+    evidence_trace: dict[str, Any] = field(default_factory=dict)
 
 
 __all__ = [

@@ -1,29 +1,23 @@
-"""单元与集成测试：PluginInitializer 生命周期、后台任务调度，与 CLI/EventHandler 事件分发。"""
+"""单元与集成测试：AppInitializer 生命周期与后台任务调度。"""
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-from types import ModuleType
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import fitz  # type: ignore[import-untyped]
 import pytest
+from settings_helpers import legacy_settings
 
-from kacore.main import KnowledgeRepositoryPlugin
-from kacore.migration_runner import run_migrations
-from kacore.plugin_initializer import PluginInitializer, _load_plugin_web_build_app
+from kacore.app_initializer import AppInitializer
+from kacore.migration_runner import MIGRATIONS_DIR, run_migrations
 
 
 @pytest.fixture
 def temp_dir(tmp_path: Path) -> Path:
     return tmp_path
-
-
-@pytest.fixture
-def mock_context() -> object:
-    return object()
 
 
 @pytest.fixture
@@ -48,17 +42,17 @@ def raw_config() -> dict[str, Any]:
             "database_title": "KR Test",
             "rate_limit_rps": 100,
         },
-        # Existing installs may explicitly keep AstrBot retrieval; avoid loading a local
-        # embedding model in lifecycle tests that do not exercise Milvus.
-        "vector_db": {"backend": "astr"},
+        # Lexical-only retrieval avoids loading a local embedding model in lifecycle
+        # tests that do not exercise Milvus.
+        "vector_db": {"backend": "lexical"},
     }
 
 
-async def test_plugin_initializer_lifecycle(
-    temp_dir: Path, mock_context: object, raw_config: dict[str, Any]
+async def test_app_initializer_lifecycle(
+    temp_dir: Path, raw_config: dict[str, Any]
 ) -> None:
-    # 1) 实例化 PluginInitializer
-    initializer = PluginInitializer(mock_context, raw_config, temp_dir)
+    # 1) 实例化 AppInitializer
+    initializer = AppInitializer(legacy_settings(raw_config), temp_dir)
     assert initializer.source_store is None
     assert initializer._backup_task is None
 
@@ -66,7 +60,6 @@ async def test_plugin_initializer_lifecycle(
     await initializer.initialize()
 
     assert initializer.source_store is not None
-    assert initializer.kb_reader is not None
     assert initializer.api is not None
     assert initializer.ingest_manager is not None
     assert initializer.category_manager is not None
@@ -80,45 +73,33 @@ async def test_plugin_initializer_lifecycle(
     assert initializer._backup_task is None
 
 
-def test_initializer_uses_plugin_owned_migration_runner() -> None:
+def test_initializer_uses_project_migration_runner() -> None:
     assert run_migrations.__module__ == "kacore.migration_runner"
+    assert MIGRATIONS_DIR.name == "migrations"
+    assert (MIGRATIONS_DIR / "001_source_store.sql").is_file()
 
 
-def test_web_server_loader_ignores_conflicting_top_level_web_module(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    conflicting_web = ModuleType("web")
-    conflicting_server = ModuleType("web.server")
-    conflicting_server.build_app = object()  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "web", conflicting_web)
-    monkeypatch.setitem(sys.modules, "web.server", conflicting_server)
-
-    build_app = _load_plugin_web_build_app()
-
-    assert build_app.__module__ == "_astrbot_plugin_knowledge_repository_web_server"
-
-
-async def test_plugin_initializer_lifecycle_periodic_disabled(
-    temp_dir: Path, mock_context: object, raw_config: dict[str, Any]
+async def test_app_initializer_lifecycle_periodic_disabled(
+    temp_dir: Path, raw_config: dict[str, Any]
 ) -> None:
     # 禁用 R2 或周期备份
     config_disabled = dict(raw_config)
     config_disabled["r2_sync"] = dict(raw_config["r2_sync"])
     config_disabled["r2_sync"]["enabled"] = False
 
-    initializer = PluginInitializer(mock_context, config_disabled, temp_dir)
+    initializer = AppInitializer(legacy_settings(config_disabled), temp_dir)
     await initializer.initialize()
     assert initializer._backup_task is None
     await initializer.teardown()
 
 
 async def test_initializer_creates_default_collection_without_overwriting_it(
-    temp_dir: Path, mock_context: object
+    temp_dir: Path
 ) -> None:
     from kacore.domain.models import Collection
 
-    config = {"vector_db": {"backend": "astr"}}
-    first = PluginInitializer(mock_context, config, temp_dir)
+    config = {"vector_db": {"backend": "lexical"}}
+    first = AppInitializer(legacy_settings(config), temp_dir)
     await first.initialize()
     assert first.source_store is not None
     await first.source_store.upsert_collection(
@@ -126,7 +107,7 @@ async def test_initializer_creates_default_collection_without_overwriting_it(
     )
     await first.teardown()
 
-    second = PluginInitializer(mock_context, config, temp_dir)
+    second = AppInitializer(legacy_settings(config), temp_dir)
     await second.initialize()
     assert second.source_store is not None
     collections = await second.source_store.list_collections()
@@ -137,7 +118,7 @@ async def test_initializer_creates_default_collection_without_overwriting_it(
 
 
 async def test_initializer_passes_probed_dimension_to_milvus_and_lightrag(
-    temp_dir: Path, mock_context: object, raw_config: dict[str, Any]
+    temp_dir: Path, raw_config: dict[str, Any]
 ) -> None:
     captured: dict[str, int] = {}
 
@@ -180,18 +161,19 @@ async def test_initializer_passes_probed_dimension_to_milvus_and_lightrag(
         ),
         patch("kacore.repository.vector_store.milvus_lite.MilvusLiteVectorStore", Milvus),
         patch("kacore.lightrag_core.LightRAGCoreRegistry", Registry),
-        patch("kacore.plugin_initializer._module_available", return_value=True),
+        patch("kacore.app_initializer._module_available", return_value=True),
     ):
-        initializer = PluginInitializer(mock_context, config, temp_dir)
+        initializer = AppInitializer(legacy_settings(config), temp_dir)
         await initializer.initialize()
         assert initializer.embedding_dimension == 7
         assert initializer.config.runtime_embedding_dimension == 7
         assert captured == {"milvus": 7, "lightrag": 7}
+        assert initializer.api is not None
         await initializer.teardown()
 
 
 async def test_default_initializer_starts_without_optional_feature_packages(
-    temp_dir: Path, mock_context: object
+    temp_dir: Path
 ) -> None:
     blocked_modules = {
         "boto3": None,
@@ -201,7 +183,10 @@ async def test_default_initializer_starts_without_optional_feature_packages(
         "sentence_transformers": None,
     }
     with patch.dict(sys.modules, blocked_modules):
-        initializer = PluginInitializer(mock_context, {}, temp_dir)
+        # 显式本地 Embedding：新版默认线上，这里验证的是本地组件缺失时的指引。
+        initializer = AppInitializer(
+            legacy_settings({"embedding": {"provider": "local"}}), temp_dir
+        )
         await initializer.initialize()
 
         assert initializer.api is not None
@@ -210,7 +195,7 @@ async def test_default_initializer_starts_without_optional_feature_packages(
         assert initializer.lightrag_registry is None
         diagnostics = initializer.config.get_diagnostics()
         # 可选特性缺包仍给出可执行指引：local embedding 指向 requirements-additional.txt；
-        # Milvus Lite 自 v0.24.6 起为必装依赖，缺失时改提示 requirements.txt + AstrBot 兜底。
+        # Milvus Lite 自 v0.24.6 起为必装依赖，缺失时改提示 requirements.txt + SQLite 词法兜底。
         assert any("requirements-additional.txt" in item for item in diagnostics)
         assert any(
             "Milvus Lite is a required dependency from requirements.txt" in item
@@ -220,7 +205,7 @@ async def test_default_initializer_starts_without_optional_feature_packages(
 
 
 async def test_initializer_probe_failure_disables_embedding_indexes(
-    temp_dir: Path, mock_context: object, raw_config: dict[str, Any]
+    temp_dir: Path, raw_config: dict[str, Any]
 ) -> None:
     class Provider:
         async def embed_query(self, text: str) -> list[float]:
@@ -236,9 +221,9 @@ async def test_initializer_probe_failure_disables_embedding_indexes(
             "kacore.repository.embedding.factory.EmbeddingProviderFactory.create_provider",
             return_value=Provider(),
         ),
-        patch("kacore.plugin_initializer._module_available", return_value=True),
+        patch("kacore.app_initializer._module_available", return_value=True),
     ):
-        initializer = PluginInitializer(mock_context, config, temp_dir)
+        initializer = AppInitializer(legacy_settings(config), temp_dir)
         await initializer.initialize()
         assert initializer.embedding_provider is None
         assert initializer.vector_store is None
@@ -250,8 +235,53 @@ async def test_initializer_probe_failure_disables_embedding_indexes(
         await initializer.teardown()
 
 
+async def test_initializer_probe_timeout_keeps_startup_moving(
+    temp_dir: Path, raw_config: dict[str, Any]
+) -> None:
+    """探针挂死（如 HuggingFace 下载卡住）不得拖住 initialize()。
+
+    回归 v1.0.9：重启会先 teardown 掉旧 Web 控制台，若探针无限等待，新控制台永远起不来，
+    数据流页表现为「重启卡死」。这里断言：超时后 initialize() 正常走完、写中文诊断、
+    并保留后台探针任务（不取消——模型下载线程无法中断，留着让它写满缓存）。
+    """
+    import asyncio
+
+    class HangingProvider:
+        async def embed_query(self, text: str) -> list[float]:
+            await asyncio.sleep(30)
+            return [0.1]
+
+    config = {
+        **raw_config,
+        "vector_db": {"backend": "milvus"},
+        "embedding": {"provider": "local", "load_timeout_seconds": 1},
+    }
+    with (
+        patch(
+            "kacore.repository.embedding.factory.EmbeddingProviderFactory.create_provider",
+            return_value=HangingProvider(),
+        ),
+        patch("kacore.app_initializer._module_available", return_value=True),
+        # 生产下限 30s 是防用户把正常加载误判为卡死；测试只关心「超时后还能走完」。
+        patch("kacore.config._LOAD_TIMEOUT_MIN_SECONDS", 1),
+    ):
+        initializer = AppInitializer(legacy_settings(config), temp_dir)
+        await initializer.initialize()
+
+        # 走完了：embedding 降级、后续装配（含 Web 控制台阶段）未被阻断。
+        assert initializer.embedding_provider is None
+        assert initializer.vector_store is None
+        assert initializer.api is not None
+        diagnostics = initializer.config.get_diagnostics()
+        assert any("timed out" in item and "Restart service" in item for item in diagnostics)
+        # 探针任务留在后台（下载继续），teardown 才收走。
+        assert initializer._pending_probe_task is not None
+        await initializer.teardown()
+        assert initializer._pending_probe_task is None
+
+
 async def test_fresh_install_uploads_and_lexically_retrieves_when_embedding_probe_fails(
-    temp_dir: Path, mock_context: object
+    temp_dir: Path
 ) -> None:
     class Provider:
         async def embed_query(self, text: str) -> list[float]:
@@ -272,9 +302,9 @@ async def test_fresh_install_uploads_and_lexically_retrieves_when_embedding_prob
             "kacore.repository.embedding.factory.EmbeddingProviderFactory.create_provider",
             return_value=Provider(),
         ),
-        patch("kacore.plugin_initializer._module_available", return_value=True),
+        patch("kacore.app_initializer._module_available", return_value=True),
     ):
-        initializer = PluginInitializer(mock_context, {}, temp_dir)
+        initializer = AppInitializer(legacy_settings({}), temp_dir)
         await initializer.initialize()
 
         assert initializer.source_store is not None
@@ -307,7 +337,7 @@ async def test_fresh_install_uploads_and_lexically_retrieves_when_embedding_prob
 
 
 async def test_initializer_keeps_mismatched_milvus_available_for_manual_rebuild(
-    temp_dir: Path, mock_context: object, raw_config: dict[str, Any]
+    temp_dir: Path, raw_config: dict[str, Any]
 ) -> None:
     from kacore.repository.vector_store.milvus_lite import MilvusSchemaMismatchError
 
@@ -336,9 +366,9 @@ async def test_initializer_keeps_mismatched_milvus_available_for_manual_rebuild(
             return_value=Provider(),
         ),
         patch("kacore.repository.vector_store.milvus_lite.MilvusLiteVectorStore", Milvus),
-        patch("kacore.plugin_initializer._module_available", return_value=True),
+        patch("kacore.app_initializer._module_available", return_value=True),
     ):
-        initializer = PluginInitializer(mock_context, config, temp_dir)
+        initializer = AppInitializer(legacy_settings(config), temp_dir)
         await initializer.initialize()
 
         assert isinstance(initializer.vector_store, Milvus)
@@ -351,17 +381,119 @@ async def test_initializer_keeps_mismatched_milvus_available_for_manual_rebuild(
         await initializer.teardown()
 
 
+async def test_initializer_records_milvus_init_error_for_generic_failure(
+    temp_dir: Path, raw_config: dict[str, Any]
+) -> None:
+    """通用装配异常（如 DataDirLockedError）必须被记录，喂给 capabilities 面板与清锁守卫。"""
+
+    class Provider:
+        async def embed_query(self, text: str) -> list[float]:
+            return [0.1] * 7
+
+    class Milvus:
+        def __init__(self, *, db_path: str, dim: int) -> None:
+            pass
+
+        def validate_schema(self) -> None:
+            raise RuntimeError(
+                "DataDirLockedError: another process holds the lock on "
+                "'/data/vector_store.db': [Errno 13] Permission denied"
+            )
+
+    config = {
+        **raw_config,
+        "vector_db": {"backend": "milvus"},
+        "graph": {"enabled": False},
+    }
+    with (
+        patch(
+            "kacore.repository.embedding.factory.EmbeddingProviderFactory.create_provider",
+            return_value=Provider(),
+        ),
+        patch("kacore.repository.vector_store.milvus_lite.MilvusLiteVectorStore", Milvus),
+        patch("kacore.app_initializer._module_available", return_value=True),
+    ):
+        initializer = AppInitializer(legacy_settings(config), temp_dir)
+        await initializer.initialize()
+
+        assert initializer.vector_store is None
+        assert initializer._vector_store_init_error is not None
+        assert "another process holds the lock" in initializer._vector_store_init_error
+        # 组合根必须把它接到 api，供 capabilities 面板展示。
+        assert initializer.api is not None
+        assert initializer.api._vector_store_init_error == initializer._vector_store_init_error
+        await initializer.teardown()
+
+
+async def test_clear_stale_milvus_lock_rejects_when_not_lock_issue(
+    temp_dir: Path, raw_config: dict[str, Any]
+) -> None:
+    """向导护栏：没有检测到锁定问题时拒绝清除（不同的失败原因不该被这个按钮处理）。"""
+    config = {**raw_config, "vector_db": {"backend": "milvus"}, "graph": {"enabled": False}}
+    initializer = AppInitializer(legacy_settings(config), temp_dir)
+    initializer.vector_store = None
+    initializer._vector_store_init_error = "some unrelated schema error"
+
+    result = await initializer.clear_stale_milvus_lock()
+
+    assert result["status"] == "error"
+    assert "No Milvus data folder lock" in result["message"]
+
+
+async def test_clear_stale_milvus_lock_rejects_when_vector_store_ready(
+    temp_dir: Path, raw_config: dict[str, Any]
+) -> None:
+    """守卫：vector_store 已经装配成功时不该允许清锁（那把锁此时是正当持有）。"""
+    config = {**raw_config, "vector_db": {"backend": "milvus"}, "graph": {"enabled": False}}
+    initializer = AppInitializer(legacy_settings(config), temp_dir)
+    initializer.vector_store = object()  # 假装已装配成功
+    initializer._vector_store_init_error = None
+
+    result = await initializer.clear_stale_milvus_lock()
+
+    assert result["status"] == "error"
+    assert "no lock to clear" in result["message"]
+
+
+async def test_clear_stale_milvus_lock_refuses_to_delete_os_lock_file(
+    temp_dir: Path, raw_config: dict[str, Any]
+) -> None:
+    """空 LOCK 仍可能被当前宿主持有；不能靠删除文件绕过 OS 锁。"""
+    config = {**raw_config, "vector_db": {"backend": "milvus"}, "graph": {"enabled": False}}
+    initializer = AppInitializer(legacy_settings(config), temp_dir)
+    initializer.vector_store = None
+    initializer._vector_store_init_error = (
+        "DataDirLockedError: another process holds the lock on "
+        "'/data/vector_store.db': [Errno 13] Permission denied"
+    )
+    db_dir = temp_dir / "vector_store.db"
+    db_dir.mkdir(parents=True)
+    (db_dir / "LOCK").write_bytes(b"")
+    collections_dir = db_dir / "collections"
+    collections_dir.mkdir()
+    (collections_dir / "kb_chunks.marker").write_text("real data, do not touch")
+    initializer._milvus_db_path = db_dir
+
+    result = await initializer.clear_stale_milvus_lock()
+
+    assert result["status"] == "error"
+    assert "Quit the app completely" in result["message"]
+    assert (db_dir / "LOCK").exists()
+    assert (collections_dir / "kb_chunks.marker").read_text() == "real data, do not touch"
+    assert initializer._vector_store_init_error is not None
+
+
 async def test_initializer_marks_recreated_empty_milvus_incompatible_when_docs_exist(
-    temp_dir: Path, mock_context: object, raw_config: dict[str, Any]
+    temp_dir: Path, raw_config: dict[str, Any]
 ) -> None:
     from kacore.domain.models import Collection, SourceDocument
 
     seed_config = {
         **raw_config,
-        "vector_db": {"backend": "astr"},
+        "vector_db": {"backend": "lexical"},
         "graph": {"enabled": False},
     }
-    seed = PluginInitializer(mock_context, seed_config, temp_dir)
+    seed = AppInitializer(legacy_settings(seed_config), temp_dir)
     await seed.initialize()
     assert seed.source_store is not None
     await seed.source_store.upsert_collection(Collection(name="papers"))
@@ -397,9 +529,9 @@ async def test_initializer_marks_recreated_empty_milvus_incompatible_when_docs_e
             return_value=Provider(),
         ),
         patch("kacore.repository.vector_store.milvus_lite.MilvusLiteVectorStore", Milvus),
-        patch("kacore.plugin_initializer._module_available", return_value=True),
+        patch("kacore.app_initializer._module_available", return_value=True),
     ):
-        initializer = PluginInitializer(mock_context, config, temp_dir)
+        initializer = AppInitializer(legacy_settings(config), temp_dir)
         await initializer.initialize()
 
         assert initializer.embedding_fingerprint is not None
@@ -416,180 +548,59 @@ async def test_initializer_marks_recreated_empty_milvus_incompatible_when_docs_e
         await initializer.teardown()
 
 
-async def test_plugin_shell_lifecycle(
-    temp_dir: Path, mock_context: object, raw_config: dict[str, Any]
+async def test_notion_auto_push_waits_for_local_processing_and_inflight_push(
+    tmp_path: Path,
 ) -> None:
-    # 1) 实例化并启动薄壳
-    plugin = KnowledgeRepositoryPlugin(mock_context, raw_config)
-    await plugin.initialize(temp_dir)
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
 
-    assert plugin._initializer is not None
-    assert plugin._handler is not None
-    assert plugin._initializer.api is not None
+    from kacore.utils.processing_lock import ProcessingLock
 
-    # 2) /ka help 与 /ka status（运营控制面）
-    res_help = await plugin.on_ka_help()
-    assert "/ka help" in res_help and "/ka r2" in res_help
-    res_status = await plugin.on_ka_status()
-    assert "KA 服务框架" in res_status and "agent" in res_status
-
-    # 3) 内容管理已下沉 WebUI：经 api 直接 seed 一篇真实 PDF 供后续 hook 测试
-    pdf_path = temp_dir / "test_doc.pdf"
-    doc = fitz.open()
-    page = doc.new_page()
-    page.insert_textbox(fitz.Rect(50, 50, 550, 750), "Hello world text segment for testing.")
-    doc.save(pdf_path)
-    doc.close()
-
-    await plugin._initializer.api.create_collection("papers", "academic")
-    doc_id = await plugin._initializer.api.register_document(
-        title=pdf_path.name,
-        file_path=str(pdf_path),
-        content_type="application/pdf",
-        size_bytes=pdf_path.stat().st_size,
-        content_hash="",
-        collection="papers",
+    initializer = AppInitializer(legacy_settings({}), tmp_path)
+    lock = ProcessingLock()
+    push = AsyncMock()
+    initializer.api = SimpleNamespace(
+        _processing_lock=lock,
+        _notion_sync_task=None,
+        get_active_zotero_sync_job=lambda: None,
+        sync_notion_push=push,
     )
-
-    # 4) /ka agent on → 开关开启且持久化
-    res_agent_on = await plugin.on_ka_agent("on")
-    assert "开启" in res_agent_on
-    assert plugin._initializer.agent_enabled is True
-    assert (temp_dir / "runtime_config.json").exists()
-
-    from kacore.domain.models import DocumentChunk
-
-    mock_chunk = DocumentChunk(
-        chunk_id="test-chunk-1",
-        doc_id=doc_id,
-        ordinal=0,
-        text="Hello world text segment for testing.",
-        content_hash="mock-hash",
-    )
-
-    # 4a) inject 模式：on_llm_request 向 req.system_prompt 注入知识库上下文
-    mock_event_on = MagicMock()
-    mock_event_on.message_str = "testing"
-
-    class _MockReq:
-        system_prompt = "You are a bot."
-
-    mock_req = _MockReq()
-
-    with patch.object(
-        plugin._initializer.retrieval_orchestrator, "retrieve", return_value=[mock_chunk]
-    ) as mock_retrieve:
-        await plugin._handler.on_llm_request(mock_event_on, mock_req)
-        assert mock_retrieve.await_count == 2
-        assert {
-            awaited.kwargs["collection"] for awaited in mock_retrieve.await_args_list
-        } == {"default", "papers"}
-        assert "Knowledge Base Context" in mock_req.system_prompt
-        assert "testing" in mock_req.system_prompt
-
-    # 4b) /ka agent off → on_llm_request 完全旁路，不注入、不检索（query_agent 已删，无 on_message）
-    res_agent_off = await plugin.on_ka_agent("off")
-    assert "关闭" in res_agent_off
-    assert plugin._initializer.agent_enabled is False
-
-    mock_event_off = MagicMock()
-    mock_event_off.message_str = "testing"
-
-    class _MockReqOff:
-        system_prompt = "You are a bot."
-
-    mock_req_off = _MockReqOff()
-    with patch.object(
-        plugin._initializer.retrieval_orchestrator, "retrieve", return_value=[mock_chunk]
-    ) as mock_retrieve_off:
-        await plugin._handler.on_llm_request(mock_event_off, mock_req_off)
-        assert mock_retrieve_off.await_count == 0
-        assert mock_req_off.system_prompt == "You are a bot."
-
-    # 5) /ka r2 push（增量上传，mock boto3 避免真实网络）
-    mock_s3 = MagicMock()
-    mock_paginator = MagicMock()
-    mock_paginator.paginate.return_value = []
-    mock_s3.get_paginator.return_value = mock_paginator
-    boto3_module = ModuleType("boto3")
-    boto3_module.client = MagicMock(return_value=mock_s3)  # type: ignore[attr-defined]
-    botocore_module = ModuleType("botocore")
-    config_module = ModuleType("botocore.config")
-
-    class _BotoConfig:
-        def __init__(self, **kwargs: object) -> None:
-            self.kwargs = kwargs
-
-    config_module.Config = _BotoConfig  # type: ignore[attr-defined]
-    botocore_module.config = config_module  # type: ignore[attr-defined]
-    with patch.dict(
-        sys.modules,
-        {
-            "boto3": boto3_module,
-            "botocore": botocore_module,
-            "botocore.config": config_module,
-        },
-    ):
-        res_push = await plugin.on_ka_r2("push")
-        assert res_push.startswith("R2 增量上传")
-        assert plugin._initializer.r2_backup_manager is not None
-        await plugin._initializer.r2_backup_manager.wait_current()
-
-        # 6) /ka r2 force push 需二次确认：首发提示，窗口内二次执行
-        res_warn = await plugin.on_ka_r2("force push")
-        assert "再次发送" in res_warn
-        res_force = await plugin.on_ka_r2("force push")
-        assert res_force.startswith("R2 强制全量上传")
-        await plugin._initializer.r2_backup_manager.wait_current()
-
-    # 7) 销毁薄壳
-    await plugin._initializer.api.delete_document(doc_id)
-    await plugin.terminate()
+    async with lock:
+        assert await initializer._auto_notion_push() is None
+    task = asyncio.create_task(asyncio.Event().wait())
+    initializer.api._notion_sync_task = task
+    try:
+        assert await initializer._auto_notion_push() is None
+        push.assert_not_awaited()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
-async def test_ka_toggles_persist_across_reinit(
-    temp_dir: Path, mock_context: object, raw_config: dict[str, Any]
+async def test_notion_teardown_cancels_scheduler_and_pending_push_before_store_close(
+    tmp_path: Path,
 ) -> None:
-    """agent/research/persona 开关写入 runtime_config.json，重建 initializer 后保留。"""
-    first = PluginInitializer(mock_context, raw_config, temp_dir)
-    await first.initialize()
-    first.set_toggle("agent", True)
-    first.set_toggle("research", True)
-    first.set_toggle("persona", True)
-    await first.teardown()
+    import asyncio
 
-    assert (temp_dir / "runtime_config.json").exists()
+    initializer = AppInitializer(legacy_settings({"vector_db": {"backend": "lexical"}}), tmp_path)
+    await initializer.initialize()
+    scheduler = initializer._notion_sync_task
+    assert scheduler is not None
+    ended = asyncio.Event()
+    started = asyncio.Event()
 
-    second = PluginInitializer(mock_context, raw_config, temp_dir)
-    await second.initialize()
-    assert second.agent_enabled is True
-    assert second.research_enabled is True
-    assert second.persona_enabled is True
-    await second.teardown()
+    async def work() -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            ended.set()
 
-
-async def test_ka_r2_force_pull_confirmation_and_auto_restart(
-    temp_dir: Path, mock_context: object, raw_config: dict[str, Any]
-) -> None:
-    """force pull：首发待确认；确认后恢复并自动触发 restart_plugin。"""
-    plugin = KnowledgeRepositoryPlugin(mock_context, raw_config)
-    await plugin.initialize(temp_dir)
-    assert plugin._initializer is not None and plugin._initializer.api is not None
-
-    with (
-        patch.object(
-            plugin._initializer.api,
-            "restore_from_backup",
-            return_value={"status": "success"},
-        ),
-        patch.object(
-            plugin._initializer.api, "restart_plugin", return_value={"status": "restarting"}
-        ) as mock_restart,
-    ):
-        warn = await plugin.on_ka_r2("force pull")
-        assert "再次发送" in warn
-        done = await plugin.on_ka_r2("force pull")
-        assert "自动重启" in done
-        mock_restart.assert_awaited_once()
-
-    await plugin.terminate()
+    push = asyncio.create_task(work())
+    initializer.api._notion_sync_task = push
+    await started.wait()
+    await initializer.teardown()
+    assert scheduler.done() and push.done()
+    assert ended.is_set()
+    assert initializer._notion_sync_task is None

@@ -6,11 +6,12 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from kacore.domain.conversation import ConversationSession
+from kacore.domain.models import DocumentLifecycle
 from kacore.repository.source_store.base import SourceDocumentStore
 
 
@@ -50,8 +51,10 @@ class InMemorySourceDocumentStore(SourceDocumentStore):
         self._sync_records: dict[tuple[str, SyncTargetKind], SyncRecord] = {}
         self._notion_entities: dict[tuple[str, str], NotionEntityRecord] = {}
         self._notion_outbox: dict[str, NotionOutboxItem] = {}
+        self._notion_scan_cursors: dict[str, str] = {}
         self._lightrag_status: dict[str, dict[str, str]] = {}
         self._build_jobs: dict[str, dict] = {}
+        self._codex_graph_tasks: dict[str, dict] = {}
         # Zotero 镜像 + 页面 provenance（key 均含 library_id 命名空间）
         self._zlibraries: dict[str, ZoteroLibrary] = {}
         self._zcollections: dict[tuple[str, str], ZoteroCollection] = {}
@@ -61,14 +64,24 @@ class InMemorySourceDocumentStore(SourceDocumentStore):
         self._zitem_tags: dict[tuple[str, str], list[ZoteroTag]] = {}
         self._zrelations: set[tuple[str, str, str, str]] = set()
         self._source_account_bindings: dict[str, dict[str, str]] = {}
+        self._zotero_account_identities: dict[str, dict[str, str]] = {}
         self._page_chunks: dict[str, list[PageChunk]] = {}
         self._notes: dict[str, ScopedNote] = {}
-        self._chat_history: dict[str, list[dict[str, Any]]] = {}
-        self._chat_sessions: dict[str, ConversationSession] = {}
+        self._chat_history: dict[str, list[dict]] = {}
         self._chat_id_seq = 1
         self._console_scope_states: dict[tuple[str, str], ConsoleScopeState] = {}
 
     # ── 集合（树形 + 多归属）────────────────────────────────────
+
+    async def get_notion_local_revision(self) -> str:
+        state = (self._documents, self._collections, self._doc_collections)
+        return hashlib.sha256(repr(state).encode()).hexdigest()
+
+    async def get_notion_scan_cursor(self, scope: str) -> str:
+        return self._notion_scan_cursors.get(scope, "")
+
+    async def set_notion_scan_cursor(self, scope: str, cursor: str) -> None:
+        self._notion_scan_cursors[scope] = cursor
 
     async def upsert_collection(self, collection: Collection) -> None:
         coll_key = collection.coll_key
@@ -237,6 +250,24 @@ class InMemorySourceDocumentStore(SourceDocumentStore):
 
     # ── 分块 ────────────────────────────────────────────────────
 
+    async def commit_document_processing(
+        self, document: SourceDocument, chunks: list[DocumentChunk], pages: list[PageChunk],
+    ) -> None:
+        if document.doc_id not in self._documents:
+            raise FileNotFoundError(document.doc_id)
+        updated = copy.deepcopy(self._documents[document.doc_id])
+        updated.converter = document.converter
+        updated.converter_version = document.converter_version
+        updated.needs_reindex = True
+        for key in ("chunk_schema", "processing_version"):
+            if key in document.local_meta:
+                updated.local_meta[key] = document.local_meta[key]
+        updated.local_meta.pop("processing_pending", None)
+        new_chunks, new_pages = copy.deepcopy(chunks), copy.deepcopy(pages)
+        self._documents[document.doc_id] = updated
+        self._chunks[document.doc_id] = new_chunks
+        self._page_chunks[document.doc_id] = new_pages
+
     async def replace_chunks(self, doc_id: str, chunks: list[DocumentChunk]) -> None:
         self._chunks[doc_id] = [copy.deepcopy(c) for c in chunks]
 
@@ -246,28 +277,52 @@ class InMemorySourceDocumentStore(SourceDocumentStore):
         return [copy.deepcopy(c) for c in ordered]
 
     async def get_corpus_stats(self) -> dict[str, int]:
-        pending_reindex = sum(1 for doc in self._documents.values() if doc.needs_reindex)
+        active_documents = [
+            doc
+            for doc in self._documents.values()
+            if doc.lifecycle_state is DocumentLifecycle.ACTIVE
+        ]
+        pending_reindex = sum(1 for doc in active_documents if doc.needs_reindex)
         return {
-            "document_count": len(self._documents),
+            "document_count": len(active_documents),
             "pending_reindex_count": pending_reindex,
-            "chunk_count": sum(len(chunks) for chunks in self._chunks.values()),
+            "chunk_count": sum(
+                len(self._chunks.get(doc.doc_id, [])) for doc in active_documents
+            ),
         }
 
     # ── LightRAG 索引状态 ───────────────────────────────────────
 
     async def set_lightrag_index_status(
-        self, doc_id: str, collection: str, status: str, last_error: str = ""
+        self,
+        doc_id: str,
+        collection: str,
+        status: str,
+        last_error: str = "",
+        *,
+        job_id: str | None = None,
     ) -> None:
         self._lightrag_status[doc_id] = {
             "doc_id": doc_id,
             "collection": collection,
             "status": status,
             "last_error": last_error,
+            "job_id": job_id or "",
         }
 
     async def get_lightrag_index_status(self, doc_id: str) -> dict[str, str] | None:
         value = self._lightrag_status.get(doc_id)
         return copy.deepcopy(value) if value else None
+
+    async def delete_lightrag_index_status_by_job(self, job_id: str) -> int:
+        to_remove = [
+            doc_id
+            for doc_id, value in self._lightrag_status.items()
+            if value.get("job_id") == job_id
+        ]
+        for doc_id in to_remove:
+            del self._lightrag_status[doc_id]
+        return len(to_remove)
 
     # ── 同步状态 ──────────────────────────────────────────────────
 
@@ -310,7 +365,7 @@ class InMemorySourceDocumentStore(SourceDocumentStore):
 
     async def add_notion_outbox(self, item: NotionOutboxItem) -> None:
         if item.id in self._notion_outbox:
-            raise ValueError(f"notion_outbox id 已存在：{item.id}")
+            raise ValueError(f"notion_outbox id already exists: {item.id}")
         stored = copy.deepcopy(item)
         if stored.created_at is None:
             stored.created_at = datetime.now(timezone.utc)
@@ -383,10 +438,9 @@ class InMemorySourceDocumentStore(SourceDocumentStore):
         conversation_id: str,
         role: str,
         content: str,
-        sources: list[dict[str, Any]] | None = None,
+        sources: list | None = None,
         retrieval_mode: str = "",
         locked: bool = False,
-        metadata: dict[str, Any] | None = None,
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         message = {
@@ -399,17 +453,16 @@ class InMemorySourceDocumentStore(SourceDocumentStore):
             "locked": bool(locked),
             "locked_at": now if locked else None,
             "updated_at": now,
-            "metadata": copy.deepcopy(metadata or {}),
         }
         self._chat_id_seq += 1
         self._chat_history.setdefault(conversation_id, []).append(message)
 
-    async def get_chat_messages(self, conversation_id: str) -> list[dict[str, Any]]:
+    async def get_chat_messages(self, conversation_id: str) -> list[dict]:
         return copy.deepcopy(self._chat_history.get(conversation_id, []))
 
     async def set_chat_message_locked(
         self, conversation_id: str, msg_idx: int, locked: bool
-    ) -> dict[str, Any] | None:
+    ) -> dict | None:
         messages = self._chat_history.get(conversation_id, [])
         if msg_idx < 0 or msg_idx >= len(messages):
             return None
@@ -428,29 +481,6 @@ class InMemorySourceDocumentStore(SourceDocumentStore):
         self._chat_history[conversation_id] = [
             m for m in self._chat_history.get(conversation_id, []) if m.get("locked")
         ]
-
-    async def get_chat_session(self, conversation_id: str) -> ConversationSession | None:
-        session = self._chat_sessions.get(conversation_id)
-        return copy.deepcopy(session) if session is not None else None
-
-    async def get_chat_session_by_external_key(
-        self, channel: str, external_key: str
-    ) -> ConversationSession | None:
-        for session in self._chat_sessions.values():
-            if session.channel == channel and session.external_key == external_key:
-                return copy.deepcopy(session)
-        return None
-
-    async def upsert_chat_session(self, session: ConversationSession) -> None:
-        now = datetime.now(timezone.utc)
-        stored = copy.deepcopy(session)
-        existing = self._chat_sessions.get(stored.conversation_id)
-        stored.created_at = stored.created_at or (existing.created_at if existing else now)
-        stored.updated_at = now
-        self._chat_sessions[stored.conversation_id] = stored
-
-    async def delete_chat_session(self, conversation_id: str) -> None:
-        self._chat_sessions.pop(conversation_id, None)
 
     # ── 控制台上下文状态 ─────────────────────────────────────────
 
@@ -498,6 +528,56 @@ class InMemorySourceDocumentStore(SourceDocumentStore):
                 job["stage"] = "interrupted"
                 count += 1
         return count
+
+    async def replace_codex_graph_tasks(self, job_id: str, tasks: list[dict]) -> None:
+        self._codex_graph_tasks = {
+            task_id: task
+            for task_id, task in self._codex_graph_tasks.items()
+            if task.get("job_id") != job_id
+        }
+        for task in tasks:
+            stored = copy.deepcopy(task)
+            stored.setdefault("status", "pending")
+            stored.setdefault("last_error", "")
+            self._codex_graph_tasks[str(stored["task_id"])] = stored
+
+    async def list_codex_graph_tasks(
+        self, job_id: str, status: str | None = None
+    ) -> list[dict]:
+        tasks = [
+            task
+            for task in self._codex_graph_tasks.values()
+            if task.get("job_id") == job_id
+            and (status is None or task.get("status") == status)
+        ]
+        tasks.sort(key=lambda task: (str(task.get("doc_id")), int(task.get("chunk_index", 0))))
+        return [copy.deepcopy(task) for task in tasks]
+
+    async def get_codex_graph_task(self, task_id: str) -> dict | None:
+        task = self._codex_graph_tasks.get(task_id)
+        return copy.deepcopy(task) if task is not None else None
+
+    async def update_codex_graph_task(
+        self, task_id: str, status: str, last_error: str = ""
+    ) -> bool:
+        task = self._codex_graph_tasks.get(task_id)
+        if task is None:
+            return False
+        task["status"] = status
+        task["last_error"] = last_error
+        return True
+
+    async def get_latest_codex_graph_build_job(self) -> dict | None:
+        job_ids = {str(task["job_id"]) for task in self._codex_graph_tasks.values()}
+        jobs = [
+            job
+            for job in self._build_jobs.values()
+            if job.get("job_id") in job_ids and job.get("status") == "waiting_agent"
+        ]
+        if not jobs:
+            return None
+        jobs.sort(key=lambda job: str(job.get("created_at") or ""), reverse=True)
+        return copy.deepcopy(jobs[0])
 
     # ── Zotero 逻辑镜像 ──────────────────────────────────────────
 
@@ -620,6 +700,19 @@ class InMemorySourceDocumentStore(SourceDocumentStore):
             "account_name": account_name,
         }
 
+    async def get_zotero_account_identity(self, namespace: str) -> dict[str, str] | None:
+        value = self._zotero_account_identities.get(namespace)
+        return copy.deepcopy(value) if value else None
+
+    async def link_zotero_account_identity(
+        self, namespace: str, account_key: str, library_id: str, access_mode: str
+    ) -> None:
+        self._zotero_account_identities[namespace] = {
+            "account_key": account_key,
+            "library_id": library_id,
+            "access_mode": access_mode,
+        }
+
     async def purge_zotero_mirror(self) -> None:
         zotero_doc_ids = [
             doc_id
@@ -645,10 +738,20 @@ class InMemorySourceDocumentStore(SourceDocumentStore):
             for note_id, note in self._notes.items()
             if note.library_id == "LOCAL"
         }
+        removed_job_ids = {
+            job_id
+            for job_id, job in self._build_jobs.items()
+            if str(job.get("collection") or "") in zotero_collection_names
+        }
         self._build_jobs = {
             job_id: job
             for job_id, job in self._build_jobs.items()
-            if str(job.get("collection") or "") not in zotero_collection_names
+            if job_id not in removed_job_ids
+        }
+        self._codex_graph_tasks = {
+            task_id: task
+            for task_id, task in self._codex_graph_tasks.items()
+            if str(task.get("job_id") or "") not in removed_job_ids
         }
         self._console_scope_states = {
             key: state

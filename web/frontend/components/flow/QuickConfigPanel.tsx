@@ -1,15 +1,20 @@
-import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import React, { forwardRef, useCallback, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import type { EffectiveConfig, PipelineStage } from "@/lib/api";
-import type { I18nKey, Lang } from "@/lib/i18n";
+import type { I18nKey, Lang, TFunc } from "@/lib/i18n";
+import type { Provider, ProviderPreset, SettingItem } from "@/lib/settingsApi";
 import { backendLabel, type FlowStageId } from "./model";
-import { DirPickerDialog } from "./DirPickerDialog";
+import { FlowSelect } from "./FlowSelect";
+import { NodePanel } from "./NodePanel";
+import { ProvidersPanel } from "./ProvidersPanel";
+import { NotionActions, R2Actions } from "./SyncActions";
 import { ZoteroQuickConfig } from "./ZoteroQuickConfig";
 
 export type FlowConfigSnapshot = EffectiveConfig;
 export type QuickConfigValue = string | number | boolean;
 export type QuickConfigValues = Record<string, string | boolean>;
-export type QuickConfigUpdate = { section: string; key: string; value: QuickConfigValue };
+// section 为空 = key 即设置键（NodePanel）；Zotero 面板仍用「段.键」，保存时映射到设置键。
+export type QuickConfigUpdate = { section?: string; key: string; value: unknown };
 
 export type ConfigSection =
   | "source_store"
@@ -30,6 +35,7 @@ export type QuickConfigHandle = { save: () => void };
 
 export const ZOTERO_SYNC_MODES = ["strict_mirror", "conservative", "archive"];
 export const ZOTERO_STORAGE_MODES = ["managed_copy", "linked", "zotmoov"];
+export const NOTION_SYNC_MODES = ["preserve", "strict"];
 
 type QuickConfigFieldBase = {
   id: string;
@@ -46,17 +52,6 @@ export type QuickConfigField =
   | (QuickConfigFieldBase & { kind: "boolean"; value: boolean })
   | (QuickConfigFieldBase & { kind: "select"; value: string; options: string[] })
   | (QuickConfigFieldBase & { kind: "readonly"; value: string });
-
-// 三段式：required（保证该模块能 run 的必要配置）+ advanced（可折叠的全部相关可写设置）。
-type QuickConfigModel = {
-  required: QuickConfigField[];
-  advanced: QuickConfigField[];
-  hints: I18nKey[];
-};
-
-const QUERY_MODES = ["mix", "local", "global", "hybrid", "naive", "bypass"];
-const RERANK_PROVIDERS = ["cross_encoder", "noop"];
-const LIGHTRAG_LLM_PROVIDERS = ["main", "external"];
 
 function fieldId(section: ConfigSection, key: string): string {
   return `${section}.${key}`;
@@ -142,206 +137,13 @@ export function readBoolean(config: FlowConfigSnapshot, section: ConfigSection, 
   return fallback;
 }
 
-function stageStringDetail(stage: PipelineStage, key: string, fallback = ""): string {
-  const value = stage.detail[key];
-  return value === null || value === undefined ? fallback : String(value);
-}
-
-function buildQuickConfig(stage: PipelineStage, config: FlowConfigSnapshot): QuickConfigModel {
-  const id = stage.id as FlowStageId;
-  const required: QuickConfigField[] = [];
-  const advanced: QuickConfigField[] = [];
-  const hints: I18nKey[] = [];
-
-  // Zotero 阶段由独立的 <ZoteroQuickConfig> 渲染（标签式面板），不走通用字段模型。
-
-  if (id === "ingest") {
-    required.push(booleanField("source_store", "ocr_enabled", "flow_quick_ocr_enabled", readBoolean(config, "source_store", "ocr_enabled", false)));
-    advanced.push(textField("source_store", "default_collection", "flow_quick_default_collection", readString(config, "source_store", "default_collection", "default"), true));
-    return { required, advanced, hints };
-  }
-
-  if (id === "embedding") {
-    const provider = readString(config, "embedding", "provider", stage.current);
-    const modelFallback = stageStringDetail(stage, "model");
-    required.push(textField("embedding", "model", "flow_quick_model", readString(config, "embedding", "model", modelFallback), true));
-    if (provider === "external") {
-      required.push(textField("embedding", "base_url", "flow_quick_base_url", readString(config, "embedding", "base_url"), true));
-      hints.push("flow_quick_api_key_hint");
-    } else {
-      hints.push("flow_quick_local_embedding_hint");
-    }
-    return { required, advanced, hints };
-  }
-
-  if (id === "vector_store") {
-    const backend = readString(config, "vector_db", "backend", stage.current);
-    if (backend === "milvus") {
-      required.push(booleanField("vector_db", "auto_index_enabled", "flow_quick_auto_index_enabled", readBoolean(config, "vector_db", "auto_index_enabled", true)));
-    }
-    return { required, advanced, hints };
-  }
-
-  if (id === "graph") {
-    const enabled = readBoolean(config, "graph", "enabled", stage.current === "on");
-    if (!enabled) return { required, advanced, hints };
-    required.push(selectField("graph", "query_mode", "flow_quick_query_mode", readString(config, "graph", "query_mode", "mix"), QUERY_MODES));
-    // 高级：LightRAG 专用 LLM + 并发/容量调参（全部 api 可写）。working_dir 为结构性参数，只读展示。
-    advanced.push(selectField("graph", "lightrag_llm_provider", "flow_quick_lightrag_llm_provider", readString(config, "graph", "lightrag_llm_provider", "main"), LIGHTRAG_LLM_PROVIDERS));
-    advanced.push(textField("graph", "lightrag_llm_base_url", "flow_quick_lightrag_llm_base_url", readString(config, "graph", "lightrag_llm_base_url"), true));
-    advanced.push(textField("graph", "lightrag_llm_model", "flow_quick_lightrag_llm_model", readString(config, "graph", "lightrag_llm_model"), true));
-    advanced.push(numberField("graph", "lightrag_llm_timeout_seconds", "flow_quick_lightrag_llm_timeout_seconds", readNumberString(config, "graph", "lightrag_llm_timeout_seconds", 900)));
-    advanced.push(numberField("graph", "llm_max_async", "flow_quick_llm_max_async", readNumberString(config, "graph", "llm_max_async", 4)));
-    advanced.push(numberField("graph", "embedding_max_async", "flow_quick_embedding_max_async", readNumberString(config, "graph", "embedding_max_async", 8)));
-    advanced.push(numberField("graph", "max_doc_chars", "flow_quick_max_doc_chars", readNumberString(config, "graph", "max_doc_chars", 30000)));
-    advanced.push(readonlyField("graph", "working_dir", "flow_quick_graph_working_dir", readString(config, "graph", "working_dir"), true, "flow_quick_graph_working_dir_help"));
-    return { required, advanced, hints };
-  }
-
-  if (id === "ask") {
-    required.push(
-      selectField(
-        "rerank",
-        "provider",
-        "flow_quick_rerank_provider",
-        readString(config, "rerank", "provider", stageStringDetail(stage, "rerank_provider", "noop")),
-        RERANK_PROVIDERS,
-        false,
-        "flow_quick_rerank_provider_help",
-      ),
-    );
-    required.push(
-      textField(
-        "rerank",
-        "model",
-        "flow_quick_rerank_model",
-        readString(config, "rerank", "model", stageStringDetail(stage, "rerank_model", "Alibaba-NLP/gte-reranker-modernbert-base")),
-        true,
-        false,
-        "flow_quick_rerank_model_help",
-      ),
-    );
-    required.push(
-      readonlyField(
-        "rerank",
-        "runtime_status",
-        "flow_quick_rerank_status",
-        stageStringDetail(stage, "rerank_status", "off"),
-        true,
-      ),
-    );
-    // 高级：Deep Thinking（FAIR-RAG 迭代检索）全部 api 可写键。
-    advanced.push(numberField("deep_thinking", "max_rounds", "flow_quick_dt_max_rounds", readNumberString(config, "deep_thinking", "max_rounds", 4)));
-    advanced.push(numberField("deep_thinking", "max_sub_queries", "flow_quick_dt_max_sub_queries", readNumberString(config, "deep_thinking", "max_sub_queries", 4)));
-    advanced.push(numberField("deep_thinking", "wide_top_k", "flow_quick_dt_wide_top_k", readNumberString(config, "deep_thinking", "wide_top_k", 24)));
-    advanced.push(numberField("deep_thinking", "rerank_weight", "flow_quick_dt_rerank_weight", readNumberString(config, "deep_thinking", "rerank_weight", 0.2), undefined, 0, 0.05));
-    advanced.push(booleanField("deep_thinking", "verify_enabled", "flow_quick_dt_verify_enabled", readBoolean(config, "deep_thinking", "verify_enabled", true)));
-    advanced.push(numberField("deep_thinking", "max_verify_rounds", "flow_quick_dt_max_verify_rounds", readNumberString(config, "deep_thinking", "max_verify_rounds", 1)));
-    advanced.push(textField("deep_thinking", "llm_base_url", "flow_quick_dt_llm_base_url", readString(config, "deep_thinking", "llm_base_url"), true));
-    advanced.push(textField("deep_thinking", "llm_model", "flow_quick_dt_llm_model", readString(config, "deep_thinking", "llm_model"), true));
-    // 高级：增强召回（A-RAG 2+1 中间档）全部 api 可写键。
-    advanced.push(numberField("enhanced_recall", "max_sub_queries", "flow_quick_er_max_sub_queries", readNumberString(config, "enhanced_recall", "max_sub_queries", 3)));
-    advanced.push(numberField("enhanced_recall", "wide_top_k", "flow_quick_er_wide_top_k", readNumberString(config, "enhanced_recall", "wide_top_k", 16)));
-    advanced.push(numberField("enhanced_recall", "max_final_evidence", "flow_quick_er_max_final_evidence", readNumberString(config, "enhanced_recall", "max_final_evidence", 12)));
-    advanced.push(numberField("enhanced_recall", "rerank_weight", "flow_quick_er_rerank_weight", readNumberString(config, "enhanced_recall", "rerank_weight", 0.5), undefined, 0, 0.05));
-    advanced.push(booleanField("enhanced_recall", "corrective_enabled", "flow_quick_er_corrective_enabled", readBoolean(config, "enhanced_recall", "corrective_enabled", true)));
-    hints.push("flow_quick_rerank_hint");
-    return { required, advanced, hints };
-  }
-
-  if (id === "sync") {
-    required.push(booleanField("r2_sync", "enabled", "flow_quick_r2_enabled", readBoolean(config, "r2_sync", "enabled", false)));
-    required.push(booleanField("notion_sync", "enabled", "flow_quick_notion_enabled", readBoolean(config, "notion_sync", "enabled", false)));
-    hints.push("flow_quick_sync_secret_hint");
-    return { required, advanced, hints };
-  }
-
-  return { required, advanced, hints };
-}
-
 export function fieldInitialValue(field: QuickConfigField): string | boolean {
   return field.kind === "boolean" ? field.value : field.value;
 }
 
-function graphModeLabel(value: string, t: (k: I18nKey) => string): string {
+function graphModeLabel(value: string, t: TFunc): string {
   const key = `graph_mode_${value}` as I18nKey;
   return t(key);
-}
-
-// ─── Flow-themed custom select ────────────────────────────────
-
-interface FlowSelectProps {
-  value: string;
-  options: string[];
-  disabled: boolean;
-  getLabel: (v: string) => string;
-  onChange: (v: string) => void;
-}
-
-function FlowSelect({ value, options, disabled, getLabel, onChange }: FlowSelectProps) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    function onDown(e: MouseEvent) {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpen(false);
-    }
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  return (
-    <div ref={ref} className="flow-custom-select" onClick={(e) => e.stopPropagation()}>
-      <button
-        type="button"
-        className={`flow-custom-select-trigger${open ? " is-open" : ""}${disabled ? " is-disabled" : ""}`}
-        disabled={disabled}
-        onClick={() => setOpen((v) => !v)}
-      >
-        <span className="flow-custom-select-label">{getLabel(value)}</span>
-        <svg
-          width="11" height="11" viewBox="0 0 24 24" fill="none"
-          stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-          className={`flow-custom-select-chevron${open ? " is-open" : ""}`}
-        >
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
-      </button>
-
-      {open && (
-        <div className="flow-custom-select-menu">
-          {options.map((opt) => {
-            const isActive = opt === value;
-            return (
-              <button
-                key={opt}
-                type="button"
-                className={`flow-custom-select-opt${isActive ? " is-active" : ""}`}
-                onClick={() => { onChange(opt); setOpen(false); }}
-              >
-                {isActive ? (
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="flow-custom-select-check">
-                    <polyline points="20 6 9 17 4 12" />
-                  </svg>
-                ) : (
-                  <span className="flow-custom-select-check" />
-                )}
-                {getLabel(opt)}
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
 }
 
 // ─── Field control ────────────────────────────────────────────
@@ -358,7 +160,7 @@ export function FieldControl({
   field: QuickConfigField;
   value: string | boolean;
   lang: Lang;
-  t: (k: I18nKey) => string;
+  t: TFunc;
   saving: boolean;
   onChange: (value: string | boolean) => void;
   onBrowseDir?: () => void;
@@ -543,7 +345,7 @@ export function QuickConfigFieldGrid({
   draft: QuickConfigValues;
   setDraft: React.Dispatch<React.SetStateAction<QuickConfigValues>>;
   lang: Lang;
-  t: (k: I18nKey) => string;
+  t: TFunc;
   saving: boolean;
   onBrowseDir?: (fieldId: string) => void;
 }) {
@@ -596,11 +398,17 @@ export function AdvancedSection({
 export type QuickConfigPanelProps = {
   stage: PipelineStage;
   config: FlowConfigSnapshot;
+  /** 本节点的 SettingSpec 条目（`/api/settings/schema` 按 home 分组）。 */
+  settingsItems: SettingItem[];
+  providers: Provider[];
+  presets: ProviderPreset[];
+  hiddenKeys?: string[];
   lang: Lang;
-  t: (k: I18nKey) => string;
+  t: TFunc;
   saving: boolean;
   onSave: (stageId: FlowStageId, updates: QuickConfigUpdate[]) => void;
   onRefresh?: () => Promise<void>;
+  onNotify: (message: string, kind: "ok" | "error" | "info") => void;
   // 头部徽章充当唯一保存入口：panel 上报草稿态，FlowNode 通过 ref 触发提交。
   onDirtyChange?: (state: QuickConfigDirty) => void;
   advancedOpen: boolean;
@@ -609,99 +417,36 @@ export type QuickConfigPanelProps = {
   advancedSlot?: HTMLElement | null;
 };
 
-const GenericQuickConfig = forwardRef<QuickConfigHandle, QuickConfigPanelProps>(function GenericQuickConfig(
-  { stage, config, lang, t, saving, onSave, onDirtyChange, advancedOpen, onToggleAdvanced, advancedSlot },
-  ref,
-) {
-  const model = useMemo(() => buildQuickConfig(stage, config), [config, stage]);
-  const allFields = useMemo(() => [...model.required, ...model.advanced], [model]);
-  const { draft, setDraft, updates, hasInvalidNumber } = useQuickConfigDraft(allFields);
-  const [dirPickerFieldId, setDirPickerFieldId] = useState<string | null>(null);
-
-  const canSave = updates.length > 0 && !hasInvalidNumber && !saving;
-  const stageId = stage.id as FlowStageId;
-
-  useImperativeHandle(
-    ref,
-    () => ({
-      save: () => {
-        if (updates.length > 0 && !hasInvalidNumber && !saving) onSave(stageId, updates);
-      },
-    }),
-    [updates, hasInvalidNumber, saving, onSave, stageId],
-  );
-
-  useEffect(() => {
-    onDirtyChange?.({ count: updates.length, canSave });
-  }, [updates.length, canSave, onDirtyChange]);
-
-  const dirPickerField = dirPickerFieldId
-    ? (allFields.find((f) => f.id === dirPickerFieldId) ?? null)
-    : null;
-
-  const handleDirSelect = useCallback((path: string) => {
-    if (!dirPickerFieldId) return;
-    setDraft((cur) => ({ ...cur, [dirPickerFieldId]: path }));
-    setDirPickerFieldId(null);
-  }, [dirPickerFieldId, setDraft]);
-
-  if (model.required.length === 0 && model.advanced.length === 0 && model.hints.length === 0) return null;
-
-  return (
-    <>
-      <div
-        className="flow-quick-config"
-        onClick={(event) => event.stopPropagation()}
-        onPointerDown={(event) => event.stopPropagation()}
-      >
-        {model.required.length > 0 && (
-          <QuickConfigFieldGrid
-            fields={model.required}
-            draft={draft}
-            setDraft={setDraft}
-            lang={lang}
-            t={t}
-            saving={saving}
-            onBrowseDir={setDirPickerFieldId}
-          />
-        )}
-
-        {hasInvalidNumber && <div className="flow-quick-error">{t("flow_quick_number_invalid")}</div>}
-        {model.hints.map((hint) => <div key={hint} className="flow-quick-hint">{t(hint)}</div>)}
-
-        {model.advanced.length > 0 && (
-          <AdvancedSection open={advancedOpen} onToggle={onToggleAdvanced} label={t("flow_quick_advanced")} slot={advancedSlot}>
-            <QuickConfigFieldGrid
-              fields={model.advanced}
-              draft={draft}
-              setDraft={setDraft}
-              lang={lang}
-              t={t}
-              saving={saving}
-              onBrowseDir={setDirPickerFieldId}
-            />
-          </AdvancedSection>
-        )}
-      </div>
-
-      {dirPickerField && (
-        <DirPickerDialog
-          initialPath={
-            dirPickerField.kind === "text"
-              ? (String(draft[dirPickerField.id] ?? dirPickerField.value) || undefined)
-              : undefined
-          }
-          t={t}
-          onSelect={handleDirSelect}
-          onClose={() => setDirPickerFieldId(null)}
-        />
-      )}
-    </>
-  );
-});
-
-// Zotero 阶段走标签式专用面板，其余阶段走通用字段面板。
+// Zotero 走标签式专用面板；模型供应商是连接列表；其余节点按 SettingSpec 渲染（NodePanel）。
 export const QuickConfigPanel = forwardRef<QuickConfigHandle, QuickConfigPanelProps>(function QuickConfigPanel(props, ref) {
-  if (props.stage.id === "zotero") return <ZoteroQuickConfig ref={ref} {...props} />;
-  return <GenericQuickConfig ref={ref} {...props} />;
+  const { stage, settingsItems, providers, presets, hiddenKeys, t, onRefresh, onNotify } = props;
+  if (stage.id === "zotero") return <ZoteroQuickConfig ref={ref} {...props} />;
+  if (stage.id === "providers") {
+    return (
+      <ProvidersPanel providers={providers} presets={presets} t={t} onNotify={onNotify}
+        onChanged={async () => { await onRefresh?.(); }} />
+    );
+  }
+  const extra =
+    stage.id === "notion" ? <NotionActions stage={stage} t={t} onNotify={onNotify} onChanged={() => void onRefresh?.()} />
+    : stage.id === "r2" ? <R2Actions stage={stage} t={t} onNotify={onNotify} />
+    : undefined;
+  return (
+    <NodePanel
+      ref={ref}
+      stage={stage}
+      items={settingsItems}
+      providers={providers}
+      hiddenKeys={hiddenKeys}
+      lang={props.lang}
+      t={t}
+      saving={props.saving}
+      onSave={props.onSave}
+      onDirtyChange={props.onDirtyChange}
+      advancedOpen={props.advancedOpen}
+      onToggleAdvanced={props.onToggleAdvanced}
+      advancedSlot={props.advancedSlot}
+      extra={extra}
+    />
+  );
 });

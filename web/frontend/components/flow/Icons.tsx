@@ -82,6 +82,30 @@ export function StageIcon({ name }: { name: string }) {
       </IconFrame>
     );
   }
+  if (name === "chip") {
+    return (
+      <IconFrame>
+        <rect x="6" y="6" width="12" height="12" rx="2" />
+        <path d="M10 10h4v4h-4zM9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3" />
+      </IconFrame>
+    );
+  }
+  if (name === "plug") {
+    return (
+      <IconFrame>
+        <path d="M9 3v5M15 3v5M7 8h10v3a5 5 0 0 1-10 0z" />
+        <path d="M12 16v5" />
+      </IconFrame>
+    );
+  }
+  if (name === "notion") {
+    return (
+      <IconFrame>
+        <rect x="4" y="3.5" width="16" height="17" rx="2" />
+        <path d="M9 16V8l6 8V8" />
+      </IconFrame>
+    );
+  }
   return (
     <IconFrame>
       <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />

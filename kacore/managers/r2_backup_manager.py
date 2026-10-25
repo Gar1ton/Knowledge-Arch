@@ -18,7 +18,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from kacore.config import runtime_persistable_keys
 from kacore.managers.r2_backup_manifest import (
     check_sqlite_integrity,
     create_sqlite_snapshot_file,
@@ -35,8 +34,10 @@ from kacore.managers.r2_restore import (
 
 if TYPE_CHECKING:
     from kacore.config import Config, R2SyncConfig
+    from kacore.log_capture import RuntimeEventSink
     from kacore.repository.source_store.base import SourceDocumentStore
     from kacore.repository.sync_targets.base import SyncTarget
+    from kacore.settings.store import SettingsStore
 
 _PREFIX = "knowledge-arch/v1"
 _LATEST_KEY = f"{_PREFIX}/latest.json"
@@ -88,8 +89,11 @@ class R2BackupManager:
         db_path: Path,
         quiesce_indexes: Callable[[], Awaitable[None]] | None = None,
         reload_callback: Callable[[], Awaitable[None]] | None = None,
+        runtime_event_sink: RuntimeEventSink | None = None,
+        settings: SettingsStore | None = None,
     ) -> None:
         self._target = target
+        self._settings = settings
         self._source_store = source_store
         self._config = config
         self._r2_config = r2_config
@@ -97,6 +101,9 @@ class R2BackupManager:
         self._db_path = db_path
         self._quiesce_indexes = quiesce_indexes
         self._reload_callback = reload_callback
+        from kacore.runtime_events import RuntimeEventRecorder
+
+        self._runtime_events = RuntimeEventRecorder(runtime_event_sink)
         self._lock = asyncio.Lock()
         self._job: R2BackupJob | None = None
         self._task: asyncio.Task[dict[str, Any]] | None = None
@@ -119,15 +126,44 @@ class R2BackupManager:
                 coro.close()  # type: ignore[attr-defined]
             return {
                 "status": "busy",
-                "message": "已有 R2 备份/恢复任务正在运行",
+                "message": "An R2 backup/restore task is already running",
                 "job": self.active_job,
             }
         self._job = R2BackupJob(job_id=uuid.uuid4().hex, action=action)
+        self._runtime_events.start(
+            category="sync",
+            operation="r2_backup_restore",
+            operation_id=self._job.job_id,
+            msg="R2 backup/restore task started",
+            metadata={"action": action},
+        )
         self._task = asyncio.create_task(self._run_job(coro))
         return {"status": "started", "job": self.active_job}
 
+    async def _observe_job(self, job: R2BackupJob) -> None:
+        while job.status == "running":
+            self._runtime_events.progress(
+                operation_id=job.job_id,
+                category="sync",
+                operation="r2_backup_restore",
+                phase=job.stage,
+                percent=job.progress,
+                msg=f"R2 task progress: {job.stage}",
+                metadata={
+                    "job_id": job.job_id,
+                    "action": job.action,
+                    "files_done": job.files_done,
+                    "files_total": job.files_total,
+                    "bytes_done": job.bytes_done,
+                    "bytes_total": job.bytes_total,
+                },
+            )
+            await asyncio.sleep(1.0)
+
     async def _run_job(self, coro: Awaitable[dict[str, Any]]) -> dict[str, Any]:
         assert self._job is not None
+        job = self._job
+        observer = asyncio.create_task(self._observe_job(job))
         try:
             result = await coro
             if result.get("status") == "success":
@@ -147,6 +183,34 @@ class R2BackupManager:
         except Exception as exc:  # noqa: BLE001 - 后台任务需落可观测终态
             self._job.finish("error", error=str(exc))
             return {"status": "error", "message": str(exc), "job": self.active_job}
+        finally:
+            observer.cancel()
+            await asyncio.gather(observer, return_exceptions=True)
+            metadata = {
+                "job_id": job.job_id,
+                "action": job.action,
+                "files_done": job.files_done,
+                "files_total": job.files_total,
+                "bytes_done": job.bytes_done,
+                "bytes_total": job.bytes_total,
+            }
+            if job.status == "success":
+                self._runtime_events.finish(
+                    operation_id=job.job_id,
+                    category="sync",
+                    operation="r2_backup_restore",
+                    msg="R2 backup/restore task finished",
+                    metadata=metadata,
+                )
+            else:
+                self._runtime_events.fail(
+                    operation_id=job.job_id,
+                    category="sync",
+                    operation="r2_backup_restore",
+                    msg="R2 backup/restore task failed or was cancelled",
+                    error=job.error or job.status,
+                    metadata=metadata,
+                )
 
     async def _delayed_reload(self) -> None:
         await asyncio.sleep(0.25)
@@ -194,8 +258,8 @@ class R2BackupManager:
                         missing_bytes += entry.size
                 if bucket_used + missing_bytes > self._r2_config.free_tier_bytes:
                     raise RuntimeError(
-                        "R2 备份将超出配置的 10 GiB 安全上限："
-                        f"当前 {bucket_used} B，净新增 {missing_bytes} B"
+                        "The R2 backup would exceed the configured 10 GiB safety limit: currently "
+                        f"{bucket_used} B, {missing_bytes} B new"
                     )
 
                 job.stage, job.progress = "upload", 10
@@ -285,7 +349,7 @@ class R2BackupManager:
             free = shutil.disk_usage(self._data_dir).free
             if free < job.bytes_total:
                 exc = RuntimeError(
-                    f"本地空间不足：需要至少 {job.bytes_total} B，可用 {free} B"
+                    f"Not enough local space: need at least {job.bytes_total} B, {free} B available"
                 )
                 job.finish("error", error=str(exc))
                 raise exc
@@ -304,7 +368,7 @@ class R2BackupManager:
                     )
                     actual = await asyncio.to_thread(sha256_file, target_path)
                     if actual != entry.sha256 or target_path.stat().st_size != entry.size:
-                        raise ValueError(f"备份对象校验失败：{entry.path}")
+                        raise ValueError(f"Backup object check failed: {entry.path}")
                     job.files_done += 1
                     job.bytes_done += entry.size
                     job.progress = 5 + int(80 * job.files_done / max(job.files_total, 1))
@@ -312,7 +376,7 @@ class R2BackupManager:
                 job.stage, job.progress = "verify", 88
                 db_path = payload_root / "database" / "knowledge_repository.db"
                 if not db_path.exists():
-                    raise ValueError("备份缺少 knowledge_repository.db")
+                    raise ValueError("The backup has no knowledge_repository.db")
                 await asyncio.to_thread(check_sqlite_integrity, db_path)
                 marker = {
                     "snapshot_id": snapshot_id,
@@ -327,7 +391,9 @@ class R2BackupManager:
                     "snapshot_id": snapshot_id,
                     "restart_required": True,
                     "auto_restart": auto_restart,
-                    "message": "完整快照已下载并验证，等待重启应用。",
+                    "message": (
+                        "The full snapshot was downloaded and verified; restart the app to finish."
+                    ),
                 }
                 job.finish("success")
                 return result
@@ -422,39 +488,40 @@ class R2BackupManager:
         if graph_root.exists():
             await asyncio.to_thread(shutil.copytree, graph_root, root / "lightrag")
 
-        portable = _portable_config(self._config)
         (root / "config").mkdir(parents=True, exist_ok=True)
-        # 不原样复制 runtime_config.json：旧版或手工文件可能含白名单外字段；两份配置均净化。
-        _write_json_atomic(root / "config" / "runtime_config.json", portable)
-        _write_json_atomic(root / "config" / "portable_config.json", portable)
+        # 只带可携设置（不含机密、本机路径与 R2 自身凭据），不原样复制 settings.json。
+        _write_json_atomic(
+            root / "config" / "portable_settings.json",
+            _portable_settings(self._config, self._settings),
+        )
 
     async def _load_latest_manifest(self) -> tuple[dict[str, Any], dict[str, Any]]:
         try:
             latest_bytes = await self._target.pull_backup(_LATEST_KEY)
         except Exception as exc:
-            raise FileNotFoundError("R2 中没有可恢复的 v1 快照") from exc
+            raise FileNotFoundError("There is no v1 snapshot in R2 to restore") from exc
         latest = json.loads(latest_bytes.decode("utf-8"))
         if not isinstance(latest, dict):
-            raise ValueError("latest.json 内容非法")
+            raise ValueError("latest.json is invalid")
         manifest_key = str(latest.get("manifest_key") or "")
         if not manifest_key.startswith(f"{_PREFIX}/snapshots/"):
-            raise ValueError("latest.json manifest_key 非法")
+            raise ValueError("latest.json has an invalid manifest_key")
         manifest_bytes = await self._target.pull_backup(manifest_key)
         expected = str(latest.get("manifest_sha256") or "")
         if hashlib.sha256(manifest_bytes).hexdigest() != expected:
-            raise ValueError("manifest 哈希校验失败")
+            raise ValueError("manifest hash check failed")
         manifest = json.loads(manifest_bytes.decode("utf-8"))
         if not isinstance(manifest, dict):
-            raise ValueError("manifest 内容非法")
+            raise ValueError("manifest is invalid")
         if int(manifest.get("schema_version") or 0) != _SCHEMA_VERSION:
-            raise ValueError("不支持的 R2 manifest schema")
+            raise ValueError("unsupported R2 manifest schema")
         if str(manifest.get("snapshot_id") or "") != str(latest.get("snapshot_id") or ""):
-            raise ValueError("latest 与 manifest snapshot_id 不一致")
+            raise ValueError("snapshot_id differs between latest and manifest")
         entries = parse_entries(manifest)
         if int(manifest.get("file_count") or 0) != len(entries):
-            raise ValueError("manifest file_count 不一致")
+            raise ValueError("manifest file_count mismatch")
         if int(manifest.get("logical_bytes") or 0) != sum(entry.size for entry in entries):
-            raise ValueError("manifest logical_bytes 不一致")
+            raise ValueError("manifest logical_bytes mismatch")
         return latest, manifest
 
     async def _garbage_collect(self, manifest_key: str, digests: set[str]) -> None:
@@ -477,30 +544,16 @@ class R2BackupManager:
         return self._job
 
 
-def _portable_config(config: Config) -> dict[str, Any]:
-    public = config.to_public_dict()
-    allowed = runtime_persistable_keys()
-    result: dict[str, Any] = {}
-    excluded = {
-        ("zotero_sync", "zotero_data_dir"),
-        ("zotero_sync", "api_port"),
-        ("zotero_sync", "linked_root"),
-        ("zotero_sync", "zotmoov_root"),
-    }
-    for section, keys in allowed.items():
-        values = public.get(section)
-        if not isinstance(values, dict):
-            continue
-        selected = {
-            key: values[key]
-            for key in keys
-            if key in values
-            and (section, key) not in excluded
-            and section != "r2_sync"
-        }
-        if selected:
-            result[section] = selected
-    return result
+def _portable_settings(config: Config, settings: SettingsStore | None) -> dict[str, Any]:
+    """生产由 SettingsStore 给出；没有 SettingsStore 时从 Config 原始值翻译（测试 / 极简装配）。"""
+    if settings is not None:
+        return settings.portable_document()
+    from kacore.settings.legacy_keys import apply_translation, translate
+    from kacore.settings.store import SettingsStore as _SettingsStore
+
+    store = _SettingsStore.in_memory()
+    apply_translation(store, translate(config.raw))
+    return store.portable_document()
 
 
 def _snapshot_id() -> str:

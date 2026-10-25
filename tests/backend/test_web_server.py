@@ -4,18 +4,21 @@
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock
 
 import fitz  # type: ignore[import-untyped]
 import pytest
 from aiohttp import FormData
 from aiohttp.test_utils import TestClient, TestServer
-from yarl import URL
+from settings_helpers import legacy_settings
+from static_retriever import StaticRetriever
 
 from kacore.api import KnowledgeRepositoryApi
+from kacore.app_initializer import AppInitializer
 from kacore.config import Config
-from kacore.domain.conversation import ConversationSession
 from kacore.domain.models import (
     Collection,
     DocumentChunk,
@@ -24,12 +27,14 @@ from kacore.domain.models import (
     SyncTargetKind,
 )
 from kacore.index_compatibility import IndexCompatibilityStore
-from kacore.plugin_initializer import PluginInitializer
-from kacore.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
+from kacore.log_capture import MemoryLogHandler
 from kacore.repository.source_store.memory import InMemorySourceDocumentStore
 from kacore.repository.sync_targets.memory import InMemorySyncTarget
 from kacore.secret_store import EncryptedSecretStore
-from web.server import SESSION_COOKIE, build_app
+from web.server import build_app
+
+TOKEN = "test-token"
+AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 _GB = 1024 * 1024 * 1024
 
@@ -40,7 +45,7 @@ async def _make_api() -> KnowledgeRepositoryApi:
     await store.add_document(
         SourceDocument("d1", "Doc 1", "/p/d1.pdf", "application/pdf", 100, "h1", "papers", ["t"])
     )
-    kb = InMemoryKnowledgeBaseReader(
+    kb = StaticRetriever(
         {
             "papers": [
                 DocumentChunk(
@@ -60,160 +65,66 @@ async def _make_api() -> KnowledgeRepositoryApi:
     }
     return KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=kb,
+        retrieval_orchestrator=kb,
         sync_targets=targets,
         config=Config({"notion_sync": {"database_id": "db1", "parent_page_id": "parent1"}}),
     )
 
 
-async def _client(tmp_path: Path, *, auth_required: bool = False) -> TestClient:
+async def _client(tmp_path: Path, *, authenticated: bool = True) -> TestClient:
     api = await _make_api()
     app = build_app(
         api=api,
-        static_dir=tmp_path / "frontend",
         upload_dir=tmp_path / "uploads",
-        auth_required=auth_required,
-        username="admin",
-        password="pw",
+        token=TOKEN,
     )
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(app), headers=AUTH if authenticated else None)
     await client.start_server()
     return client
 
 
-class _FakeConversationService:
-    llm_ready = True
+async def test_cleaning_maintenance_requires_auth_and_defaults_to_preview(tmp_path):
+    from types import SimpleNamespace
 
-    def __init__(self) -> None:
-        self.sessions: dict[str, ConversationSession] = {}
-        self.turns = []
-
-    async def get_or_create_session(self, conversation_id: str) -> ConversationSession:
-        return self.sessions.setdefault(conversation_id, ConversationSession(conversation_id))
-
-    async def update_session(
-        self, conversation_id: str, values: dict[str, object]
-    ) -> ConversationSession:
-        invalid = set(values) - {
-            "research_enabled",
-            "context_enabled",
-            "persona_enabled",
-        }
-        if invalid:
-            raise ValueError("unsupported session setting")
-        session = await self.get_or_create_session(conversation_id)
-        for key, value in values.items():
-            setattr(session, key, bool(value))
-        return session
-
-    async def stream(self, turn):
-        self.turns.append(turn)
-        yield {"type": "stage", "text": "retrieving"}
-        yield {
-            "type": "assistant",
-            "content": "answer",
-            "sources": [],
-            "retrieval_scope": {"kind": "collection", "collection_names": ["papers"]},
-        }
-        yield {"type": "done"}
+    api = SimpleNamespace(
+        reprocess_documents_with_stale_cleaning=AsyncMock(return_value={"dry_run": True}),
+        get_document_footnotes=AsyncMock(return_value=[]),
+    )
+    client = TestClient(TestServer(build_app(api=api, upload_dir=tmp_path, token=TOKEN)))
+    await client.start_server()
+    try:
+        response = await client.post("/api/documents/reprocess-cleaning", json={})
+        assert response.status == 401
+        client.session.headers.update(AUTH)
+        response = await client.post("/api/documents/reprocess-cleaning", json={})
+        assert response.status == 200
+        api.reprocess_documents_with_stale_cleaning.assert_awaited_once_with(dry_run=True)
+        response = await client.get("/api/documents/doc/footnotes")
+        assert response.status == 200 and await response.json() == []
+        response = await client.post("/api/documents/reprocess-cleaning", json={"dry_run": "false"})
+        assert response.status == 400
+    finally:
+        await client.close()
 
 
 # ── 配置校验 ────────────────────────────────────────────────────
 
 
-def test_build_app_rejects_empty_password_when_auth_required(tmp_path: Path) -> None:
-    with pytest.raises(ValueError):
+def test_build_app_rejects_empty_token(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="token"):
+        build_app(api=object(), upload_dir=tmp_path, token="")  # type: ignore[arg-type]
+
+
+def test_build_app_requires_exactly_one_api_source(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="exactly one"):
+        build_app(upload_dir=tmp_path, token=TOKEN)
+    with pytest.raises(ValueError, match="exactly one"):
         build_app(
-            api=None,  # type: ignore[arg-type]
-            static_dir=tmp_path,
+            api=object(),  # type: ignore[arg-type]
+            api_provider=lambda: None,
             upload_dir=tmp_path,
-            auth_required=True,
-            password="",
+            token=TOKEN,
         )
-
-
-async def test_unified_chat_turn_and_session_routes(tmp_path: Path) -> None:
-    api = await _make_api()
-    service = _FakeConversationService()
-    api.attach_conversation_service(service)
-    app = build_app(
-        api=api,
-        static_dir=tmp_path / "frontend",
-        upload_dir=tmp_path / "uploads",
-        auth_required=False,
-    )
-    client = TestClient(TestServer(app))
-    await client.start_server()
-    try:
-        session = await (await client.get("/api/chat/session/web-conv")).json()
-        assert session["context_enabled"] is True and session["research_enabled"] is False
-
-        patched = await (
-            await client.patch(
-                "/api/chat/session/web-conv",
-                json={"research_enabled": True, "persona_enabled": True},
-            )
-        ).json()
-        assert patched["research_enabled"] is True and patched["persona_enabled"] is True
-
-        response = await client.post(
-            "/api/chat/turn",
-            json={
-                "conversation_id": "web-conv",
-                "message": "question",
-                "collection": "papers",
-                "retrieval_mode": "default",
-            },
-        )
-        assert response.status == 200
-        body = await response.text()
-        assert '"type": "assistant"' in body and '"type": "done"' in body
-        assert service.turns[0].collection == "papers"
-
-        assert (await client.post("/api/chat/agent", json={})).status == 404
-        assert (await client.get("/api/chat/agent/info")).status == 404
-    finally:
-        await client.close()
-
-
-async def test_discord_settings_and_token_routes_never_echo_secret(tmp_path: Path) -> None:
-    api = await _make_api()
-    api.attach_shell("standalone")
-    api._secret_store = EncryptedSecretStore(tmp_path / "secrets")
-    app = build_app(
-        api=api,
-        static_dir=tmp_path / "frontend",
-        upload_dir=tmp_path / "uploads",
-        auth_required=False,
-    )
-    client = TestClient(TestServer(app))
-    await client.start_server()
-    try:
-        rejected = await client.put("/api/channels/discord", json={"enabled": True})
-        assert rejected.status == 400
-
-        updated = await client.put(
-            "/api/channels/discord",
-            json={"enabled": True, "allowed_user_ids": ["123"]},
-        )
-        assert updated.status == 200
-        assert (await updated.json())["restart_required"] is True
-
-        token = "discord-super-secret-token"
-        stored = await client.put("/api/channels/discord/token", json={"token": token})
-        stored_body = await stored.json()
-        assert stored_body["token_present"] is True
-        assert token not in str(stored_body)
-
-        settings = await (await client.get("/api/channels/discord")).json()
-        assert settings["token_present"] is True
-        assert token not in str(settings)
-        assert settings["allowed_user_ids"] == ["123"]
-
-        deleted = await (await client.delete("/api/channels/discord/token")).json()
-        assert deleted["token_present"] is False
-    finally:
-        await client.close()
 
 
 # ── 集合 / 文档（no-auth）──────────────────────────────────────
@@ -348,17 +259,16 @@ async def test_upload_empty_file_rejected(tmp_path: Path) -> None:
 
 async def test_upload_moves_staging_file_into_managed_pdf_repository(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
-    initializer = PluginInitializer(object(), {"vector_db": {"backend": "astr"}}, data_dir)
+    initializer = AppInitializer(legacy_settings({"vector_db": {"backend": "lexical"}}), data_dir)
     await initializer.initialize()
     assert initializer.api is not None
 
     app = build_app(
         api=initializer.api,
-        static_dir=tmp_path / "frontend",
         upload_dir=data_dir / "uploads",
-        auth_required=False,
+        token=TOKEN,
     )
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(app), headers=AUTH)
     await client.start_server()
     try:
         pdf_path = tmp_path / "managed.pdf"
@@ -431,31 +341,111 @@ async def test_effective_config_endpoint_returns_masked_config(tmp_path: Path) -
 # ── 认证 ────────────────────────────────────────────────────────
 
 
-async def test_auth_required_blocks_then_login(tmp_path: Path) -> None:
-    client = await _client(tmp_path, auth_required=True)
+async def test_api_requires_bearer_token(tmp_path: Path) -> None:
+    client = await _client(tmp_path, authenticated=False)
     try:
         assert (await client.get("/api/collections")).status == 401
-
-        bad = await client.post("/api/login", json={"username": "admin", "password": "wrong"})
-        assert bad.status == 401
-
-        ok = await client.post("/api/login", json={"username": "admin", "password": "pw"})
+        wrong = await client.get("/api/collections", headers={"Authorization": "Bearer nope"})
+        assert wrong.status == 401
+        ok = await client.get("/api/collections", headers=AUTH)
         assert ok.status == 200
-        assert SESSION_COOKIE in client.session.cookie_jar.filter_cookies(URL("http://127.0.0.1"))
-
-        # 登录后放行
-        assert (await client.get("/api/collections")).status == 200
+        # 浏览器导航（下载）无法带请求头：GET 可用 access_token 查询参数，写操作不行。
+        assert (await client.get(f"/api/collections?access_token={TOKEN}")).status == 200
+        posted = await client.post(f"/api/collections?access_token={TOKEN}", json={"name": "x"})
+        assert posted.status == 401
     finally:
         await client.close()
 
 
-async def test_auth_probe_endpoint_is_public(tmp_path: Path) -> None:
-    client = await _client(tmp_path, auth_required=True)
+async def test_removed_login_and_static_routes_are_gone(tmp_path: Path) -> None:
+    client = await _client(tmp_path)
     try:
-        resp = await client.get("/api/auth")
-        assert resp.status == 200
-        body = await resp.json()
-        assert body["auth_required"] is True and body["logged_in"] is False
+        for method, path in (("get", "/api/auth"), ("post", "/api/login"), ("post", "/api/logout")):
+            assert (await getattr(client, method)(path)).status in {404, 405}
+        assert (await client.get("/")).status == 404
+    finally:
+        await client.close()
+
+
+async def test_cors_allows_only_desktop_shell_origins(tmp_path: Path) -> None:
+    client = await _client(tmp_path)
+    try:
+        for origin in ("tauri://localhost", "http://tauri.localhost"):
+            preflight = await client.options(
+                "/api/collections",
+                headers={"Origin": origin, "Access-Control-Request-Method": "GET"},
+            )
+            assert preflight.status == 204
+            assert preflight.headers["Access-Control-Allow-Origin"] == origin
+            assert "Authorization" in preflight.headers["Access-Control-Allow-Headers"]
+            resp = await client.get("/api/collections", headers={"Origin": origin})
+            assert resp.status == 200
+            assert resp.headers["Access-Control-Allow-Origin"] == origin
+        denied = await client.get("/api/collections", headers={"Origin": "http://evil.example"})
+        assert denied.status == 403
+        assert "Access-Control-Allow-Origin" not in denied.headers
+        # 401 也要带 CORS 头，否则前端拿不到状态码只能看到网络错误。
+        unauth = await client.get(
+            "/api/collections",
+            headers={"Origin": "tauri://localhost", "Authorization": "Bearer nope"},
+        )
+        assert unauth.status == 401
+        assert unauth.headers["Access-Control-Allow-Origin"] == "tauri://localhost"
+    finally:
+        await client.close()
+
+
+async def test_dev_origins_can_be_added(tmp_path: Path) -> None:
+    app = build_app(
+        api=await _make_api(),
+        upload_dir=tmp_path,
+        token=TOKEN,
+        allowed_origins=("http://localhost:3000",),
+    )
+    client = TestClient(TestServer(app), headers=AUTH)
+    await client.start_server()
+    try:
+        ok = await client.get("/api/collections", headers={"Origin": "http://localhost:3000"})
+        assert ok.status == 200
+        tauri = await client.get("/api/collections", headers={"Origin": "tauri://localhost"})
+        assert tauri.status == 403
+    finally:
+        await client.close()
+
+
+async def test_health_and_shutdown_routes(tmp_path: Path) -> None:
+    calls: list[str] = []
+    app = build_app(
+        api=await _make_api(),
+        upload_dir=tmp_path,
+        token=TOKEN,
+        shutdown_callback=lambda: calls.append("stop"),
+    )
+    client = TestClient(TestServer(app), headers=AUTH)
+    await client.start_server()
+    try:
+        assert await (await client.get("/api/health")).json() == {"status": "ok"}
+        resp = await client.post("/api/shutdown")
+        assert resp.status == 202 and calls == ["stop"]
+    finally:
+        await client.close()
+
+    client = await _client(tmp_path)
+    try:
+        assert (await client.post("/api/shutdown")).status == 501
+    finally:
+        await client.close()
+
+
+async def test_api_provider_returns_503_while_service_restarts(tmp_path: Path) -> None:
+    current: dict[str, Any] = {"api": None}
+    app = build_app(api_provider=lambda: current["api"], upload_dir=tmp_path, token=TOKEN)
+    client = TestClient(TestServer(app), headers=AUTH)
+    await client.start_server()
+    try:
+        assert (await client.get("/api/collections")).status == 503
+        current["api"] = await _make_api()
+        assert (await client.get("/api/collections")).status == 200
     finally:
         await client.close()
 
@@ -500,6 +490,46 @@ async def test_sync_status_endpoint_returns_200(tmp_path: Path) -> None:
         await client.close()
 
 
+async def test_sync_status_routes_show_notion_ledger_failures(tmp_path: Path) -> None:
+    from kacore.domain.models import NotionEntityRecord
+
+    api = await _make_api()
+    await api._source_store.upsert_notion_entity(NotionEntityRecord(
+        "document", "d1", status="failed", message="Notion token 无效",
+    ))
+    client = TestClient(TestServer(build_app(
+        api=api, upload_dir=tmp_path,
+        token=TOKEN,
+    )), headers=AUTH)
+    await client.start_server()
+    try:
+        records = await (await client.get("/api/sync/status")).json()
+        assert records[0]["status"] == "failed"
+        summary = await (await client.get("/api/sync/notion/status")).json()
+        assert summary["documents"]["failed"] == 1
+        assert summary["errors"] == [{"message": "Notion token 无效", "count": 1}]
+    finally:
+        await client.close()
+
+
+async def test_notion_initialization_route_preserves_preflight_error(tmp_path: Path) -> None:
+    api = await _make_api()
+    api.initialize_notion_database = AsyncMock(return_value={
+        "status": "error", "error_code": "unauthorized", "message": "请重新填写 Notion token",
+    })
+    client = TestClient(TestServer(build_app(
+        api=api, upload_dir=tmp_path,
+        token=TOKEN,
+    )), headers=AUTH)
+    await client.start_server()
+    try:
+        body = await (await client.post("/api/notion/init", json={})).json()
+        assert body["error_code"] == "unauthorized"
+        assert body["message"] == "请重新填写 Notion token"
+    finally:
+        await client.close()
+
+
 async def test_zotero_probe_endpoint_returns_connection_and_read(tmp_path: Path) -> None:
     client = await _client(tmp_path)
     try:
@@ -539,6 +569,21 @@ async def test_graph_endpoints_return_200(tmp_path: Path) -> None:
                 "debug": {"query_mode": "mix"},
             }
 
+        async def probe_llm_ready(self) -> None:
+            # build_graph() 启动前的就绪度探针（v1.0.11）；本测试的图谱构建 LLM 本身
+            # 不是被测对象，直接放行即可。
+            return None
+
+    class StubEmbeddingProvider:
+        async def embed_query(self, text: str) -> list[float]:
+            return [0.1]
+
+        async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            return [[0.1] for _ in texts]
+
+        def get_dimension(self) -> int:
+            return 1
+
     store = InMemorySourceDocumentStore()
     await store.upsert_collection(Collection(name="papers", description="d"))
     await store.add_document(
@@ -550,26 +595,25 @@ async def test_graph_endpoints_return_200(tmp_path: Path) -> None:
     compatibility.mark_lightrag_compatible("papers", "fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=StubLightRAGRegistry(),  # type: ignore[arg-type]
         index_compatibility=compatibility,
         embedding_fingerprint="fp",
+        embedding_provider=StubEmbeddingProvider(),  # type: ignore[arg-type]
     )
 
     app = build_app(
         api=api,
-        static_dir=tmp_path / "frontend",
         upload_dir=tmp_path / "uploads",
-        auth_required=False,
+        token=TOKEN,
     )
 
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(app), headers=AUTH)
     await client.start_server()
     try:
         estimate = await client.post("/api/graph/build/estimate", json={"collection": "papers"})
         assert estimate.status == 200
         estimate_body = await estimate.json()
-        assert "LRAG chunk" in estimate_body["estimate_notice"]
+        assert "LightRAG chunks" in estimate_body["estimate_notice"]
         assert "estimated_lrag_chunks" in estimate_body
 
         resp1 = await client.post("/api/graph/build", json={"collection": "papers"})
@@ -601,6 +645,58 @@ async def test_graph_endpoints_return_200(tmp_path: Path) -> None:
         await client.close()
 
 
+async def test_graph_build_cancel_endpoint_returns_200(tmp_path: Path) -> None:
+    """POST /api/graph/build/{job_id}/cancel 取消一个活跃任务并返回清理摘要。"""
+    from kacore.lightrag_core import BuildJob
+
+    api = await _make_api()
+    job = BuildJob(job_id="job-1", collection="papers", status="running")
+    api._graph_build_jobs["job-1"] = job
+
+    app = build_app(
+        api=api,
+        upload_dir=tmp_path / "uploads",
+        token=TOKEN,
+    )
+    client = TestClient(TestServer(app), headers=AUTH)
+    await client.start_server()
+    try:
+        resp = await client.post("/api/graph/build/job-1/cancel", json={"cleanup": True})
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["status"] == "cancelled"
+        assert body["job_id"] == "job-1"
+        assert "cleanup" in body
+
+        missing = await client.post("/api/graph/build/does-not-exist/cancel", json={})
+        assert missing.status == 404
+    finally:
+        await client.close()
+
+
+async def test_graph_probe_default_text_uses_kacore(tmp_path: Path) -> None:
+    api = await _make_api()
+    api.probe_lightrag_core = AsyncMock(return_value={"status": "success"})  # type: ignore[method-assign]
+    app = build_app(
+        api=api,
+        upload_dir=tmp_path / "uploads",
+        token=TOKEN,
+    )
+    client = TestClient(TestServer(app), headers=AUTH)
+    await client.start_server()
+    try:
+        response = await client.post("/api/graph/probe", json={"confirmed": True})
+        assert response.status == 200
+        api.probe_lightrag_core.assert_awaited_once_with(
+            "default",
+            "LightRAG probe document for Knowledge Arch.",
+            "kr-lightrag-probe-doc",
+            "What is this probe document about?",
+        )
+    finally:
+        await client.close()
+
+
 async def test_graph_data_endpoint_returns_200(tmp_path: Path) -> None:
     class StubLightRAGRegistry:
         def has_workspace(self, collection: str) -> bool:
@@ -625,19 +721,17 @@ async def test_graph_data_endpoint_returns_200(tmp_path: Path) -> None:
     compatibility.mark_lightrag_compatible("papers", "fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=StubLightRAGRegistry(),  # type: ignore[arg-type]
         index_compatibility=compatibility,
         embedding_fingerprint="fp",
     )
     app = build_app(
         api=api,
-        static_dir=tmp_path / "frontend",
         upload_dir=tmp_path / "uploads",
-        auth_required=False,
+        token=TOKEN,
     )
 
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(app), headers=AUTH)
     await client.start_server()
     try:
         resp = await client.get("/api/graph?collection=papers")
@@ -685,11 +779,10 @@ async def test_notion_init_and_push_note_routes_return_200(tmp_path: Path) -> No
 
     app = build_app(
         api=StubApi(),  # type: ignore[arg-type]
-        static_dir=tmp_path / "frontend",
         upload_dir=tmp_path / "uploads",
-        auth_required=False,
+        token=TOKEN,
     )
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(app), headers=AUTH)
     await client.start_server()
     try:
         init = await client.post(
@@ -722,11 +815,10 @@ async def test_notion_routes_report_unavailable_instead_of_reserved(tmp_path: Pa
 
     app = build_app(
         api=StubApi(),  # type: ignore[arg-type]
-        static_dir=tmp_path / "frontend",
         upload_dir=tmp_path / "uploads",
-        auth_required=False,
+        token=TOKEN,
     )
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(app), headers=AUTH)
     await client.start_server()
     try:
         init = await client.post("/api/notion/init", json={})
@@ -740,6 +832,197 @@ async def test_notion_routes_report_unavailable_instead_of_reserved(tmp_path: Pa
         push_body = await push.json()
         assert push_body["status"] == "unavailable"
         assert "reserved" not in push_body
+    finally:
+        await client.close()
+
+
+async def test_agent_evidence_route_never_returns_plugin_answer(tmp_path: Path) -> None:
+    api = await _make_api()
+    retrieve = AsyncMock(
+        return_value={
+            "question": "compare",
+            "actual_retrieval_mode": "agent_enhanced",
+            "evidence": [{"doc_id": "d1", "text": "evidence"}],
+            "requires_agent_assessment": True,
+            "plugin_llm_used": False,
+            "full_text_used": False,
+        }
+    )
+    api.retrieve_agent_evidence = retrieve  # type: ignore[method-assign]
+    app = build_app(
+        api=api,
+        upload_dir=tmp_path / "uploads",
+        token=TOKEN,
+    )
+    client = TestClient(TestServer(app), headers=AUTH)
+    await client.start_server()
+    try:
+        resp = await client.post(
+            "/api/ask/evidence",
+            json={
+                "question": "compare",
+                "queries": ["alpha", "beta"],
+                "collection": "papers",
+                "retrieval_mode": "enhanced",
+                "round": 1,
+            },
+        )
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["plugin_llm_used"] is False
+        assert body["full_text_used"] is False
+        assert body["requires_agent_assessment"] is True
+        assert retrieve.await_args.kwargs["queries"] == ["alpha", "beta"]
+
+        invalid = await client.post(
+            "/api/ask/evidence",
+            json={"question": "compare", "queries": "not-a-list"},
+        )
+        assert invalid.status == 400
+    finally:
+        await client.close()
+
+
+async def test_document_page_route_returns_only_requested_page(tmp_path: Path) -> None:
+    api = await _make_api()
+    page = AsyncMock(
+        return_value={
+            "doc_id": "d1",
+            "start": 10,
+            "end": 20,
+            "total_chars": 100,
+            "has_more": True,
+            "content": "0123456789",
+        }
+    )
+    api.get_document_markdown_page = page  # type: ignore[method-assign]
+    app = build_app(
+        api=api,
+        upload_dir=tmp_path / "uploads",
+        token=TOKEN,
+    )
+    client = TestClient(TestServer(app), headers=AUTH)
+    await client.start_server()
+    try:
+        resp = await client.get("/api/documents/d1/content/page?start=10&max_chars=10")
+        assert resp.status == 200
+        assert (await resp.json())["content"] == "0123456789"
+        page.assert_awaited_once_with("d1", start=10, max_chars=10, confirmed=False)
+
+        # v1.1.1：max_chars 不再被静默夹取到 40000，0 表示读到文末，confirmed 可透传。
+        page.reset_mock()
+        await client.get("/api/documents/d1/content/page?max_chars=60001")
+        page.assert_awaited_once_with("d1", start=0, max_chars=60001, confirmed=False)
+
+        page.reset_mock()
+        await client.get("/api/documents/d1/content/page?max_chars=0&confirmed=1")
+        page.assert_awaited_once_with("d1", start=0, max_chars=0, confirmed=True)
+    finally:
+        await client.close()
+
+
+async def test_document_page_route_returns_409_when_confirmation_required(
+    tmp_path: Path,
+) -> None:
+    """超阈值单次读取返回 409 询问体，且**不含任何正文**。"""
+    from kacore.api import FullTextConfirmationRequiredError
+
+    api = await _make_api()
+    api.get_document_markdown_page = AsyncMock(  # type: ignore[method-assign]
+        side_effect=FullTextConfirmationRequiredError(
+            "d1",
+            title="Long Paper",
+            total_chars=183421,
+            requested_chars=183421,
+            threshold_chars=60000,
+            estimated_tokens=172530,
+        )
+    )
+    app = build_app(
+        api=api,
+        upload_dir=tmp_path / "uploads",
+        token=TOKEN,
+    )
+    client = TestClient(TestServer(app), headers=AUTH)
+    await client.start_server()
+    try:
+        resp = await client.get("/api/documents/d1/content/page?max_chars=0")
+        assert resp.status == 409
+        body = await resp.json()
+        assert body["status"] == "fulltext_confirmation_required"
+        assert body["total_chars"] == 183421
+        assert body["threshold_chars"] == 60000
+        assert body["estimated_tokens"] == 172530
+        assert "content" not in body
+    finally:
+        await client.close()
+
+
+async def test_codex_graph_routes_translate_task_protocol(tmp_path: Path) -> None:
+    api = await _make_api()
+    start = AsyncMock(
+        return_value={
+            "job_id": "job-1",
+            "status": "waiting_agent",
+            "plugin_llm_used": False,
+        }
+    )
+    next_task = AsyncMock(
+        return_value={
+            "job": {"job_id": "job-1"},
+            "task": {"task_id": "task-1", "content": "bounded"},
+            "complete": False,
+        }
+    )
+    submit = AsyncMock(return_value={"accepted": True})
+    retry = AsyncMock(return_value={"task_id": "task-1", "status": "pending"})
+    api.build_graph_with_codex = start  # type: ignore[method-assign]
+    api.get_next_codex_graph_task = next_task  # type: ignore[method-assign]
+    api.submit_codex_graph_task = submit  # type: ignore[method-assign]
+    api.retry_codex_graph_task = retry  # type: ignore[method-assign]
+    app = build_app(
+        api=api,
+        upload_dir=tmp_path / "uploads",
+        token=TOKEN,
+    )
+    client = TestClient(TestServer(app), headers=AUTH)
+    await client.start_server()
+    try:
+        started = await client.post(
+            "/api/graph/codex-build",
+            json={"collection": "papers", "confirmed": True},
+        )
+        assert started.status == 200
+        assert (await started.json())["job_id"] == "job-1"
+        start.assert_awaited_once_with("papers", confirmed=True)
+
+        fetched = await client.get("/api/graph/codex-build/job-1/next")
+        assert fetched.status == 200
+        assert (await fetched.json())["task"]["task_id"] == "task-1"
+
+        rejected = await client.post(
+            "/api/graph/codex-build/job-1/submit",
+            json={"task_id": "task-1"},
+        )
+        assert rejected.status == 400
+        accepted = await client.post(
+            "/api/graph/codex-build/job-1/submit",
+            json={
+                "task_id": "task-1",
+                "result": {"entities": [], "relationships": []},
+            },
+        )
+        assert accepted.status == 200
+        submit.assert_awaited_once_with(
+            "job-1", "task-1", {"entities": [], "relationships": []}
+        )
+
+        retried = await client.post(
+            "/api/graph/codex-build/job-1/retry",
+            json={"task_id": "task-1"},
+        )
+        assert retried.status == 200
+        retry.assert_awaited_once_with("job-1", "task-1")
     finally:
         await client.close()
 
@@ -766,6 +1049,98 @@ async def test_ask_route_returns_answer_and_sources(tmp_path: Path) -> None:
         assert "metadata" in src and src["metadata"]
         assert "locator" in src["metadata"] and src["metadata"]["locator"] == "page_1_p1"
         assert "conversation_id" in body and body["conversation_id"]
+    finally:
+        await client.close()
+
+
+async def test_ask_route_forwards_doc_id_and_confirmed(tmp_path: Path) -> None:
+    """doc_id / confirmed 必须透传给 api.ask()。
+
+    回归锁：前端从 v1.0.x 起就一直在 body 里发 doc_id，但 handle_ask 从未读取过——
+    全文检索因此始终跑不通。这条断言防止它再次被静默丢弃。
+    """
+    api = await _make_api()
+    ask = AsyncMock(return_value={"conversation_id": "c1", "answer": "ok", "sources": []})
+    api.ask = ask  # type: ignore[method-assign]
+    app = build_app(
+        api=api,
+        upload_dir=tmp_path / "uploads",
+        token=TOKEN,
+    )
+    client = TestClient(TestServer(app), headers=AUTH)
+    await client.start_server()
+    try:
+        resp = await client.post(
+            "/api/ask",
+            json={
+                "question": "q",
+                "retrieval_mode": "fulltext",
+                "doc_id": "d1",
+                "confirmed": True,
+            },
+        )
+        assert resp.status == 200
+        assert ask.await_args.kwargs["doc_id"] == "d1"
+        assert ask.await_args.kwargs["confirmed"] is True
+
+        # 缺省时 doc_id 为 None、confirmed 为 False（确认类 flag 必须默认关）。
+        ask.reset_mock()
+        await client.post("/api/ask", json={"question": "q"})
+        assert ask.await_args.kwargs["doc_id"] is None
+        assert ask.await_args.kwargs["confirmed"] is False
+    finally:
+        await client.close()
+
+
+async def test_ask_route_maps_fulltext_errors_to_status_codes(tmp_path: Path) -> None:
+    """全文检索三类领域异常各自映射到 409 / 404 / 502，且都带 status 判别串。"""
+    from kacore.api import (
+        FullTextConfirmationRequiredError,
+        FullTextDocumentUnavailableError,
+        FullTextGenerationFailedError,
+    )
+
+    api = await _make_api()
+    ask = AsyncMock()
+    api.ask = ask  # type: ignore[method-assign]
+    app = build_app(
+        api=api,
+        upload_dir=tmp_path / "uploads",
+        token=TOKEN,
+    )
+    client = TestClient(TestServer(app), headers=AUTH)
+    await client.start_server()
+    payload = {"question": "q", "retrieval_mode": "fulltext", "doc_id": "d1"}
+    try:
+        ask.side_effect = FullTextConfirmationRequiredError(
+            "d1",
+            title="Long Paper",
+            total_chars=183421,
+            requested_chars=183421,
+            threshold_chars=60000,
+            estimated_tokens=172530,
+        )
+        resp = await client.post("/api/ask", json=payload)
+        assert resp.status == 409
+        body = await resp.json()
+        assert body["status"] == "fulltext_confirmation_required"
+        assert body["title"] == "Long Paper"
+        assert body["total_chars"] == 183421
+        assert body["threshold_chars"] == 60000
+
+        ask.side_effect = FullTextDocumentUnavailableError("d1", "artifact_missing")
+        resp = await client.post("/api/ask", json=payload)
+        assert resp.status == 404
+        body = await resp.json()
+        assert body["status"] == "fulltext_document_unavailable"
+        assert body["reason"] == "artifact_missing"
+
+        ask.side_effect = FullTextGenerationFailedError("d1", 183421, "context overflow")
+        resp = await client.post("/api/ask", json=payload)
+        assert resp.status == 502
+        body = await resp.json()
+        assert body["status"] == "fulltext_generation_failed"
+        assert body["total_chars"] == 183421
     finally:
         await client.close()
 
@@ -807,60 +1182,6 @@ async def test_ask_route_clamps_top_k(tmp_path: Path) -> None:
         await client.close()
 
 
-async def test_spa_static_fallback_serves_index(tmp_path: Path) -> None:
-    """非 /api 路径应由 SPA catch-all 回退到 index.html（存在时）。"""
-    static = tmp_path / "frontend"
-    static.mkdir()
-    (static / "index.html").write_text("<html>root</html>")
-    docs_dir = static / "documents"
-    docs_dir.mkdir()
-    (docs_dir / "index.html").write_text("<html>docs</html>")
-
-    app = build_app(
-        api=await _make_api(),
-        static_dir=static,
-        upload_dir=tmp_path / "uploads",
-        auth_required=False,
-    )
-    client = TestClient(TestServer(app))
-    await client.start_server()
-    try:
-        # 子路由返回子 index.html
-        resp = await client.get("/documents")
-        assert resp.status == 200
-        assert (await resp.text()) == "<html>docs</html>"
-
-        # 未知路由回退到根 index.html
-        resp2 = await client.get("/unknown-path")
-        assert resp2.status == 200
-        assert (await resp2.text()) == "<html>root</html>"
-    finally:
-        await client.close()
-
-
-async def test_logout_route(tmp_path: Path) -> None:
-    """显式登出端点应从 app sessions 中移除会话 Token 并清除 Cookie。"""
-    client = await _client(tmp_path, auth_required=True)
-    try:
-        # 1. 登录以创建 Token
-        resp = await client.post("/api/login", json={"username": "admin", "password": "pw"})
-        assert resp.status == 200
-        cookies = client.session.cookie_jar.filter_cookies(client.make_url("/"))
-        assert SESSION_COOKIE in cookies
-
-        # 2. 登出
-        resp_logout = await client.post("/api/logout")
-        assert resp_logout.status == 200
-        body = await resp_logout.json()
-        assert body["ok"] is True
-
-        # 3. 再次获取 api 资源应返回 401
-        resp_api = await client.get("/api/collections")
-        assert resp_api.status == 401
-    finally:
-        await client.close()
-
-
 async def test_download_document_route(tmp_path: Path) -> None:
     """文档下载端点应正确下载物理原件，不存在的 doc_id 或物理文件应返回 404。"""
     api = await _make_api()
@@ -877,11 +1198,10 @@ async def test_download_document_route(tmp_path: Path) -> None:
 
     app = build_app(
         api=api,
-        static_dir=tmp_path / "frontend",
         upload_dir=tmp_path / "uploads",
-        auth_required=False,
+        token=TOKEN,
     )
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(app), headers=AUTH)
     await client.start_server()
     try:
         # 1. 下载存在的文档
@@ -932,11 +1252,10 @@ async def test_document_reader_routes(tmp_path: Path) -> None:
 
     app = build_app(
         api=api,
-        static_dir=tmp_path / "frontend",
         upload_dir=tmp_path / "uploads",
-        auth_required=False,
+        token=TOKEN,
     )
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(app), headers=AUTH)
     await client.start_server()
     try:
         content = await client.get("/api/documents/d1/content?format=md")
@@ -1020,11 +1339,10 @@ async def test_document_annotations_route_uses_zotero_readonly_client(
 
     app = build_app(
         api=api,
-        static_dir=tmp_path / "frontend",
         upload_dir=tmp_path / "uploads",
-        auth_required=False,
+        token=TOKEN,
     )
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(app), headers=AUTH)
     await client.start_server()
     try:
         resp = await client.get("/api/documents/d1/annotations")
@@ -1091,11 +1409,10 @@ async def test_chat_lock_route_and_preserve_locked_clear(tmp_path: Path) -> None
     await api._source_store.add_chat_message("conv", "assistant", "a")
     app = build_app(
         api=api,
-        static_dir=tmp_path / "frontend",
         upload_dir=tmp_path / "uploads",
-        auth_required=False,
+        token=TOKEN,
     )
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(app), headers=AUTH)
     await client.start_server()
     try:
         locked = await client.patch(
@@ -1149,11 +1466,10 @@ async def test_config_update_route(tmp_path: Path) -> None:
     api = await _make_api()
     app = build_app(
         api=api,
-        static_dir=tmp_path / "frontend",
         upload_dir=tmp_path / "uploads",
-        auth_required=False,
+        token=TOKEN,
     )
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(app), headers=AUTH)
     await client.start_server()
     try:
         # 1. 成功更新允许的配置键
@@ -1185,10 +1501,40 @@ async def test_config_update_route(tmp_path: Path) -> None:
         assert deep_data["restart_required"] is False
         assert deep_data["rebuild_required"] is False
 
-        # 2. 拒绝尚未实现的 AstrBot Embedding 配置，避免保存后静默禁用召回。
-        resp_invalid_provider = await client.post(
+        resp_notion_mode = await client.post(
+            "/api/config/update",
+            json={"section": "notion_sync", "key": "sync_mode", "value": "strict"},
+        )
+        assert resp_notion_mode.status == 200
+        notion_mode_data = await resp_notion_mode.json()
+        assert notion_mode_data["restart_required"] is False
+        assert notion_mode_data["rebuild_required"] is False
+
+        resp_invalid_notion_mode = await client.post(
+            "/api/config/update",
+            json={"section": "notion_sync", "key": "sync_mode", "value": "mirror"},
+        )
+        assert resp_invalid_notion_mode.status == 400
+        assert "notion_sync.sync_mode" in (
+            await resp_invalid_notion_mode.json()
+        )["message"]
+
+        # 2. 已移除的旧 embedding 来源被拒绝；切回 local（上面已改成 external）要求重建索引。
+        resp_astr_provider = await client.post(
             "/api/config/update",
             json={"section": "embedding", "key": "provider", "value": "astr"},
+        )
+        assert resp_astr_provider.status == 400
+        resp_local = await client.post(
+            "/api/config/update",
+            json={"section": "embedding", "key": "provider", "value": "local"},
+        )
+        assert resp_local.status == 200
+        assert (await resp_local.json())["rebuild_required"] is True
+
+        resp_invalid_provider = await client.post(
+            "/api/config/update",
+            json={"section": "embedding", "key": "provider", "value": "bogus"},
         )
         assert resp_invalid_provider.status == 400
         assert "must be 'local' or 'external'" in (
@@ -1203,7 +1549,7 @@ async def test_config_update_route(tmp_path: Path) -> None:
         assert resp_secret.status == 400
         secret_data = await resp_secret.json()
         assert secret_data["status"] == "error"
-        assert "not allowed" in secret_data["message"]
+        assert "is a secret" in secret_data["message"]
 
         resp_deep_secret = await client.post(
             "/api/config/update",
@@ -1236,14 +1582,14 @@ async def test_capabilities_route_returns_pipeline_and_dependencies(tmp_path: Pa
         data = await resp.json()
         stage_ids = [s["id"] for s in data["pipeline"]]
         assert stage_ids == [
-            "zotero", "ingest", "embedding", "vector_store", "retrieval", "graph", "ask", "sync",
+            "zotero", "ingest", "embedding", "vector_store", "retrieval", "graph", "ask",
+            "models", "providers", "notion", "r2",
         ]
         assert {d["key"] for d in data["dependencies"]} == {
             "local_embedding",
             "milvus",
             "lightrag",
             "r2",
-            "discord",
         }
         assert isinstance(data["diagnostics"], list)
     finally:
@@ -1291,11 +1637,10 @@ async def test_zotero_server_key_routes_encrypt_and_mask(
     api._secret_store = EncryptedSecretStore(tmp_path / "secrets")
     app = build_app(
         api=api,
-        static_dir=tmp_path / "frontend",
         upload_dir=tmp_path / "uploads",
-        auth_required=False,
+        token=TOKEN,
     )
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(app), headers=AUTH)
     await client.start_server()
     try:
         saved = await client.post("/api/zotero/server-key", json={"api_key": "zotero-secret"})
@@ -1338,11 +1683,10 @@ async def test_zotero_account_change_requires_confirmation_and_preserves_old_key
     api._secret_store = EncryptedSecretStore(tmp_path / "secrets")
     app = build_app(
         api=api,
-        static_dir=tmp_path / "frontend",
         upload_dir=tmp_path / "uploads",
-        auth_required=False,
+        token=TOKEN,
     )
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(app), headers=AUTH)
     await client.start_server()
     try:
         first = await client.post("/api/zotero/server-key", json={"api_key": "old-key"})
@@ -1416,16 +1760,15 @@ async def test_r2_backup_restore_status_and_job_routes(tmp_path: Path) -> None:
     base = await _make_api()
     api = KnowledgeRepositoryApi(
         source_store=base._source_store,
-        kb_reader=base._kb_reader,
+        retrieval_orchestrator=base._retrieval_orchestrator,
         r2_backup_manager=Manager(),  # type: ignore[arg-type]
     )
     app = build_app(
         api=api,
-        static_dir=tmp_path / "frontend",
         upload_dir=tmp_path / "uploads",
-        auth_required=False,
+        token=TOKEN,
     )
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(app), headers=AUTH)
     await client.start_server()
     try:
         backup = await client.post("/api/backup", json={"force": True})
@@ -1451,7 +1794,7 @@ async def test_dependencies_route_lists_optional_packages(tmp_path: Path) -> Non
         assert resp.status == 200
         deps = (await resp.json())["dependencies"]
         milvus = next(d for d in deps if d["key"] == "milvus")
-        assert milvus["pip_spec"] == "pymilvus[milvus_lite]>=2.5,<3.0"
+        assert milvus["pip_spec"] == "pymilvus[milvus_lite]>=2.6,<3.0"
         assert "installed" in milvus
     finally:
         await client.close()
@@ -1493,22 +1836,21 @@ async def test_ask_route_sources_contain_locator_fields(tmp_path: Path) -> None:
         SourceDocument("d1", "Doc 1", "/p/d1.pdf", "application/pdf", 100, "h1", "papers", [])
     )
     locator_meta = {"page_number": 3, "locator": "page_3_p2", "paragraph": 2}
-    kb = InMemoryKnowledgeBaseReader(
+    kb = StaticRetriever(
         {"papers": [DocumentChunk("c0", "d1", 0, "alpha beta", "h0", metadata=locator_meta)]}
     )
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=kb,
+        retrieval_orchestrator=kb,
         sync_targets={},
         config=Config({}),
     )
     app = build_app(
         api=api,
-        static_dir=tmp_path / "frontend",
         upload_dir=tmp_path / "uploads",
-        auth_required=False,
+        token=TOKEN,
     )
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(app), headers=AUTH)
     await client.start_server()
     try:
         resp = await client.post(
@@ -1560,16 +1902,14 @@ async def test_graph_mixed_ask_returns_structured_not_ready(tmp_path: Path) -> N
     )
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
     )
     app = build_app(
         api=api,
-        static_dir=tmp_path / "frontend",
         upload_dir=tmp_path / "uploads",
-        auth_required=False,
+        token=TOKEN,
     )
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(app), headers=AUTH)
     await client.start_server()
     try:
         resp = await client.post(
@@ -1618,7 +1958,6 @@ async def test_graph_mixed_ask_returns_renamed_failure_status(tmp_path: Path) ->
     compatibility.mark_lightrag_compatible("papers", "fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
         retrieval_orchestrator=Orchestrator(),  # type: ignore[arg-type]
         index_compatibility=compatibility,
@@ -1626,11 +1965,10 @@ async def test_graph_mixed_ask_returns_renamed_failure_status(tmp_path: Path) ->
     )
     app = build_app(
         api=api,
-        static_dir=tmp_path / "frontend",
         upload_dir=tmp_path / "uploads",
-        auth_required=False,
+        token=TOKEN,
     )
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(app), headers=AUTH)
     await client.start_server()
     try:
         resp = await client.post(
@@ -1662,17 +2000,15 @@ async def test_metrics_route(tmp_path: Path) -> None:
 
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         metrics=tracker,
         progress_store=ProgressStore(),
     )
     app = build_app(
         api=api,
-        static_dir=tmp_path / "frontend",
         upload_dir=tmp_path / "uploads",
-        auth_required=False,
+        token=TOKEN,
     )
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(app), headers=AUTH)
     await client.start_server()
     try:
         resp = await client.get("/api/metrics")
@@ -1694,17 +2030,15 @@ async def test_ask_progress_route_not_found(tmp_path: Path) -> None:
 
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         metrics=PerformanceTracker(),
         progress_store=ProgressStore(),
     )
     app = build_app(
         api=api,
-        static_dir=tmp_path / "frontend",
         upload_dir=tmp_path / "uploads",
-        auth_required=False,
+        token=TOKEN,
     )
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(app), headers=AUTH)
     await client.start_server()
     try:
         resp = await client.get("/api/ask/progress/nonexistent-cid")
@@ -1723,17 +2057,15 @@ async def test_ask_progress_route_found(tmp_path: Path) -> None:
 
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         metrics=PerformanceTracker(),
         progress_store=progress_store,
     )
     app = build_app(
         api=api,
-        static_dir=tmp_path / "frontend",
         upload_dir=tmp_path / "uploads",
-        auth_required=False,
+        token=TOKEN,
     )
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(app), headers=AUTH)
     await client.start_server()
     try:
         resp = await client.get("/api/ask/progress/test-cid-123")
@@ -1749,15 +2081,13 @@ async def test_graph_data_requires_lightrag(tmp_path: Path) -> None:
     """GET /api/graph 在未配置 LightRAG 时返回运行态未就绪状态。"""
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
     )
     app = build_app(
         api=api,
-        static_dir=tmp_path / "frontend",
         upload_dir=tmp_path / "uploads",
-        auth_required=False,
+        token=TOKEN,
     )
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(app), headers=AUTH)
     await client.start_server()
     try:
         resp = await client.get("/api/graph")
@@ -1775,15 +2105,13 @@ async def test_graph_stats_route(tmp_path: Path) -> None:
     """GET /api/graph/stats 应返回 entities_count / relations_count / collections_covered。"""
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
     )
     app = build_app(
         api=api,
-        static_dir=tmp_path / "frontend",
         upload_dir=tmp_path / "uploads",
-        auth_required=False,
+        token=TOKEN,
     )
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(app), headers=AUTH)
     await client.start_server()
     try:
         resp = await client.get("/api/graph/stats")
@@ -1825,11 +2153,10 @@ async def test_zotero_account_change_unexpected_error_returns_500_message(
     )
     app = build_app(
         api=api,
-        static_dir=tmp_path / "frontend",
         upload_dir=tmp_path / "uploads",
-        auth_required=False,
+        token=TOKEN,
     )
-    client = TestClient(TestServer(app))
+    client = TestClient(TestServer(app), headers=AUTH)
     await client.start_server()
     try:
         resp = await client.post(
@@ -1864,17 +2191,6 @@ async def test_kb_search_top_k_clamped(tmp_path: Path) -> None:
             params={"collection": "papers", "q": "alpha", "top_k": "99999999"},
         )
         assert resp.status == 200
-    finally:
-        await client.close()
-
-
-async def test_login_malformed_json_returns_400(tmp_path: Path) -> None:
-    client = await _client(tmp_path, auth_required=True)
-    try:
-        resp = await client.post(
-            "/api/login", data=b"not-json", headers={"Content-Type": "application/json"}
-        )
-        assert resp.status == 400
     finally:
         await client.close()
 
@@ -1922,5 +2238,235 @@ async def test_upload_filename_is_sanitized(tmp_path: Path) -> None:
         body = await resp.json()
         assert body["title"] == "evil.pdf"
         assert not (tmp_path / "evil.pdf").exists()
+    finally:
+        await client.close()
+
+
+async def test_notion_active_route_returns_null_when_idle(tmp_path: Path) -> None:
+    client = await _client(tmp_path)
+    try:
+        resp = await client.get("/api/sync/notion/active")
+        assert resp.status == 200
+        assert await resp.json() == {"job": None}
+    finally:
+        await client.close()
+
+
+# ── v1.0.10：Web 请求时间线与 seq 日志端点 ──────────────────────
+
+
+async def test_mutating_request_is_recorded_even_when_web_logger_disabled(tmp_path: Path) -> None:
+    api = await _make_api()
+    log_handler = MemoryLogHandler()
+    app = build_app(
+        api=api,
+        upload_dir=tmp_path / "uploads",
+        log_handler=log_handler,
+        token=TOKEN,
+    )
+    client = TestClient(TestServer(app), headers=AUTH)
+    web_logger = logging.getLogger("KRWebServer")
+    previous_disabled = web_logger.disabled
+    web_logger.disabled = True
+    await client.start_server()
+    try:
+        resp = await client.post("/api/documents/rebuild-index")
+        assert resp.status == 503
+        request_id = resp.headers["X-KA-Request-ID"]
+        events = [
+            line for line in log_handler.get_lines()
+            if line["operation"] == "http_request"
+            and line["metadata"].get("route") == "/api/documents/rebuild-index"
+        ]
+        assert [line["status"] for line in events] == ["started", "error"]
+        assert {line["metadata"]["request_id"] for line in events} == {request_id}
+        assert events[-1]["metadata"]["http_status"] == 503
+        assert isinstance(events[-1]["elapsed_ms"], float)
+    finally:
+        web_logger.disabled = previous_disabled
+        await client.close()
+
+
+async def test_successful_poll_get_is_quiet_but_failed_mutation_is_not(tmp_path: Path) -> None:
+    api = await _make_api()
+    log_handler = MemoryLogHandler()
+    app = build_app(
+        api=api,
+        upload_dir=tmp_path / "uploads",
+        log_handler=log_handler,
+        token=TOKEN,
+    )
+    client = TestClient(TestServer(app), headers=AUTH)
+    await client.start_server()
+    try:
+        assert (await client.get("/api/documents/rebuild-index/active")).status == 200
+        assert log_handler.get_lines() == []
+        assert (await client.post("/api/documents/rebuild-index")).status == 503
+        assert len(log_handler.get_lines()) == 2
+    finally:
+        await client.close()
+
+
+async def test_clear_milvus_lock_route_delegates_and_returns_json(tmp_path: Path) -> None:
+    async def _clear() -> dict:
+        return {"status": "ok", "message": "锁定标记已清除，请重启插件以重新装配 Milvus。"}
+
+    api = KnowledgeRepositoryApi(
+        source_store=InMemorySourceDocumentStore(),
+        clear_milvus_lock_callback=_clear,
+    )
+    app = build_app(
+        api=api,
+        upload_dir=tmp_path / "uploads",
+        token=TOKEN,
+    )
+    client = TestClient(TestServer(app), headers=AUTH)
+    await client.start_server()
+    try:
+        resp = await client.post("/api/milvus/clear-lock")
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["status"] == "ok"
+    finally:
+        await client.close()
+
+
+async def test_clear_milvus_lock_route_reports_unsupported_without_callback(
+    tmp_path: Path,
+) -> None:
+    api = await _make_api()
+    app = build_app(
+        api=api,
+        upload_dir=tmp_path / "uploads",
+        token=TOKEN,
+    )
+    client = TestClient(TestServer(app), headers=AUTH)
+    await client.start_server()
+    try:
+        resp = await client.post("/api/milvus/clear-lock")
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["status"] == "unsupported"
+    finally:
+        await client.close()
+
+
+async def test_request_observability_never_logs_token_or_request_body(tmp_path: Path) -> None:
+    api = await _make_api()
+    log_handler = MemoryLogHandler()
+    secret_token = "must-not-appear-in-terminal-token"
+    app = build_app(
+        api=api,
+        upload_dir=tmp_path / "uploads",
+        log_handler=log_handler,
+        token=secret_token,
+    )
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        secret_body = "must-not-appear-in-terminal-body"
+        denied = await client.post(
+            "/api/collections", json={"name": secret_body},
+            headers={"Authorization": "Bearer wrong-secret-guess"},
+        )
+        assert denied.status == 401
+        ok = await client.post(
+            "/api/collections", json={"name": secret_body},
+            headers={"Authorization": f"Bearer {secret_token}"},
+        )
+        assert ok.status in {200, 201}
+        listed = await client.get(f"/api/collections?access_token={secret_token}")
+        assert listed.status == 200
+        serialized = str(log_handler.get_lines())
+        assert secret_token not in serialized
+        assert "wrong-secret-guess" not in serialized
+        assert secret_body not in serialized
+    finally:
+        await client.close()
+
+
+async def test_logs_endpoint_exposes_sequence_cursor_and_gap_fields(tmp_path: Path) -> None:
+    api = await _make_api()
+    log_handler = MemoryLogHandler(maxlen=3)
+    app = build_app(
+        api=api,
+        upload_dir=tmp_path / "uploads",
+        log_handler=log_handler,
+        token=TOKEN,
+    )
+    for i in range(5):
+        log_handler.add_event(
+            source="test", category="system", operation="seed",
+            status="ok", msg=f"line-{i}",
+        )
+    client = TestClient(TestServer(app), headers=AUTH)
+    await client.start_server()
+    try:
+        body = await (await client.get("/api/logs?after_seq=0&limit=2")).json()
+        assert [line["seq"] for line in body["lines"]] == [4, 5]
+        assert body["oldest_seq"] == 3
+        assert body["latest_seq"] == 5
+        assert body["dropped_count"] == 3
+    finally:
+        await client.close()
+
+async def test_http_exception_response_carries_request_id(tmp_path: Path) -> None:
+    api = await _make_api()
+    log_handler = MemoryLogHandler()
+    app = build_app(
+        api=api,
+        upload_dir=tmp_path / "uploads",
+        log_handler=log_handler,
+        token=TOKEN,
+    )
+    client = TestClient(TestServer(app), headers=AUTH)
+    await client.start_server()
+    try:
+        resp = await client.get("/api/route-that-does-not-exist")
+        assert resp.status == 404
+        request_id = resp.headers["X-KA-Request-ID"]
+        event = log_handler.get_lines()[-1]
+        assert event["metadata"]["request_id"] == request_id
+        assert event["metadata"]["http_status"] == 404
+    finally:
+        await client.close()
+
+
+# ── /api/system/models ────────────────────────────────────────────
+
+
+async def test_model_runtime_route_returns_accelerator_and_models(tmp_path: Path) -> None:
+    """GET /api/system/models 应委派 api.get_model_runtime() 并返回稳定形状。"""
+    client = await _client(tmp_path)
+    try:
+        resp = await client.get("/api/system/models")
+        assert resp.status == 200
+        body = await resp.json()
+        assert "accelerator" in body  # 无 CUDA 时为 null，不是错误
+        assert isinstance(body["models"], list)
+        assert isinstance(body["resident_count"], int)
+    finally:
+        await client.close()
+
+
+async def test_model_unload_route_accepts_empty_body(tmp_path: Path) -> None:
+    """POST /api/system/models/unload 无 body 表示「全部卸载」，不得 400/500。"""
+    client = await _client(tmp_path)
+    try:
+        resp = await client.post("/api/system/models/unload")
+        assert resp.status == 200
+        body = await resp.json()
+        assert isinstance(body["unloaded"], list)
+        assert isinstance(body["errors"], dict)
+    finally:
+        await client.close()
+
+
+async def test_model_unload_route_passes_kinds_through(tmp_path: Path) -> None:
+    client = await _client(tmp_path)
+    try:
+        resp = await client.post("/api/system/models/unload", json={"kinds": ["rerank"]})
+        assert resp.status == 200
+        assert "models" in await resp.json()
     finally:
         await client.close()

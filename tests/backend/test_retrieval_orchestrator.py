@@ -10,25 +10,11 @@ from kacore.config import Config
 from kacore.domain.models import Collection, DocumentChunk, SourceDocument
 from kacore.migration_runner import run_migrations
 from kacore.pipelines.retrieval_orchestrator import RetrievalOrchestrator
-from kacore.repository.kb_reader.base import KnowledgeBaseReader
 from kacore.repository.source_store.sqlite import SQLiteSourceDocumentStore
 from kacore.repository.vector_store.milvus_lite import MilvusLiteVectorStore
 
 _pymilvus_available = importlib.util.find_spec("pymilvus") is not None
-
-
-class MockKnowledgeBaseReader(KnowledgeBaseReader):
-    def __init__(self, chunks=None):
-        self.chunks = chunks or []
-
-    async def list_collections(self) -> list[str]:
-        return ["col1"]
-
-    async def list_chunks(self, collection: str) -> list[DocumentChunk]:
-        return self.chunks
-
-    async def search(self, collection: str, query: str, top_k: int) -> list[DocumentChunk]:
-        return self.chunks[:top_k]
+_milvus_lite_available = importlib.util.find_spec("milvus_lite") is not None
 
 
 class FakeEmbeddingProvider:
@@ -80,7 +66,10 @@ async def sqlite_store(temp_dir):
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not _pymilvus_available, reason="pymilvus not installed")
+@pytest.mark.skipif(
+    not (_pymilvus_available and _milvus_lite_available),
+    reason="pymilvus with milvus_lite is not installed",
+)
 async def test_milvus_lite_vector_store_lifecycle(temp_dir):
     db_path = os.path.join(temp_dir, "milvus_lite_test.db")
     store = MilvusLiteVectorStore(db_path=db_path, dim=4)
@@ -151,11 +140,9 @@ async def test_retrieval_orchestrator_lexical_fallback(sqlite_store):
     await sqlite_store.replace_chunks("doc1", chunks)
     
     config = Config(raw={})
-    kb_reader = MockKnowledgeBaseReader()
     
     orchestrator = RetrievalOrchestrator(
         source_store=sqlite_store,
-        kb_reader=kb_reader,
         config=config,
     )
     
@@ -188,7 +175,6 @@ async def test_retrieval_orchestrator_hydrates_milvus_chunks_in_batch(sqlite_sto
 
     orchestrator = RetrievalOrchestrator(
         source_store=sqlite_store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=FakeVectorStore(
             [("c-b", 0.9), ("missing", 0.8), ("c-a", 0.7)]
@@ -227,7 +213,6 @@ async def test_retrieval_orchestrator_lexical_fallback_supports_chinese_query(sq
     )
     orchestrator = RetrievalOrchestrator(
         source_store=sqlite_store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({}),
     )
 
@@ -273,7 +258,6 @@ async def test_retrieval_orchestrator_prioritizes_thesis_heading_anchor(sqlite_s
     )
     orchestrator = RetrievalOrchestrator(
         source_store=sqlite_store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({}),
     )
 
@@ -316,7 +300,6 @@ async def test_retrieval_outcome_exposes_per_chunk_signals(sqlite_store):
     )
     orchestrator = RetrievalOrchestrator(
         source_store=sqlite_store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({}),
     )
 
@@ -347,7 +330,6 @@ async def test_retrieval_dedups_identical_content_hash(sqlite_store):
     )
     orchestrator = RetrievalOrchestrator(
         source_store=sqlite_store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({}),
     )
 
@@ -405,7 +387,6 @@ async def test_retrieval_orchestrator_matches_section_label_lists(sqlite_store):
     )
     orchestrator = RetrievalOrchestrator(
         source_store=sqlite_store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({}),
     )
 
@@ -465,7 +446,6 @@ async def test_retrieval_orchestrator_matches_generic_section_queries(sqlite_sto
     )
     orchestrator = RetrievalOrchestrator(
         source_store=sqlite_store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({}),
     )
 
@@ -511,7 +491,6 @@ async def test_retrieval_orchestrator_matches_caption_anchor_lists(sqlite_store)
     )
     orchestrator = RetrievalOrchestrator(
         source_store=sqlite_store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({}),
     )
 
@@ -561,7 +540,6 @@ async def test_retrieval_orchestrator_matches_appendix_anchor(sqlite_store):
     )
     orchestrator = RetrievalOrchestrator(
         source_store=sqlite_store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({}),
     )
 
@@ -609,7 +587,6 @@ async def test_lightrag_context_queries_workspace_regardless_of_doc_status(tmp_p
     registry = Registry()
     orchestrator = RetrievalOrchestrator(
         source_store=store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({}),
         lightrag_registry=registry,  # type: ignore[arg-type]
         index_compatibility=compatibility,
@@ -644,7 +621,6 @@ async def test_lightrag_context_rejects_missing_workspace(tmp_path):
     compatibility.mark_lightrag_compatible("papers", "fp")
     orchestrator = RetrievalOrchestrator(
         source_store=store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
         index_compatibility=compatibility,
@@ -677,7 +653,6 @@ async def test_retrieval_global_and_subtree_lexical(sqlite_store):
 
     orchestrator = RetrievalOrchestrator(
         source_store=sqlite_store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({}),
     )
 
@@ -691,3 +666,41 @@ async def test_retrieval_global_and_subtree_lexical(sqlite_store):
     )
     p = await orchestrator.retrieve_with_outcome("ROOT_SCOPE_A", "EXACTTERMA", top_k=3, scope=scope)
     assert any(c.doc_id == "doc-child" for c in p.chunks)
+
+
+def test_milvus_lite_relocates_legacy_single_file_store(temp_dir):
+    """回归 v1.0.9：milvus-lite 3.x 用目录存数据，2.x 留下的单文件必须先挪开。
+
+    直接对旧文件开库会在 `os.makedirs(data_dir)` 抛 FileExistsError，对外表现为
+    `ConnectionConfigException: Open local milvus failed`，整个向量库不可用。
+    挪走是安全的：Milvus 只是 SQLite 分块的可重建投影索引。
+    """
+    import pathlib
+
+    db_path = pathlib.Path(temp_dir) / "vector_store.db"
+    db_path.write_bytes(b"legacy milvus-lite 2.x single-file payload")
+
+    store = MilvusLiteVectorStore(db_path=str(db_path), dim=4)
+    store._relocate_legacy_store()
+
+    assert not db_path.exists()
+    moved = list(pathlib.Path(temp_dir).glob("vector_store.db.legacy-*"))
+    assert len(moved) == 1
+    assert moved[0].read_bytes() == b"legacy milvus-lite 2.x single-file payload"
+
+
+def test_milvus_lite_leaves_current_directory_store_untouched(temp_dir):
+    """3.x 的目录形态与全新安装（路径不存在）都不该被动到。"""
+    import pathlib
+
+    db_dir = pathlib.Path(temp_dir) / "vector_store.db"
+    db_dir.mkdir()
+    (db_dir / "marker").write_text("v3 data")
+
+    MilvusLiteVectorStore(db_path=str(db_dir), dim=4)._relocate_legacy_store()
+    assert (db_dir / "marker").read_text() == "v3 data"
+    assert not list(pathlib.Path(temp_dir).glob("*.legacy-*"))
+
+    missing = pathlib.Path(temp_dir) / "brand_new.db"
+    MilvusLiteVectorStore(db_path=str(missing), dim=4)._relocate_legacy_store()
+    assert not missing.exists()

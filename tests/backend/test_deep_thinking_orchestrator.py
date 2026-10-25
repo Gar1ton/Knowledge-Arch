@@ -128,13 +128,19 @@ class ScriptedLLM:
         self.system_prompts: list[str] = []
 
     async def generate(self, prompt, system_prompt="", *, allow_mock=True):
+        result = await self.generate_result(prompt, system_prompt, allow_mock=allow_mock)
+        return result.text
+
+    async def generate_result(self, prompt, system_prompt="", *, allow_mock=True):
+        from kacore.domain.llm_generation import GenerationResult
+
         self.calls += 1
         self.prompts.append(prompt)
         self.system_prompts.append(system_prompt)
         item = self._responses.pop(0)
         if isinstance(item, Exception):
             raise item
-        return item
+        return GenerationResult(text=item)
 
 
 def _make(outcome, responses, **cfg_over):
@@ -286,7 +292,7 @@ async def test_critical_unmet_returns_partial_evidence_without_degrade():
     assert result.actual_mode == "milvus_deep"
     assert [c.chunk_id for c in result.evidence] == ["c1", "c2", "c3"]
     assert result.verified is False
-    assert result.verify_missing == ["关键检查项未满足：必需"]
+    assert result.verify_missing == ["Critical checklist item not satisfied: 必需"]
     assert result.degraded_reason == ""
 
 
@@ -527,7 +533,7 @@ async def test_verify_ok_is_overruled_by_soft_missing():
 
     assert result.answer == "答案A [1]"
     assert result.verified is False
-    assert result.verify_missing == ["关键检查项未满足：必需"]
+    assert result.verify_missing == ["Critical checklist item not satisfied: 必需"]
 
 
 @pytest.mark.asyncio
@@ -683,7 +689,7 @@ async def test_verify_failure_after_critical_gap_keeps_partial_evidence():
     assert result.degraded is False
     assert result.answer is None
     assert [chunk.chunk_id for chunk in result.evidence] == ["c1", "c2"]
-    assert result.verify_missing == ["关键检查项未满足：必需"]
+    assert result.verify_missing == ["Critical checklist item not satisfied: 必需"]
 
 
 # ── v0.25.9：开放式发现 / per-aspect 排序 / clip / deep 合成 / 全局预算 ──────
@@ -750,8 +756,8 @@ async def test_per_aspect_ranking_surfaces_high_rrf_subquery_chunk():
         rerank_config=RerankConfig(provider="noop", keep=5),
     )
     result = await orch.run("papers", "big question")
-    # c3 在 sub_query 里 rrf 最高 → per-aspect 排序顶到首位（旧实现按插入顺序它排第 3）。
-    assert result.trace[0].kept_chunk_ids[0] == "c3"
+    # 查询池内校准，先覆盖原问题，再保留子问题的最高分 c3；不跨池比原始分数。
+    assert result.trace[0].kept_chunk_ids[:2] == ["c1", "c3"]
 
 
 def test_reranker_is_passthrough_flags():
@@ -778,6 +784,9 @@ async def test_synthesize_answer_deep_style_selects_deep_system():
     llm = ScriptedLLM(["ans"])
     await synthesize_answer(llm, "q", [_chunk("c1")], "zh", style="deep")
     assert "mechanism" in llm.system_prompts[0].lower()
+    assert "Begin with a concise, direct answer" in llm.system_prompts[0]
+    assert "or begin with an inventory" in llm.system_prompts[0]
+    assert "do not repeat the same citation" in llm.system_prompts[0]
     llm2 = ScriptedLLM(["ans"])
     await synthesize_answer(llm2, "q", [_chunk("c1")], "zh")
     assert "mechanism" not in llm2.system_prompts[0].lower()

@@ -2,9 +2,10 @@
 
 为什么存在：`sync_zotero_pull` 原本同步阻塞、且**不可观测**——几十篇 PDF 逐篇 Web API 下载→清洗→
 分块→embedding 全压在一个 HTTP 请求里（数分钟，易超时 = 用户侧「失灵」），失败又被静默吞进
-`ZoteroSyncResult.errors` 无人上报。本模块定义一个**纯内存**的同步任务快照，由 `core/api.py` 的后台
-任务在 `ZoteroSyncPipeline.pull` 的各阶段/逐文档循环中更新，并经 HTTP 暴露给前端轮询，从而与 Milvus/
-LightRAG 共用同一套「后台任务 + 进度条」体验（见 `core/milvus_build.py:MilvusBuildJob`）。
+`ZoteroSyncResult.errors` 无人上报。本模块定义一个**纯内存**的同步任务快照，
+由 `kacore/api.py` 的后台任务在 `ZoteroSyncPipeline.pull` 的各阶段/逐文档循环中更新，
+并经 HTTP 暴露给前端轮询，从而与 Milvus/
+LightRAG 共用同一套「后台任务 + 进度条」体验（见 `kacore/milvus_build.py:MilvusBuildJob`）。
 
 进度单位：以 PDF 附件文档为主（`docs_processed/docs_total`）；快照读取/镜像/删除等无文档计数的阶段
 用 `_STAGE_BASE_PCT` 给出阶段底值，保证进度条平滑不假死。

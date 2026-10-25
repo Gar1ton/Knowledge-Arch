@@ -1,8 +1,9 @@
 """文档上传/摄入任务的进度模型（domain-light，无 I/O）。
 
 为什么存在：手动上传原本只有一个 spinner、无阶段反馈。本模块定义一个**纯内存**的摄入任务快照，
-由 `core/api.py:register_document` 在「解析/分块 → 向量索引」两个编排边界上更新，经 HTTP 暴露给前端
-统一进度面板轮询（与 `core/milvus_build.py`、`core/zotero_sync_job.py` 同构）。
+由 `kacore/api.py:register_document` 在「解析/分块 → 向量索引」两个编排边界上更新，
+经 HTTP 暴露给前端统一进度面板轮询（与 `kacore/milvus_build.py`、
+`kacore/zotero_sync_job.py` 同构）。
 
 刻意只在 api 编排层粗粒度跟踪（parsing → indexing），不侵入核心 `ingest_manager` 热路径。
 """

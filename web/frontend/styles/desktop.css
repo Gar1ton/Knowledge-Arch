@@ -1,0 +1,101 @@
+/* 桌面版新增界面：模型供应商列表，节点操作区（启动 / 崩溃 / 欢迎见 LandingShell）。 */
+
+/* ── 数据流：模型供应商列表与节点操作区 ───────────────────────── */
+
+.flow-providers { gap: 8px; }
+
+.flow-provider-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 9px;
+  border: 1px solid var(--flow-node-bd);
+  border-radius: 10px;
+  background: var(--flow-inset);
+}
+
+.flow-provider-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.flow-provider-name { font-size: 12px; font-weight: 600; color: var(--flow-ink); }
+
+.flow-provider-status {
+  font-size: 10.5px;
+  color: var(--flow-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 60%;
+}
+.flow-provider-status.is-ok { color: var(--flow-st-ready, var(--ok)); }
+.flow-provider-status.is-error { color: var(--flow-st-warn, var(--danger)); }
+
+.flow-provider-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--flow-muted);
+}
+
+.flow-provider-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.flow-provider-actions .flow-dep-button { margin-left: 0; }
+
+.flow-provider-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 9px;
+  border: 1px dashed var(--flow-node-bd);
+  border-radius: 10px;
+}
+
+.flow-provider-add { margin-left: 0; align-self: flex-start; }
+
+.flow-node-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.flow-meta-chip.is-error {
+  color: var(--flow-st-warn, var(--danger));
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flow-quick-textarea {
+  min-height: 84px;
+  resize: vertical;
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  padding-top: 6px;
+}
+
+.flow-consequence-tag.is-rebuild { color: var(--flow-st-warn, var(--warn)); }
+
+.ka-update-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 var(--panel-gap) 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  color: var(--fg);
+  font-size: 12.5px;
+}
+.ka-update-banner > span { flex: 1; }

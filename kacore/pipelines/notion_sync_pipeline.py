@@ -7,24 +7,38 @@ outbox 补推、孤儿对账都在本层，NotionSyncTarget 只做无状态的�
 为什么不用标脏钩子：本地实体量级（文档 10²–10³、集合 10¹、QA 10²）在 push 时刻
 全量算指纹是毫秒级，避免侵入 CategoryManager / 集合树编辑 / notes CRUD 10+ 处写入口。
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from kacore.adapters.notion_rest import NotionMCPError
+from kacore.config import NOTION_SYNC_STRICT
 from kacore.domain.models import (
     NOTION_ENTITY_DOCUMENT,
     NOTION_OUTBOX_PUSHED,
+    NOTION_PUSH_ARCHIVED,
     NOTION_PUSH_DEGRADED,
     NOTION_PUSH_FAILED,
     NOTION_PUSH_PENDING,
     NOTION_PUSH_SYNCED,
+    DocumentLifecycle,
     NotionEntityRecord,
     SyncRecord,
     SyncStatus,
     SyncTargetKind,
+)
+from kacore.notion_sync_job import (
+    NOTION_STAGE_CHECKING_NOTES,
+    NOTION_STAGE_FINALIZING,
+    NOTION_STAGE_PRUNING_TAGS,
+    NOTION_STAGE_PUSHING_DOCUMENTS,
+    NOTION_STAGE_PUSHING_QA,
 )
 from kacore.repository.sync_targets import notion_schema as schema
 from kacore.repository.sync_targets.notion import ACTION_CREATED
@@ -32,6 +46,7 @@ from kacore.repository.sync_targets.notion import ACTION_CREATED
 if TYPE_CHECKING:
     from kacore.config import NotionSyncConfig
     from kacore.domain.models import Collection, NotionOutboxItem, SourceDocument
+    from kacore.notion_sync_job import NotionSyncJob
     from kacore.repository.source_store.base import SourceDocumentStore
     from kacore.repository.sync_targets.notion import NotionSyncTarget
 
@@ -49,14 +64,18 @@ class NotionSyncPipeline:
         self,
         source_store: SourceDocumentStore,
         notion_target: NotionSyncTarget,
+        config_provider: Callable[[], NotionSyncConfig] | None = None,
     ) -> None:
         self._store = source_store
         self._target = notion_target
+        self._config_provider = config_provider
         self._lock = asyncio.Lock()
 
     @property
     def _config(self) -> NotionSyncConfig:
-        # target.config 在 initialize_databases 后含回填的 database id，读它保证最新。
+        if self._config_provider is not None:
+            return self._config_provider()
+        # 测试/独立构造回退 target.config；initialize_databases 后含回填 database id。
         return self._target.config
 
     # ── 建库 ────────────────────────────────────────────────────
@@ -64,55 +83,163 @@ class NotionSyncPipeline:
     async def initialize_databases(
         self, parent_page_id: str | None = None, database_title: str | None = None
     ) -> dict[str, Any]:
-        return await self._target.initialize_databases(parent_page_id, database_title)
+        try:
+            return await self._target.initialize_databases(parent_page_id, database_title)
+        except NotionMCPError as exc:
+            return {"status": "error", "message": str(exc), "error_code": exc.code}
 
     # ── 全量增量推送 ────────────────────────────────────────────
 
-    async def push_all(self, force: bool = False) -> dict[str, Any]:
+    async def push_all(
+        self,
+        force: bool = False,
+        *,
+        progress: NotionSyncJob | None = None,
+        scan_notes: bool = True,
+    ) -> dict[str, Any]:
         """把全部文章 + 待推 QA 增量推送到 Notion。
 
         流程：文档 diff/upsert（含冗余写 sync_records）→ outbox(pending/failed) 补推 →
-        孤儿账本行对账清理。单实体失败记 FAILED 不中断；并发重入直接返回 already_running。
+        孤儿账本行对账清理 → strict 模式失效集合选项清理。单实体失败记 FAILED 不中断；
+        并发重入直接返回 already_running。`progress` 非空时逐阶段/逐文档更新进度快照。
         """
         if not self._config.enabled:
-            return {"status": "disabled", "message": "Notion 同步未启用。"}
+            return {"status": "disabled", "message": "Notion sync is turned off."}
         if not self._config.database_id:
-            return {"status": "error", "message": "Notion 数据库未初始化，请先执行初始化建库。"}
+            return {"status": "error", (
+                "message"
+            ): "The Notion database is not set up; run the database setup first."}
         if self._lock.locked():
-            return {"status": "already_running", "message": "已有 Notion 推送任务在执行。"}
+            return {"status": "already_running", "message": "A Notion push is already running."}
 
         async with self._lock:
+            started = time.monotonic()
+            requests_before = self._target.request_count
             collections = await self._store.list_collections()
             paths = schema.build_collection_paths(collections)
             docs = await self._store.list_documents()
+            strict = self._config.sync_mode == NOTION_SYNC_STRICT
+            if progress is not None:
+                progress.docs_total = len(docs)
+            try:
+                await self._target.preflight()
+            except NotionMCPError as exc:
+                if progress is not None:
+                    progress.request_count = self._target.request_count - requests_before
+                return {
+                    "status": "error", "message": str(exc),
+                    "error_code": exc.code or "preflight_failed",
+                    "request_count": self._target.request_count - requests_before,
+                }
+            if progress is not None:
+                progress.sync_mode = self._config.sync_mode
+                progress.force = force
+                progress.docs_total = len(docs)
+                progress.set_stage(NOTION_STAGE_PUSHING_DOCUMENTS)
 
-            doc_stats = {"created": 0, "updated": 0, "skipped": 0, "failed": 0}
+            doc_stats = {
+                "created": 0,
+                "updated": 0,
+                "archived": 0,
+                "skipped": 0,
+                "failed": 0,
+            }
             warnings: list[str] = []
+            strict_archive_failed = False
+            # strict 清理的「保留集」：所有非 strict-detached 文档实际使用的选项名（含失败/跳过，
+            # 取超集确保不误删仍被活跃页面引用的选项）。
+            live_collection_names: set[str] = set()
+            live_path_names: set[str] = set()
             for doc in docs:
+                strict_detached = strict and doc.lifecycle_state == DocumentLifecycle.DETACHED
+                if not strict_detached:
+                    for name in _doc_collection_names(doc, collections):
+                        live_collection_names.add(schema.sanitize_option_name(name))
+                    path = schema.primary_collection_path(doc, collections, paths)
+                    if path:
+                        live_path_names.add(schema.sanitize_option_name(path))
                 try:
-                    action = await self._push_document(
-                        doc, collections, paths, force=force
-                    )
+                    if strict_detached:
+                        action = await self._archive_detached_document(doc)
+                    else:
+                        action = await self._push_document(doc, collections, paths, force=force)
                     doc_stats[action] += 1
+                    if progress is not None:
+                        progress.record_document(action)
                 except Exception as e:  # noqa: BLE001 — 单文档失败不阻断整轮
+                    strict_archive_failed = strict_archive_failed or strict_detached
                     doc_stats["failed"] += 1
-                    warnings.append(f"文档 {doc.doc_id} 推送失败：{e}")
-                    logger.warning("Notion 文档推送失败（%s）：%s", doc.doc_id, e)
+                    if progress is not None:
+                        progress.record_document("failed")
+                        progress.note_error(f"{doc.doc_id}: {e}")
+                    warnings.append(f"Pushing document {doc.doc_id} failed: {e}")
+                    logger.warning("Notion document push failed (%s): %s", doc.doc_id, e)
                     await self._record_failure(NOTION_ENTITY_DOCUMENT, doc.doc_id, str(e))
 
+            if progress is not None:
+                progress.set_stage(NOTION_STAGE_PUSHING_QA)
             qa_stats = await self._push_pending_outbox(collections, paths, warnings)
+            if progress is not None:
+                progress.qa_pushed = qa_stats["pushed"]
+                progress.qa_failed = qa_stats["failed"]
             await self._cleanup_orphans({d.doc_id for d in docs})
 
+            pruned = {"collections": 0, "collection_path": 0}
+            if strict:
+                if progress is not None:
+                    progress.set_stage(NOTION_STAGE_PRUNING_TAGS)
+                try:
+                    pruned = await self._target.prune_collection_options(
+                        live_collection_names=live_collection_names,
+                        live_path_names=live_path_names,
+                    )
+                    if progress is not None:
+                        progress.tags_pruned = pruned["collections"] + pruned["collection_path"]
+                except Exception as e:  # noqa: BLE001 — 清理失败不阻断整轮推送
+                    warnings.append(f"Strict option cleanup failed: {e}")
+                    logger.warning("Strict option cleanup failed: %s", e)
+
+            notes = {"scanned": 0, "marked": 0, "failed": 0}
+            if scan_notes:
+                if progress is not None:
+                    progress.set_stage(NOTION_STAGE_CHECKING_NOTES)
+                try:
+                    notes.update(await self._target.scan_notes())
+                except Exception as exc:  # noqa: BLE001 — 水位留待下次重试
+                    notes["failed"] = 1
+                    warnings.append(f"Body note check failed: {exc}")
+            request_count = self._target.request_count - requests_before
+            elapsed_seconds = round(time.monotonic() - started, 2)
+            if progress is not None:
+                progress.request_count = request_count
+                progress.notes_scanned = notes["scanned"]
+                progress.notes_marked = notes["marked"]
+                progress.notes_failed = notes["failed"]
+                progress.set_stage(NOTION_STAGE_FINALIZING)
+
             status = "success"
-            if doc_stats["failed"] or qa_stats["failed"]:
-                status = "partial_failure" if (
-                    doc_stats["created"] + doc_stats["updated"] + qa_stats["pushed"]
-                ) else "error"
+            if doc_stats["failed"] or qa_stats["failed"] or notes["failed"]:
+                status = (
+                    "partial_failure"
+                    if (
+                        doc_stats["created"]
+                        + doc_stats["updated"]
+                        + doc_stats["archived"]
+                        + qa_stats["pushed"]
+                    )
+                    or strict_archive_failed
+                    else "error"
+                )
             return {
                 "status": status,
                 "documents": doc_stats,
                 "qa": qa_stats,
+                "pruned": pruned,
                 "warnings": warnings,
+                "notes": notes,
+                "request_count": request_count,
+                "elapsed_seconds": elapsed_seconds,
+                "model_tokens": 0,
             }
 
     async def _push_document(
@@ -184,6 +311,46 @@ class NotionSyncPipeline:
         )
         return "created" if result.action == ACTION_CREATED else "updated"
 
+    async def _archive_detached_document(self, doc: SourceDocument) -> str:
+        """Strict 模式归档 detached 页面并写 archived tombstone；已完成时零远端调用。"""
+        prior = await self._store.get_notion_entity(NOTION_ENTITY_DOCUMENT, doc.doc_id)
+        if prior is not None and prior.status == NOTION_PUSH_ARCHIVED and not prior.page_id:
+            return "skipped"
+
+        archived_count = await self._target.archive_document(
+            doc.doc_id,
+            prior.page_id if prior is not None else "",
+        )
+        message = (
+            f"Strict mode archived {archived_count} detached Notion page(s)."
+            if archived_count
+            else "Strict mode confirmed the detached Notion pages no longer exist."
+        )
+        await self._store.upsert_notion_entity(
+            NotionEntityRecord(
+                entity_type=NOTION_ENTITY_DOCUMENT,
+                entity_key=doc.doc_id,
+                page_id="",
+                metadata_hash=prior.metadata_hash if prior is not None else "",
+                content_hash=prior.content_hash if prior is not None else "",
+                status=NOTION_PUSH_ARCHIVED,
+                synced_at=_now(),
+                message=message,
+            )
+        )
+        await self._store.upsert_sync_record(
+            SyncRecord(
+                doc_id=doc.doc_id,
+                target=SyncTargetKind.NOTION,
+                remote_ref=None,
+                content_hash=doc.content_hash,
+                status=SyncStatus.SKIPPED,
+                synced_at=_now(),
+                message=message,
+            )
+        )
+        return "archived"
+
     # ── QA 推送 ─────────────────────────────────────────────────
 
     async def push_qa_record(
@@ -201,9 +368,11 @@ class NotionSyncPipeline:
         无法解析为 Notion 页面的引用降级为正文尾部文本列表（relation 只链已同步文章）。
         """
         if not self._config.enabled:
-            return {"status": "disabled", "message": "Notion 同步未启用。"}
+            return {"status": "disabled", "message": "Notion sync is turned off."}
         if not self._config.qa_database_id:
-            return {"status": "error", "message": "Notion QA 库未初始化，请先执行初始化建库。"}
+            return {"status": "error", (
+                "message"
+            ): "The Notion Q&A database is not set up; run the database setup first."}
 
         collections = await self._store.list_collections()
         paths = schema.build_collection_paths(collections)
@@ -212,8 +381,8 @@ class NotionSyncPipeline:
         )
         body = content
         if unresolved:
-            listed = "、".join(unresolved)
-            body = f"{content}\n\n未同步引用（本地 DocID）：{listed}"
+            listed = ", ".join(unresolved)
+            body = f"{content}\n\nUnsynced references (local DocID): {listed}"
 
         result = await self._target.create_qa_entry(
             title=_qa_title(title, content),
@@ -238,7 +407,7 @@ class NotionSyncPipeline:
         """推送单条 outbox QA：成功清正文留存根，失败保留全文记 failed。"""
         item = await self._store.get_notion_outbox(item_id)
         if item is None:
-            return {"status": "error", "message": f"暂存条目不存在：{item_id}"}
+            return {"status": "error", "message": f"Queued item not found: {item_id}"}
         try:
             result = await self.push_qa_record(
                 note_id=f"outbox:{item.id}",
@@ -279,7 +448,9 @@ class NotionSyncPipeline:
                 stats["pushed"] += 1
             else:
                 stats["failed"] += 1
-                warnings.append(f"QA {item.id} 补推失败：{result.get('message')}")
+                warnings.append(
+                    f"Retrying the push of QA {item.id} failed: {result.get('message')}"
+                )
         return stats
 
     async def _mark_outbox_failed(self, item: NotionOutboxItem, message: str) -> None:
@@ -307,12 +478,19 @@ class NotionSyncPipeline:
             doc_id = raw.strip()
             if not doc_id:
                 continue
+            doc = await self._store.get_document(doc_id)
+            if (
+                self._config.sync_mode == NOTION_SYNC_STRICT
+                and doc is not None
+                and doc.lifecycle_state == DocumentLifecycle.DETACHED
+            ):
+                unresolved.append(doc_id)
+                continue
             rec = await self._store.get_notion_entity(NOTION_ENTITY_DOCUMENT, doc_id)
             if rec is not None and rec.page_id:
                 page_ids.append(rec.page_id)
                 resolved_labels.append(doc_id)
                 continue
-            doc = await self._store.get_document(doc_id)
             if doc is None:
                 unresolved.append(doc_id)
                 continue
@@ -325,7 +503,7 @@ class NotionSyncPipeline:
                 else:
                     unresolved.append(doc_id)
             except Exception as e:  # noqa: BLE001
-                logger.warning("按需推送引用文章失败（%s）：%s", doc_id, e)
+                logger.warning("Pushing referenced articles on demand failed (%s): %s", doc_id, e)
                 unresolved.append(doc_id)
         return page_ids, resolved_labels, unresolved
 

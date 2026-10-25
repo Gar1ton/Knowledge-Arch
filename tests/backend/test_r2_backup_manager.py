@@ -109,15 +109,15 @@ async def test_backup_deduplicates_and_keeps_only_latest(tmp_path: Path) -> None
     # original.pdf 与 clean.md 内容相同，只存一个 blob。
     blob_keys = [key for key in target._objects if "/blobs/" in key]
     assert len(blob_keys) < manifest["file_count"]
-    runtime_entry = next(
-        entry for entry in manifest["files"] if entry["path"] == "config/runtime_config.json"
+    settings_entry = next(
+        entry for entry in manifest["files"] if entry["path"] == "config/portable_settings.json"
     )
-    sanitized_runtime = target._objects[
-        f"knowledge-arch/v1/blobs/{runtime_entry['sha256']}"
+    portable = target._objects[
+        f"knowledge-arch/v1/blobs/{settings_entry['sha256']}"
     ].decode("utf-8")
-    assert '"secret"' not in sanitized_runtime
-    assert "secret_access_key" not in sanitized_runtime
-    assert "r2_sync" not in sanitized_runtime
+    assert '"secret"' not in portable
+    assert "secret_access_key" not in portable
+    assert "flow.r2." not in portable
 
     second = await manager.backup()
     assert second["uploaded_bytes"] == 0
@@ -182,7 +182,7 @@ async def test_restore_rejects_corrupted_blob_and_records_error(tmp_path: Path) 
     entry = manifest["files"][0]
     target._objects[f"knowledge-arch/v1/blobs/{entry['sha256']}"] = b"corrupted"
 
-    with pytest.raises(ValueError, match="校验失败"):
+    with pytest.raises(ValueError, match="check failed"):
         await manager.prepare_restore()
     assert manager.active_job is not None
     assert manager.active_job["status"] == "error"
@@ -195,13 +195,13 @@ async def test_restore_rejects_tampered_manifest_and_path_traversal(tmp_path: Pa
     latest = json.loads(target._objects[latest_key])
     manifest_key = latest["manifest_key"]
     target._objects[manifest_key] += b" "
-    with pytest.raises(ValueError, match="manifest 哈希"):
+    with pytest.raises(ValueError, match="manifest hash"):
         await manager.prepare_restore()
 
     manifest = json.loads(target._objects[manifest_key])
     manifest["files"][0]["path"] = "../escape.db"
     _replace_manifest(target, manifest)
-    with pytest.raises(ValueError, match="非法备份路径"):
+    with pytest.raises(ValueError, match="Invalid backup path"):
         await manager.prepare_restore()
     assert not (tmp_path / "escape.db").exists()
 
@@ -239,7 +239,7 @@ async def test_restore_blocks_when_local_disk_is_insufficient(
     monkeypatch.setattr(
         "kacore.managers.r2_backup_manager.shutil.disk_usage", lambda _: Usage()
     )
-    with pytest.raises(RuntimeError, match="本地空间不足"):
+    with pytest.raises(RuntimeError, match="Not enough local space"):
         await manager.prepare_restore()
 
 

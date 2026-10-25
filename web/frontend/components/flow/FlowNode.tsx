@@ -2,11 +2,13 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import type { DependencyStatus, PipelineStage } from "@/lib/api";
 import type { FlowConfigSnapshot, QuickConfigDirty, QuickConfigHandle, QuickConfigUpdate } from "./QuickConfigPanel";
-import type { I18nKey, Lang } from "@/lib/i18n";
+import type { Provider, ProviderPreset, SettingItem } from "@/lib/settingsApi";
+import type { I18nKey, Lang, TFunc } from "@/lib/i18n";
 import {
   backendLabel,
   buildDetailParts,
   FIELD_LABEL_KEYS,
+  hiddenSettingKeys,
   isFlowStageId,
   STAGE_META,
   SWITCH_MAP,
@@ -30,7 +32,7 @@ const STATUS_KEY: Record<FlowStageStatus, I18nKey> = {
   info: "flow_status_info",
 };
 
-function StatusChip({ status, t }: { status: FlowStageStatus; t: (k: I18nKey) => string }) {
+function StatusChip({ status, t }: { status: FlowStageStatus; t: TFunc }) {
   return (
     <span className={`flow-status-chip ${STATUS_CLASS[status]}`}>
       <span className="flow-status-dot" />
@@ -110,17 +112,25 @@ function DepRow({
 }: {
   dep: DependencyStatus;
   installing: string | null;
-  t: (k: I18nKey) => string;
+  t: TFunc;
   onInstall: (dep: DependencyStatus) => void;
 }) {
   const depName = t(`flow_dep_${dep.key}` as I18nKey);
   const isInstalling = installing === dep.key;
+  // 顶层包在、运行时不可用（如缺 milvus-lite）：标题说清是「运行时不可用」，
+  // 副行给后端下发的具体修复建议，而不是重复一条装了也没用的 pip 规格。
+  const runtimeBroken = dep.installed && dep.runtime_ready === false;
+  const hint = dep.runtime_hint ?? "";
   return (
     <div className="flow-dep-row" onClick={(event) => event.stopPropagation()}>
       <span className="flow-dep-icon"><AlertIcon /></span>
       <div className="flow-dep-text">
-        <span className="flow-dep-name">{t(dep.required ? "flow_missing_required_dep" : "flow_missing_dep")}: {depName}</span>
-        <code className="flow-dep-pip">{dep.pip_spec}</code>
+        <span className="flow-dep-name">
+          {runtimeBroken
+            ? `${t("flow_dep_runtime_broken")}: ${depName}`
+            : `${t(dep.required ? "flow_missing_required_dep" : "flow_missing_dep")}: ${depName}`}
+        </span>
+        <code className="flow-dep-pip">{hint || dep.pip_spec}</code>
       </div>
       <button
         type="button"
@@ -151,17 +161,23 @@ export function FlowNode({
   onEditingChange,
   onSelect,
   config,
+  settingsItems,
+  providers,
+  presets,
+  onNotify,
   onSwitch,
   onQuickConfigSave,
   onRefresh,
   onInstall,
   onRebuildIndex,
+  onClearMilvusLock,
+  clearingMilvusLock,
   onClose,
 }: {
   stage: PipelineStage;
   depMap: Map<string, DependencyStatus>;
   lang: Lang;
-  t: (k: I18nKey) => string;
+  t: TFunc;
   saving: boolean;
   installing: string | null;
   justActivatedValue: string | null;
@@ -169,6 +185,10 @@ export function FlowNode({
   restartPending: boolean;
   selected: boolean;
   config: FlowConfigSnapshot;
+  settingsItems: SettingItem[];
+  providers: Provider[];
+  presets: ProviderPreset[];
+  onNotify: (message: string, kind: "ok" | "error" | "info") => void;
   onEditingChange?: (stageId: string, editing: boolean) => void;
   onSelect: () => void;
   onSwitch: (stage: PipelineStage, value: string) => void;
@@ -176,6 +196,8 @@ export function FlowNode({
   onRefresh?: () => Promise<void>;
   onInstall: (dep: DependencyStatus) => void;
   onRebuildIndex: () => void;
+  onClearMilvusLock?: () => void;
+  clearingMilvusLock?: boolean;
   onClose?: () => void;
 }) {
   // 头部徽章承担唯一保存入口：草稿态由 QuickConfigPanel 经 onDirtyChange 上报，save 经 ref 触发。
@@ -203,26 +225,33 @@ export function FlowNode({
   const id = stage.id as FlowStageId;
   const meta = STAGE_META[id];
   const canSwitch = Boolean(SWITCH_MAP[id]) && stage.candidates.length > 1;
-  const lockedOptions = id === "vector_store" ? new Set(["astr"]) : undefined;
   const isDest = meta.kind === "dest";
   const isOff = stage.status === "off";
   const detailParts = buildDetailParts(stage, lang, t("flow_engines"));
   const missingDeps = stage.required_deps
     .map((key) => depMap.get(key))
-    .filter((dep): dep is DependencyStatus => Boolean(dep && !dep.installed));
+    // runtime_ready=false 与「没装」同等对待：pymilvus 装了但缺 milvus-lite 时，
+    // 节点必须显示未就绪并给出修复入口，而不是因为顶层包在就显示绿灯。
+    .filter((dep): dep is DependencyStatus =>
+      Boolean(dep && (!dep.installed || dep.runtime_ready === false)),
+    );
   const fieldKey = FIELD_LABEL_KEYS[id] ?? "flow_current";
+  // 还在等 Embedding 时没有可重建的东西，只显示等待提示。
   const needsMilvusRebuild =
     id === "vector_store" &&
     stage.current === "milvus" &&
+    stage.detail.waiting_for_embedding !== true &&
     (stage.detail.rebuild_required === true ||
       Number(stage.detail.pending_reindex_count ?? 0) > 0);
   const milvusReason =
     typeof stage.detail.reason === "string" && stage.detail.reason
       ? stage.detail.reason
       : "";
+  const milvusLockDetected = id === "vector_store" && stage.detail.lock_detected === true;
 
   return (
     <div
+      data-tour={`node-${stage.id}`}
       className={`flow-node ${isDest ? "flow-node--dest" : ""} ${selected ? "is-selected" : ""} ${isOff ? "is-off" : ""} ${STATUS_CLASS[stage.status]} ${isDirty ? "is-dirty" : ""} ${showRestartPending ? "is-restart-pending" : ""} ${advancedOpen ? "is-advanced-open" : ""}`}
       onClick={onSelect}
     >
@@ -271,8 +300,6 @@ export function FlowNode({
               disabled={saving}
               status={stage.status}
               justActivatedValue={justActivatedValue}
-              lockedOptions={lockedOptions}
-              lockedTitle={t("flow_vector_astr_locked")}
               onChange={(value) => onSwitch(stage, value)}
             />
           </Field>
@@ -288,6 +315,10 @@ export function FlowNode({
           </div>
         )}
 
+        {id === "vector_store" && stage.detail.waiting_for_embedding === true && (
+          <div className="flow-consequence">{t("flow_vector_waiting_embedding")}</div>
+        )}
+
         {canSwitch && stage.consequence !== "none" && (
           <div className={`flow-consequence ${stage.consequence === "rebuild" ? "flow-consequence--warn" : ""}`}>
             {stage.consequence === "rebuild" ? t("flow_consequence_rebuild") : t("flow_consequence_restart")}
@@ -298,6 +329,11 @@ export function FlowNode({
           ref={panelRef}
           stage={stage}
           config={config}
+          settingsItems={settingsItems}
+          providers={providers}
+          presets={presets}
+          hiddenKeys={hiddenSettingKeys(id)}
+          onNotify={onNotify}
           lang={lang}
           t={t}
           saving={saving}
@@ -330,6 +366,26 @@ export function FlowNode({
               }}
             >
               {rebuildingIndex ? t("flow_milvus_rebuild_running") : t("flow_milvus_rebuild")}
+            </button>
+          </div>
+        )}
+
+        {needsMilvusRebuild && milvusLockDetected && onClearMilvusLock && (
+          <div className="flow-dep-row" onClick={(event) => event.stopPropagation()}>
+            <span className="flow-dep-icon"><AlertIcon /></span>
+            <div className="flow-dep-text">
+              <span className="flow-dep-name">{t("flow_milvus_lock_detected")}</span>
+            </div>
+            <button
+              type="button"
+              className="flow-dep-button"
+              disabled={clearingMilvusLock}
+              onClick={(event) => {
+                event.stopPropagation();
+                onClearMilvusLock();
+              }}
+            >
+              {clearingMilvusLock ? t("flow_milvus_clear_lock_running") : t("flow_milvus_clear_lock")}
             </button>
           </div>
         )}
