@@ -15,6 +15,13 @@
 - **删除规则**：`desktop/src-tauri/src/wipe.rs`。平台默认目录整删；自选数据目录选定时为空才写 `.knowledge-arch-owned`
   并可整删，否则只删 `KNOWN_ENTRIES`；壳把当前数据目录写进 `data-dir.txt`（UTF-16LE）供卸载器读取，测试核对两边清单一致。
 
+### 修复 (Fixed) — 上传
+
+- **桌面壳里拖入文件无效**：`desktop/src-tauri/tauri.conf.json` 关闭 `dragDropEnabled`，系统拖放交给网页的 `onDrop`。
+- **批量上传**：`components/panels/FilePanel.tsx` 的上传框支持多选与多文件拖入，逐个上传并显示进度，失败的文件留在列表里重试。
+- **目标集合下拉跟随主题**：改用 ds `Select`；集合列表晚到时补上默认目标。
+- **上传格式与后端一致**：去掉后端没有解析器的 DOCX（会被当纯文本读入），加上 `.markdown`。
+
 ### 改进 (Changed)
 
 - **Windows / Linux 不再显示 File / Edit 菜单栏**：菜单只在 macOS 挂；Ctrl+Q 由前端调用 `quit_app`，Ctrl+, 照旧。

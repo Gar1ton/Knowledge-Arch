@@ -327,3 +327,8 @@
   - 验证：pytest 1385 passed / 4 skipped（新增主密钥清除 2 项）；ruff；mypy；tsc；eslint；`next build`；
     `wipe.rs` 单独 `rustc --test` 10 项通过（含与 `hooks.nsh` 清单一致）、clippy -D warnings、rustfmt。
     未验证：`lib.rs` 整体编译（本机无 webkit 依赖，等 Developer CI 的 clippy / cargo test）、NSIS 钩子编译与 Windows 卸载实测。
+- [x] 上传修复（rc.4 反馈）：桌面壳里拖入文件无效（Tauri 默认 `dragDropEnabled` 截走系统拖放，`tauri.conf.json` 关闭）；
+  上传框支持多选 / 多文件拖入，逐个上传、失败的留在列表里；目标集合改用 ds `Select`（原生 `<select>` 的弹出列表不跟主题）；
+  集合列表晚到时补上默认目标；去掉后端并不支持的 DOCX（会被当纯文本读成乱码），加上 `.markdown`。
+  验证：tsc；eslint；`next build`；Playwright 对 dev 前端 + 临时数据目录：多选 3 个、模拟拖入 1 个、DOCX 被拒，
+  三个文件依次上传成功并入库；暗色主题下拉截图。未验证：桌面壳里的真实系统拖放（需出包后实测）。
