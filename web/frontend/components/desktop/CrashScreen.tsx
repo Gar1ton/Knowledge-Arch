@@ -2,7 +2,7 @@
 /**
  * 后端退出 / 启动失败时的整窗提示：显示最后几行日志，提供「重启服务」与「打开日志目录」。
  */
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ds/Button";
 import { inDesktopShell, openLogDir } from "@/lib/backend";
 import { useI18n } from "@/lib/i18n";
@@ -18,6 +18,11 @@ export function CrashScreen({
 }) {
   const { t } = useI18n();
   const [restarting, setRestarting] = useState(false);
+  const logRef = useRef<HTMLPreElement>(null);
+  // 最有用的是最后几行：日志框默认滚到底部。
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [logTail]);
   return (
     <div className="ka-fullscreen-card" role="alert">
       <div className="ka-fullscreen-inner">
@@ -27,7 +32,7 @@ export function CrashScreen({
         {logTail.length > 0 && (
           <>
             <div className="ka-fullscreen-label">{t("crash_log_tail")}</div>
-            <pre className="ka-crash-log">{logTail.join("\n")}</pre>
+            <pre ref={logRef} className="ka-crash-log">{logTail.join("\n")}</pre>
           </>
         )}
         <div className="ka-fullscreen-actions">

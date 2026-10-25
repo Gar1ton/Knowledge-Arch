@@ -42,6 +42,10 @@
 
 ## 2. 薄壳原则（Thin Shell）
 
+桌面壳 `desktop/src-tauri`（Tauri 2）只管窗口、菜单 / 托盘、单实例、原生对话框、系统通知与后端进程
+的启停（见 `desktop/README.md`）；它和界面之间只有一组 `invoke` 命令，和后端之间只有「环境变量 token +
+命令行参数 + stdout 的 KA_READY + HTTP」。
+
 进程入口 `ka_server/__main__.py`（`python -I -m ka_server serve`）**只做进程生命周期**：
 
 1. 解析数据目录（`ka_server/paths.py`）、取数据目录独占锁、装配组合根；

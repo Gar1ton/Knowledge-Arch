@@ -79,6 +79,10 @@ cd web/frontend && npm run lint && npx tsc --noEmit && npm run build
 
 # 本地后端（开发）：token 只经环境变量传入
 KA_TOKEN=dev-token python -m ka_server serve --port 26618 --data-dir .dev_data
+
+# 桌面壳（Tauri 2，见 desktop/README.md）：先构建前端，再打包后端资源，最后出包
+python desktop/scripts/bundle_python.py && (cd desktop && npm ci && npx tauri build)
+cd desktop/src-tauri && cargo test && cargo clippy && cargo fmt --check
 ```
 
 ## 6. 语言约定

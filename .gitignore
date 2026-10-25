@@ -71,3 +71,9 @@ tests/mock_data/**/__pycache__/
 
 # ── 本地临时研究目录（防止误把嵌套 git 仓库 add 成孤儿 gitlink）──
 _tmp_*/
+
+# ── 桌面壳（desktop/）─────────────────────────────────────
+/desktop/src-tauri/target/
+/desktop/src-tauri/resources/
+/desktop/src-tauri/gen/
+/desktop/node_modules/

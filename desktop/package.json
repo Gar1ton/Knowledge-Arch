@@ -1,0 +1,14 @@
+{
+  "name": "knowledge-arch-desktop",
+  "private": true,
+  "version": "2.0.0-dev",
+  "scripts": {
+    "tauri": "tauri",
+    "icons": "tauri icon ../logo.svg --output src-tauri/icons && rm -rf src-tauri/icons/android src-tauri/icons/ios",
+    "bundle:backend": "python ../desktop/scripts/bundle_python.py",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4"
+  }
+}

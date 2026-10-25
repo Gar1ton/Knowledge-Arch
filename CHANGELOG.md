@@ -2,6 +2,33 @@
 
 > 插件时代（v0.x – v1.2.0）的变更记录完整保留在本仓库首个提交 `89b251a` 中（`git show 89b251a:CHANGELOG.md`），不再随 v2 维护。
 
+## [v2.0.0-dev.5] — 2026-10-25
+
+### 新增 (Added) — P5 桌面壳
+
+- **`desktop/src-tauri`（Tauri 2）**：`lib.rs` 单实例（第二个实例只聚焦已有窗口）、菜单「偏好设置…」（⌘, / Ctrl+,，
+  发 `menu://preferences`）、托盘（显示窗口 / 偏好设置 / 退出；`prefs.general.close_to_tray` 时关窗隐藏到托盘）、
+  原生选择文件夹、系统通知、打开日志目录、开机启动（autostart 插件）；`prefs.rs` 壳偏好 `shell.json`（数据目录覆盖、
+  关闭到托盘、开机启动、检查更新），默认数据 / 日志目录与后端 platformdirs 一致。
+- **`sidecar.rs`**：随机 token 只经 `KA_TOKEN`；`python -I -m ka_server serve --port 0 --parent-pid --uv [--data-dir]`；
+  `KA_READY` 60 秒超时；就绪 / 退出事件（`backend://ready` / `backend://exited`，带最后 80 行日志）；退出时
+  `POST /api/shutdown`、10 秒后强制结束；重启递增 generation，旧进程的线程自动失效。
+- **`desktop/scripts/bundle_python.py`**：经 uv 下载 python-build-standalone 3.12，安装核心依赖（去掉 pip），复制后端
+  源码，写入相对路径的 `knowledge_arch.pth`（`-I` 下仍可导入），uv 放在解释器旁，前端静态导出作为 frontendDist，
+  预编译字节码并做 `-I` 导入冒烟。
+- `desktop/package.json`（`@tauri-apps/cli`）、`desktop/README.md`、由 `logo.svg` 生成的图标。
+
+### 改进 (Changed)
+
+- `ARCHITECTURE.md` / `CLAUDE.md` / `docs/PROJECT_STRUCTURE.md` 补充桌面壳；ruff 排除打包产物目录；`.gitignore` 忽略
+  `desktop/src-tauri/{target,resources,gen}`。
+- 崩溃页日志框默认滚动到最后几行。
+
+### 测试 (Tests)
+
+- Rust：`cargo test` 6 项（token、资源布局、壳偏好、日志目录、退出码提示）；Python：`test_bundle_python.py`。
+- Linux 实机（Xvfb）：`.deb` 安装后启动、单实例、崩溃页与重启服务、菜单退出的有序停止均验证通过。
+
 ## [v2.0.0-dev.4] — 2026-10-25
 
 ### 新增 (Added) — P4 前端

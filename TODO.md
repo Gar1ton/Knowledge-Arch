@@ -131,5 +131,27 @@
       owner=frontend 的语言 / 明暗 / 配色以 settings.json 为准，后端就绪后同步到本机界面。
     - 前端不再调用 `/api/config/update`；后端路由暂留，因为外部 agent skill 仍依赖它（见下方待决项）。
     - 删除无引用的 `Rail.tsx`、`PerfPanel.tsx`、`NotionSyncStatus.tsx`。
-- [ ] P5 · 桌面壳：Tauri 工程、sidecar、单实例、原生对话框、托盘、Python 打包脚本；本地出包。
+- [x] P5 · 桌面壳：Tauri 工程、sidecar、单实例、原生对话框、托盘、Python 打包脚本；本地出包。
+  - [x] P5.1 `desktop/src-tauri`：`lib.rs`（单实例只聚焦已有窗口；菜单「偏好设置…」⌘, / Ctrl+,；托盘：显示窗口 /
+    偏好设置 / 退出，`prefs.general.close_to_tray` 时关窗隐藏到托盘；macOS 点 Dock 图标恢复窗口；命令
+    backend_info / backend_state / restart_backend / pick_folder / open_log_dir / notify / set_shell_pref /
+    get_shell_prefs），`prefs.rs`（壳偏好 `shell.json`，数据目录与日志目录与 platformdirs 一致；开机启动经 autostart 插件）。
+  - [x] P5.2 `sidecar.rs`：256 位随机 token 只经 `KA_TOKEN`；`python -I -m ka_server serve --port 0 --parent-pid
+    --uv [--data-dir]`；读 `KA_READY`（60 s 超时）；运行中退出 / 超时 → `backend://exited`（带日志尾）；就绪 →
+    `backend://ready`；退出时 `POST /api/shutdown`，10 s 后强制结束；数据目录被占用（退出码 3）给出专门提示。
+  - [x] P5.3 `desktop/scripts/bundle_python.py`：uv 下载 python-build-standalone 3.12 → `resources/python/`，装
+    requirements.txt、去掉 pip；源码 → `resources/ka/`；site-packages 写 `knowledge_arch.pth`（相对路径）；uv 放在
+    解释器旁；`out/` → `resources/frontend/`（frontendDist）；预编译 .pyc；`-I` 导入冒烟。torch 不进安装包。
+  - [x] P5.4 本地出包（Linux）：`npx tauri build --bundles deb` 得到 268 MiB 的 `.deb`；macOS / Windows 包需在各自平台
+    或 CI 上打（P6 矩阵）。
+  - 验证：`cargo test`（6）/ `cargo clippy` / `cargo fmt --check` 通过；新增 `test_bundle_python.py`（3）。
+    Xvfb 中实测：`tauri dev` 与安装后的 `.deb` 都能拉起后端并显示欢迎页（真实 WebKitGTK、`tauri://localhost`
+    Origin 通过 CORS）；第二个实例立即退出；杀掉后端 → 崩溃页显示日志尾，点「重启服务」后新进程就绪、界面恢复；
+    「文件 › 退出」→ 后端日志 `shutdown: requested`、无残留进程；壳被 SIGTERM 时后端经 `--parent-pid` 退出。
+  - 落点调整：
+    - 菜单与托盘文案用中文（与默认界面语言一致）；Linux / Windows 用「文件 / 编辑」菜单，macOS 用应用菜单。
+    - 不用 Tauri shell 插件起 sidecar：解释器路径与参数完全由壳决定，用 std::process 即可；/api/shutdown 用最小
+      HTTP 请求实现，不引入 HTTP 客户端依赖。
+    - `KA_SIDECAR_PYTHON` 可指定别的解释器（排障 / 开发用）；debug 构建自动给后端加 `--dev-origin`。
+    - 前端崩溃页日志框默认滚到最后。
 - [ ] P6 · 发布：Actions 三平台矩阵、签名与公证、updater、文档改写、v2.0.0（远端操作另行批准）。

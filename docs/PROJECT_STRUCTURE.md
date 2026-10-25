@@ -17,6 +17,7 @@ Knowledge Arch 是本地优先的学术知识库桌面应用：PDF 原件管理�
 
 ```
 .
+├── desktop/            # Tauri 2 桌面壳（src-tauri/）与后端打包脚本（scripts/bundle_python.py）
 ├── ka_server/          # 后端进程薄壳：python -I -m ka_server serve
 ├── kacore/             # 全部业务逻辑（组合根 app_initializer.py、api 门面、分层子包）
 ├── web/server.py       # HTTP 路由（token 鉴权 + CORS），委派 kacore/api

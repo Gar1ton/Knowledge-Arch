@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "主窗口：事件订阅 + 本应用自定义命令（命令本身在 Rust 侧做校验）。",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
