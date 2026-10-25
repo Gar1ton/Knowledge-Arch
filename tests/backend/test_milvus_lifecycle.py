@@ -14,9 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kacore.api import KnowledgeRepositoryApi
+from kacore.app_initializer import AppInitializer
 from kacore.domain.models import DocumentChunk
-from kacore.plugin_initializer import PluginInitializer
-from kacore.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
 from kacore.repository.source_store.memory import InMemorySourceDocumentStore
 from kacore.repository.vector_store.milvus_lite import MilvusLiteVectorStore
 
@@ -197,14 +196,14 @@ async def test_initializer_closes_store_after_generic_validation_failure(tmp_pat
     )
     provider = SimpleNamespace(embed_query=AsyncMock(return_value=[0.1] * 4))
     with (
-        patch("kacore.plugin_initializer.milvus_runtime_status", return_value={"ready": True}),
-        patch("kacore.plugin_initializer._module_available", return_value=True),
+        patch("kacore.app_initializer.milvus_runtime_status", return_value={"ready": True}),
+        patch("kacore.app_initializer._module_available", return_value=True),
         patch("kacore.repository.embedding.factory.EmbeddingProviderFactory.create_provider",
               return_value=provider),
         patch("kacore.repository.vector_store.milvus_lite.MilvusLiteVectorStore",
               return_value=client),
     ):
-        initializer = PluginInitializer(object(), {
+        initializer = AppInitializer({
             "vector_db": {"backend": "milvus"}, "graph": {"enabled": False},
         }, tmp_path)
         try:
@@ -223,7 +222,7 @@ async def test_teardown_stops_scheduler_then_milvus_build_before_store_close(
     started = asyncio.Event()
     build_started = asyncio.Event()
     api = KnowledgeRepositoryApi(
-        source_store=InMemorySourceDocumentStore(), kb_reader=InMemoryKnowledgeBaseReader(),
+        source_store=InMemorySourceDocumentStore(),
         sync_targets={},
     )
 
@@ -244,7 +243,7 @@ async def test_teardown_stops_scheduler_then_milvus_build_before_store_close(
             await build_started.wait()
             events.append("scheduler_stopped")
 
-    initializer = PluginInitializer(object(), {}, tmp_path)
+    initializer = AppInitializer({}, tmp_path)
     initializer.api = api
     initializer.vector_store = SimpleNamespace(close=AsyncMock(
         side_effect=lambda: events.append("store_closed"),
@@ -269,11 +268,11 @@ async def test_real_initializer_reload_and_reinstallation_keep_vectors(tmp_path:
         "graph": {"enabled": False},
     }
     provider = SimpleNamespace(embed_query=AsyncMock(return_value=[0.1] * 4))
-    first = PluginInitializer(object(), config, tmp_path)
-    second = PluginInitializer(object(), config, tmp_path)
+    first = AppInitializer(config, tmp_path)
+    second = AppInitializer(config, tmp_path)
     vector = [1.0, 0.0, 0.0, 0.0]
     with (
-        patch("kacore.plugin_initializer._module_available", return_value=True),
+        patch("kacore.app_initializer._module_available", return_value=True),
         patch("kacore.repository.embedding.factory.EmbeddingProviderFactory.create_provider",
               return_value=provider),
     ):

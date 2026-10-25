@@ -8,7 +8,6 @@ import pytest
 
 from kacore.api import KnowledgeRepositoryApi
 from kacore.domain.models import DocumentChunk, DocumentOrigin, SourceDocument
-from kacore.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
 from kacore.repository.source_store.memory import InMemorySourceDocumentStore
 
 
@@ -40,7 +39,6 @@ async def _make_api() -> tuple[KnowledgeRepositoryApi, InMemorySourceDocumentSto
     store = InMemorySourceDocumentStore()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=MagicMock(),  # type: ignore[arg-type]
     )
     return api, store

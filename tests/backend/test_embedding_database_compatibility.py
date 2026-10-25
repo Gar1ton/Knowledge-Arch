@@ -7,20 +7,20 @@ import sqlite3
 import aiosqlite
 import pytest
 
+from kacore.app_initializer import AppInitializer
 from kacore.config import EmbeddingConfig
 from kacore.domain.models import Collection, DocumentChunk, SourceDocument
 from kacore.index_compatibility import IndexCompatibilityStore, embedding_fingerprint
 from kacore.managers.artifact_provenance import PROCESSING_VERSION
 from kacore.migration_runner import run_migrations
-from kacore.plugin_initializer import PluginInitializer
 from kacore.repository.source_store.sqlite import SQLiteSourceDocumentStore
 from kacore.repository.vector_store.milvus_lite import MilvusSchemaMismatchError
-from tests.backend.test_external_embedding_contract import http, response  # noqa: F401
+from tests.backend.test_external_embedding_contract import http, response  # noqa: F401, F811
 
 
 @pytest.mark.parametrize("old_dimension", [2048, 1024])
 async def test_existing_source_and_index_survive_external_provider_upgrade(
-    http, tmp_path, monkeypatch, old_dimension,
+    http, tmp_path, monkeypatch, old_dimension,  # noqa: F811 - pytest fixture 注入
 ):
     source_path = tmp_path / "knowledge_repository.db"
     chunk = DocumentChunk("legacy-c0", "doc", 0, "Old text", "hash", {
@@ -59,7 +59,9 @@ async def test_existing_source_and_index_survive_external_provider_upgrade(
 
         def validate_schema(self):
             if self.dim != old_dimension:
-                raise MilvusSchemaMismatchError("Existing index dimension mismatch; rebuild required")
+                raise MilvusSchemaMismatchError(
+                    "Existing index dimension mismatch; rebuild required"
+                )
 
         def set_doc_collection_mapping(self, *_args):
             pass
@@ -70,7 +72,7 @@ async def test_existing_source_and_index_survive_external_provider_upgrade(
     monkeypatch.setattr(
         "kacore.repository.vector_store.milvus_lite.MilvusLiteVectorStore", ExistingMilvus,
     )
-    monkeypatch.setattr("kacore.plugin_initializer.milvus_runtime_status", lambda: {"ready": True})
+    monkeypatch.setattr("kacore.app_initializer.milvus_runtime_status", lambda: {"ready": True})
     http[0].append(response([[0.1] * 2048]))
     raw = {
         "embedding": {"provider": "external", "model": "alias", "base_url": embedding.base_url},
@@ -78,7 +80,7 @@ async def test_existing_source_and_index_survive_external_provider_upgrade(
         "graph": {"enabled": False},
         "notion_sync": {"enabled": False}, "r2_sync": {"enabled": False},
     }
-    initializer = PluginInitializer(object(), raw, tmp_path)
+    initializer = AppInitializer(raw, tmp_path)
     try:
         await initializer.initialize()
         assert initializer.embedding_dimension == 2048 and constructed == [2048]
@@ -97,5 +99,6 @@ async def test_existing_source_and_index_survive_external_provider_upgrade(
     finally:
         await initializer.teardown()
     with sqlite3.connect(source_path) as db:
-        assert db.execute("SELECT name, sql FROM sqlite_master ORDER BY name").fetchall() == schema_before
+        rows = db.execute("SELECT name, sql FROM sqlite_master ORDER BY name").fetchall()
+        assert rows == schema_before
 

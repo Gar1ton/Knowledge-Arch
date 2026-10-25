@@ -14,7 +14,6 @@ from kacore.config import NotionSyncConfig
 from kacore.domain.models import NotionOutboxItem, SourceDocument
 from kacore.notion_sync_job import NOTION_STAGE_PREPARING, NotionSyncJob
 from kacore.pipelines.notion_sync_pipeline import NotionSyncPipeline
-from kacore.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
 from kacore.repository.source_store.memory import InMemorySourceDocumentStore
 from kacore.repository.sync_targets.notion import NotionSyncTarget
 
@@ -159,7 +158,7 @@ async def test_background_job_exposes_one_preflight_error_without_document_failu
     target = NotionSyncTarget(
         NotionSyncConfig(enabled=True, database_id="legacy"), store, adapter=adapter
     )
-    api = KnowledgeRepositoryApi(source_store=store, kb_reader=InMemoryKnowledgeBaseReader({}))
+    api = KnowledgeRepositoryApi(source_store=store)
     api.attach_notion_sync_pipeline(NotionSyncPipeline(store, target))
     await api.sync_notion_push()
     await api._notion_sync_task

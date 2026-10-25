@@ -1,10 +1,9 @@
 """业务门面（框架无关，见 api.README.md 与 ../ARCHITECTURE.md §7）。
 
-为 WebUI / CLI / 其它入口提供统一的纯业务调用面：不含 HTTP 概念，只收发普通数据/domain 对象。
+为桌面界面 / CLI / 其它入口提供统一的纯业务调用面：不含 HTTP 概念，只收发普通数据/domain 对象。
 `web/` 把请求翻译后委派到这里，再把返回包装成 HTTP 响应。
 
-落地策略：本门面当前直接依赖仓储端口（source_store/kb_reader/sync_targets）。后续版本引入
-managers/pipelines（ingest/category/sync/quota）后，对应写操作改为委派到 manager，门面签名不变。
+落地策略：本门面直接依赖仓储端口（source_store/sync_targets）与已装配的 managers/pipelines。
 依赖经构造器注入，自身不创建依赖（装配在组合根）。
 """
 
@@ -26,6 +25,9 @@ from kacore.api_runtime_models import RuntimeModelsApiMixin
 from kacore.config import (
     CONSEQUENCE_REBUILD,
     CONSEQUENCE_RESTART,
+    EMBEDDING_PROVIDERS,
+    VECTOR_BACKEND_LEXICAL,
+    VECTOR_BACKEND_MILVUS,
     AskAgentConfig,
     api_writable_keys,
     change_consequence,
@@ -365,7 +367,7 @@ def _compute_answer_notice(
     v0.30.0：由「prepend 到 answer」改为响应独立的 answer_notice 字段——正文与告警解耦，
     实时渲染端自行决定呈现位置。存库时以分隔线并入答案（见 ask()），保证历史回放不丢提示
     ——轻微双轨是「实时结构化 vs 历史自包含」的有意取舍。
-    v1.1.0：三个渲染出口（WebUI 气泡 / AstrBot 聊天 / 存库回放）统一把告警置于正文**之前**。
+    v1.1.0：渲染出口（Ask 气泡 / 存库回放）统一把告警置于正文**之前**。
     读完整篇才发现「本回答未通过证据校验」为时已晚，告警的价值在于先于正文影响阅读预期。
     v1.0.12：追加 generation_status 分支——reasoning_only/length/content_filter 时即便
     evidence/verification 都正常，也要让用户知道这次生成本身不寻常。
@@ -471,53 +473,11 @@ if TYPE_CHECKING:
     from kacore.pipelines.retrieval_orchestrator import RetrievalOrchestrator
     from kacore.pipelines.sync_pipeline import SyncPipeline
     from kacore.repository.embedding.base import EmbeddingProvider
-    from kacore.repository.kb_reader.base import KnowledgeBaseReader
     from kacore.repository.reranker.base import Reranker
     from kacore.repository.source_store.base import SourceDocumentStore
     from kacore.repository.sync_targets.base import SyncTarget
     from kacore.repository.vector_store.base import VectorStore
     from kacore.secret_store import EncryptedSecretStore
-
-
-def _get_astrbot_persona_prompt(context: Any) -> str:
-    """从 AstrBot context 中动态检索当前的 persona prompt。"""
-    if context is None:
-        return ""
-    try:
-        get_active_prompt = getattr(context, "get_active_persona_prompt", None)
-        if callable(get_active_prompt):
-            return str(get_active_prompt())
-
-        active_persona = getattr(context, "active_persona", None)
-        if active_persona is not None:
-            prompt = getattr(active_persona, "prompt", None) or getattr(
-                active_persona, "system_prompt", None
-            )
-            if prompt:
-                return str(prompt)
-
-        get_active_persona = getattr(context, "get_active_persona", None)
-        if callable(get_active_persona):
-            persona_obj = get_active_persona()
-            if persona_obj:
-                prompt = getattr(persona_obj, "prompt", None) or getattr(
-                    persona_obj, "system_prompt", None
-                )
-                if prompt:
-                    return str(prompt)
-
-        config_obj = getattr(context, "config", None)
-        if config_obj:
-            get_cfg = getattr(config_obj, "get", None)
-            if callable(get_cfg):
-                p = get_cfg("persona") or get_cfg("active_persona")
-                if isinstance(p, dict):
-                    return str(p.get("prompt") or p.get("system_prompt") or "")
-                elif isinstance(p, str):
-                    return p
-    except Exception as e:
-        logger.warning(f"Failed to fetch AstrBot persona dynamically: {e}")
-    return ""
 
 
 class LightRAGNotReadyError(RuntimeError):
@@ -667,7 +627,6 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
         self,
         *,
         source_store: SourceDocumentStore,
-        kb_reader: KnowledgeBaseReader,
         sync_targets: dict[SyncTargetKind, SyncTarget] | None = None,
         ingest_manager: BaseIngestManager | None = None,
         category_manager: BaseCategoryManager | None = None,
@@ -700,10 +659,9 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
             getattr(ingest_manager, "_processing_lock", None) or ProcessingLock()
         )
         self._source_store = source_store
-        self._kb_reader = kb_reader
         self._vector_store = vector_store
         self._vector_store_init_error = vector_store_init_error
-        # 「清除残留 Milvus 锁」回调（组合根注入 PluginInitializer.clear_stale_milvus_lock；
+        # 「清除残留 Milvus 锁」回调（组合根注入 AppInitializer.clear_stale_milvus_lock；
         # 为空表示当前环境不支持程序化清除）。
         self._clear_milvus_lock_callback = clear_milvus_lock_callback
         self._embedding_provider = embedding_provider
@@ -734,7 +692,7 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
         self._index_compatibility = index_compatibility
         self._embedding_fingerprint = embedding_fingerprint
         self._secret_store = secret_store
-        # 软重启回调（组合根注入 PluginInitializer.reload；为空表示当前环境不支持程序化重启）。
+        # 软重启回调（组合根注入 AppInitializer.reload；为空表示当前环境不支持程序化重启）。
         self._reload_callback = reload_callback
         self._r2_backup_manager = r2_backup_manager
         from kacore.runtime_events import RuntimeEventRecorder
@@ -1887,11 +1845,11 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
             "failed": failed,
         }
 
-    # ── AstrBot 知识库（调用 / 检索）────────────────────────────
+    # ── 知识库检索 ──────────────────────────────────────────────
 
     async def list_kb_collections(self) -> list[str]:
-        """列出 AstrBot 知识库中的集合名。"""
-        return await self._kb_reader.list_collections()
+        """列出可检索的集合名（按名称排序）。"""
+        return sorted(item.name for item in await self._source_store.list_collections())
 
     async def search_kb(
         self,
@@ -1902,14 +1860,17 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
         scope_key: str = "",
         scope_library_id: str = "",
     ) -> list[DocumentChunk]:
-        """在某 AstrBot 知识库集合内检索，可选 item/collection/tag/library 作用域硬过滤。"""
+        """在某集合内检索，可选 item/collection/tag/library 作用域硬过滤。
+
+        未装配检索编排器时返回空列表（组合根总会装配；仅极简测试场景会缺）。
+        """
         t0 = time.monotonic()
         logger.info("search_kb: collection=%r top_k=%d query=%r", collection, top_k, query[:80])
         if self._retrieval_orchestrator is not None:
             scope = _build_scope(scope_type, scope_key, scope_library_id)
             result = await self._retrieval_orchestrator.retrieve(collection, query, top_k, scope)
         else:
-            result = await self._kb_reader.search(collection, query, top_k)
+            result = []
         logger.info(
             "search_kb done: collection=%r hits=%d elapsed=%.0fms",
             collection,
@@ -2581,7 +2542,6 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
         collection: str | None = None,
         top_k: int = 6,
         conversation_id: str | None = None,
-        persona_enabled: bool = False,
         retrieval_mode: str = "default",
         use_english_retrieval: bool = False,
         answer_language: str = "auto",
@@ -2907,10 +2867,7 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
                             fallback_reason = fallback_reason or outcome.fallback_reason
                         else:
                             fallback_reason = fallback_reason or milvus_fallback_reason
-                            current_chunks = await self._kb_reader.search(
-                                col, retrieval_question, top_k
-                            )
-                            engines.append("astrbot")
+                            current_chunks = []
                     except Exception as exc:
                         logger.warning("Ask retrieval failed for collection %s: %s", col, exc)
                         fallback_reason = fallback_reason or f"collection_error:{col}"
@@ -2924,7 +2881,7 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
                         scored_candidates.append((rrf, order, chunk))
                         order += 1
                 # 单集合：保留 orchestrator 给出的次序（rerank/RRF 已排好），不再重排；
-                # 多集合：按 RRF 分降序、缺失分（kb_reader 回退）按原始顺序兜底。
+                # 多集合：按 RRF 分降序、缺失分按原始顺序兜底。
                 if multi_scope:
                     scored_candidates.sort(key=lambda item: (-item[0], item[1]))
                 chunks = [c for _, _, c in scored_candidates[:top_k]]
@@ -3003,8 +2960,7 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
             # Harvard 改写。降级分支自己排版的 `**[1] 标题**` 不是引用，改写会毁掉版式。
             citable = False
             if deep_answer:
-                # deep 答案（verification 闭环合成或上面的 deep fallback 合成）直接用，
-                # 不套 persona。
+                # deep 答案（verification 闭环合成或上面的 deep fallback 合成）直接用。
                 answer = deep_answer
                 citable = True
             elif self._llm_adapter is not None and has_evidence:
@@ -3023,10 +2979,6 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
                     f"Cite sources using [n] notation (e.g. [1], [2]). "
                     f"{lang_instr}"
                 )
-                if persona_enabled:
-                    bot_persona = _get_astrbot_persona_prompt(self._llm_adapter._context)
-                    if bot_persona:
-                        system_prompt = f"{bot_persona}\n\n[RAG Constraints]\n{system_prompt}"
 
                 graph_header = (
                     f"[LightRAG Context]\n{lightrag_context}\n\n---\n\n"
@@ -3108,16 +3060,12 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
             if retrieval_mode in {"deep_thinking", "enhanced"} and deep_outcome is not None:
                 actual_mode = deep_outcome.actual_mode
             elif retrieval_mode == MODE_GRAPH_MIXED:
-                if "astrbot" in engines:
-                    actual_mode = "astrbot_lightrag"
-                elif "milvus" in engines:
+                if "milvus" in engines:
                     actual_mode = "milvus_lightrag"
                 elif "sqlite_lexical" in engines:
                     actual_mode = "lexical_lightrag"
                 else:
                     actual_mode = "lightrag"
-            elif "astrbot" in engines:
-                actual_mode = "astrbot_fallback" if fallback_reason else "astrbot"
             elif "milvus" in engines:
                 actual_mode = "milvus"
             elif "sqlite_lexical" in engines:
@@ -3128,7 +3076,7 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
             # 自动持久化聊天记录（source_store 支持时）。notice 以分隔线**前置**到存库答案，
             # 历史回放自包含不丢提示（实时响应用结构化 answer_notice 字段）。
             # v1.1.0：由追加改为前置——校验未通过的告警必须在读正文之前就看到，读完整篇才
-            # 发现「本回答未通过证据校验」为时已晚。三个渲染出口（Web/AstrBot/历史回放）同序。
+            # 发现「本回答未通过证据校验」为时已晚。渲染出口（Ask 气泡/历史回放）同序。
             ledger = current_usage.get()
             if deep_outcome is not None and ledger is not None:
                 deep_outcome.evidence_trace["usage"] = ledger.summary()
@@ -3668,11 +3616,7 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
         return self._config.to_public_dict()
 
     async def get_service_status(self) -> dict[str, Any]:
-        """返回服务框架概览：所用模型与各服务启用状态（供 /ka status 展示）。
-
-        仅给静态框架视图（模型 + 各服务 enabled）；运行时开关（agent/research/persona/webui）
-        的实时状态由命令层从 PluginInitializer 叠加，避免读到未刷新的持久化配置。
-        """
+        """返回服务框架概览：所用模型与各服务启用状态（静态配置视图）。"""
         if self._config is None:
             return {}
         vdb = self._config.get_vector_db_config()
@@ -3682,7 +3626,6 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
         r2 = self._config.get_r2_sync_config()
         notion = self._config.get_notion_sync_config()
         zotero = self._config.get_zotero_sync_config()
-        web = self._config.get_web_console_config()
         return {
             "models": {
                 "embedding": self._config.describe_embedding(),
@@ -3690,7 +3633,7 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
                 "rerank": (
                     "noop" if rerank.provider == "noop" else f"{rerank.provider}:{rerank.model}"
                 ),
-                "deep_thinking_llm": deep.llm_model or "AstrBot 主 LLM",
+                "deep_thinking_llm": deep.llm_model or "主 LLM",
                 "lightrag_llm": (
                     (graph.lightrag_llm_model or graph.lightrag_llm_provider)
                     if graph.enabled
@@ -3704,7 +3647,6 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
                 "zotero_sync": zotero.enabled,
                 "zotero_auto_sync": zotero.auto_sync_enabled,
             },
-            "web_console": {"enabled": web.enabled, "host": web.host, "port": web.port},
         }
 
     _SECRET_KEYS: frozenset[str] = frozenset(
@@ -3765,27 +3707,15 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
         if key in self._STRUCTURAL_KEYS.get(section, frozenset()):
             raise ValueError(
                 f"'{section}.{key}' 为结构性参数，修改后需手动重建索引。"
-                "请直接修改插件配置文件并重启插件，而非通过此接口写入。"
+                "请直接修改配置文件并重启服务，而非通过此接口写入。"
             )
-        if section == "embedding" and key == "provider" and value not in {
-            "local",
-            "external",
-            "astr",
+        if section == "embedding" and key == "provider" and value not in EMBEDDING_PROVIDERS:
+            raise ValueError("embedding.provider must be 'local' or 'external'.")
+        if section == "vector_db" and key == "backend" and value not in {
+            VECTOR_BACKEND_MILVUS,
+            VECTOR_BACKEND_LEXICAL,
         }:
-            raise ValueError("embedding.provider must be 'local', 'external' or 'astr'.")
-        if section == "embedding" and key == "astrbot_provider_id":
-            # 与 Config.get_embedding_config 同口径（strip），否则「同值重存」会因首尾空白
-            # 被判为已变更，误触发全量索引失效。
-            if not isinstance(value, str):
-                raise ValueError("embedding.astrbot_provider_id must be a string.")
-            value = value.strip()
-            if len(value) > 200 or any(ord(ch) < 32 for ch in value):
-                raise ValueError(
-                    "embedding.astrbot_provider_id must be the AstrBot provider ID "
-                    "(a single line, at most 200 characters)."
-                )
-        if section == "vector_db" and key == "backend" and value not in {"milvus", "astr"}:
-            raise ValueError("vector_db.backend must be 'milvus' or 'astr'.")
+            raise ValueError("vector_db.backend must be 'milvus' or 'lexical'.")
         if section == "rerank" and key == "provider" and value not in {"cross_encoder", "noop"}:
             raise ValueError("rerank.provider must be 'cross_encoder' or 'noop'.")
         if section == "notion_sync" and key == "sync_mode" and value not in {
@@ -3828,7 +3758,7 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
         }
 
     async def restart_plugin(self) -> dict[str, Any]:
-        """软重启插件运行时：teardown 后重新 initialize（重读持久化配置）。
+        """软重启服务运行时：teardown 后重新 initialize（重读持久化配置）。
 
         重启会拆掉并重建 Web 控制台连接，故先立即返回，再以后台任务延迟执行重启，
         让本响应得以发送给前端；前端随后轮询探活并刷新状态、清空「待重启」标记。
@@ -3836,7 +3766,7 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
         if self._reload_callback is None:
             return {
                 "status": "unsupported",
-                "message": "当前环境不支持程序化重启，请手动重启插件。",
+                "message": "当前环境不支持程序化重启，请手动重启服务。",
             }
 
         operation_id = self._runtime_events.start(
@@ -3876,7 +3806,7 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
     async def clear_milvus_lock(self) -> dict[str, Any]:
         """清除 Milvus 数据目录残留的 LOCK 标记（仅在已探测到锁定问题时可用）。
 
-        委派给组合根注入的 `PluginInitializer.clear_stale_milvus_lock`，实际的前置守卫
+        委派给组合根注入的 `AppInitializer.clear_stale_milvus_lock`，实际的前置守卫
         （backend 是否 milvus、是否真的检测到锁定问题）都在那里做；这里只是薄委派。
         """
         if self._clear_milvus_lock_callback is None:
@@ -4932,7 +4862,7 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
     async def probe_lightrag_core(
         self, collection: str, text: str, doc_id: str, query: str
     ) -> dict:
-        """Deployment manual probe for AstrBot terminal verification."""
+        """Manual LightRAG probe for log-based verification in a running app."""
         if self._lightrag_registry is None:
             raise RuntimeError("LightRAG Core registry is not configured")
         return await self._lightrag_registry.manual_probe(

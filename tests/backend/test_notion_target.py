@@ -1,6 +1,6 @@
-"""单元与契约测试：AstrBotKnowledgeBaseReader 与 NotionSyncTarget（幂等 upsert 版）。
+"""单元与契约测试：NotionSyncTarget（幂等 upsert 版）。
 
-Notion 部分经 tool_caller fake 驱动（接口对换，不 mock 宿主对象），重点回归：
+经 tool_caller fake 驱动（接口对换，不 mock 深层传输对象），重点回归：
 防重复建页（幂等序列）、渐进降级（Name+DocID 最小集）、大文件 callout、
 正文块按 content_hash 重写、QA NoteID 防重、两表建库对账。
 """
@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from notion_tools import notion_tools
@@ -22,7 +21,6 @@ from kacore.domain.models import (
     NotionEntityRecord,
     SourceDocument,
 )
-from kacore.repository.kb_reader.astrbot import AstrBotKnowledgeBaseReader
 from kacore.repository.source_store.memory import InMemorySourceDocumentStore
 from kacore.repository.sync_targets import notion_schema as schema
 from kacore.repository.sync_targets.notion import (
@@ -30,68 +28,6 @@ from kacore.repository.sync_targets.notion import (
     ACTION_UPDATED,
     NotionSyncTarget,
 )
-
-# ── AstrBot KB Reader 测试 ─────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_astrbot_kb_reader_list_collections() -> None:
-    class Kb:
-        def __init__(self, name: str) -> None:
-            self.kb_name = name
-
-    mock_kb_manager = MagicMock()
-    mock_kb_manager.list_kbs = AsyncMock(return_value=[Kb("papers"), Kb("manuals")])
-    mock_context = MagicMock()
-    mock_context.kb_manager = mock_kb_manager
-
-    reader = AstrBotKnowledgeBaseReader(mock_context)
-    cols = await reader.list_collections()
-    assert cols == ["papers", "manuals"]
-
-
-@pytest.mark.asyncio
-async def test_astrbot_kb_reader_list_chunks_translation() -> None:
-    reader = AstrBotKnowledgeBaseReader(MagicMock())
-    chunks = await reader.list_chunks("papers")
-    assert chunks == []
-
-
-@pytest.mark.asyncio
-async def test_astrbot_kb_reader_search() -> None:
-    class Kb:
-        kb_name = "papers"
-
-    mock_kb_manager = MagicMock()
-    mock_kb_manager.list_kbs = AsyncMock(return_value=[Kb()])
-    mock_kb_manager.retrieve = AsyncMock(
-        return_value={
-            "context_text": "search match",
-            "results": [
-                {
-                    "chunk_id": "c2",
-                    "doc_id": "d1",
-                    "chunk_index": 0,
-                    "content": "search match",
-                }
-            ],
-        }
-    )
-    mock_context = MagicMock()
-    mock_context.kb_manager = mock_kb_manager
-
-    reader = AstrBotKnowledgeBaseReader(mock_context)
-    results = await reader.search("papers", "query", top_k=5)
-    assert len(results) == 1
-    assert results[0].chunk_id == "c2"
-    assert results[0].text == "search match"
-    mock_kb_manager.retrieve.assert_awaited_once_with(
-        query="query",
-        kb_names=["papers"],
-        top_k_fusion=20,
-        top_m_final=5,
-    )
-
 
 # ── Notion Sync Target 测试基建 ─────────────────────────────────
 
@@ -158,7 +94,6 @@ def store() -> InMemorySourceDocumentStore:
 def notion_config() -> NotionSyncConfig:
     return NotionSyncConfig(
         enabled=True,
-        mcp_server_name="notion",
         database_id="db-articles",
         qa_database_id="db-qa",
     )

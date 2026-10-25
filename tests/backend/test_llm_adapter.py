@@ -1,17 +1,20 @@
-"""LLMAdapter 对 AstrBot 运行态 Provider 的兼容测试。"""
+"""LLMAdapter 与注入 chat client 的契约测试；OpenAI 兼容端点的 HTTP 客户端测试。"""
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from kacore.adapters.llm import LLMAdapter
 from kacore.domain.llm_generation import (
     STATUS_CONTENT_FILTER,
     STATUS_EMPTY,
+    STATUS_ERROR,
     STATUS_LENGTH,
     STATUS_OK,
     STATUS_REASONING_ONLY,
     STATUS_TIMEOUT,
+    GenerationResult,
 )
 
 
@@ -60,404 +63,157 @@ async def test_independent_endpoint_supports_json_contract_and_counts_http_retri
         await server.close()
 
 
-class _ProviderMeta:
-    id = "default-chat"
+# ── 注入 chat client 的契约 ──────────────────────────────────────
 
 
-class _Provider:
-    def meta(self) -> _ProviderMeta:
-        return _ProviderMeta()
+class _Client:
+    """按序返回预置结果的 chat client 替身；记录每次调用的 (prompt, system, allow_mock)。"""
+
+    def __init__(self, *results: GenerationResult | Exception) -> None:
+        self._results = list(results)
+        self.calls: list[tuple[str, str, bool]] = []
+
+    async def generate_result(
+        self, prompt: str, system_prompt: str = "", *, allow_mock: bool = True
+    ) -> GenerationResult:
+        self.calls.append((prompt, system_prompt, allow_mock))
+        item = self._results.pop(0) if self._results else GenerationResult("", STATUS_EMPTY)
+        if isinstance(item, Exception):
+            raise item
+        return item
 
 
-class _ProviderManager:
-    curr_provider_inst = _Provider()
+def _ok(text: str, **kwargs: Any) -> GenerationResult:
+    return GenerationResult(text=text, status=STATUS_OK, **kwargs)
 
 
-class _LLMResponse:
-    def __init__(
-        self,
-        completion_text: str = "",
-        reasoning_content: str = "",
-        finish_reason: str = "",
-    ) -> None:
-        self.completion_text = completion_text
-        self.reasoning_content = reasoning_content
-        self.finish_reason = finish_reason
+async def test_generate_delegates_to_client_and_never_lets_it_mock() -> None:
+    client = _Client(_ok("  answer  ", finish_reason="stop", prompt_tokens=3, completion_tokens=1))
+    adapter = LLMAdapter(client)
+
+    result = await adapter.generate_result("q", "sys")
+
+    assert result.text == "answer" and result.status == STATUS_OK
+    assert result.finish_reason == "stop" and result.prompt_tokens == 3
+    assert client.calls == [("q", "sys", False)]
+    assert adapter.configured is True
 
 
-class _ResultChain:
-    def __init__(self, text: str) -> None:
-        self._text = text
-
-    def get_plain_text(self) -> str:
-        return self._text
-
-
-class _LLMResponseWithChain:
-    def __init__(self, text: str) -> None:
-        self.completion_text = ""
-        self.result_chain = _ResultChain(text)
+async def test_unconfigured_adapter_uses_offline_placeholder_with_warning(caplog: Any) -> None:
+    adapter = LLMAdapter()
+    with caplog.at_level("WARNING", logger="LLMAdapter"):
+        text = await adapter.generate("问题：什么是 RAG？")
+    assert "离线测试占位答案" in text and "模型分配" in text
+    assert adapter.configured is False
+    assert any("离线占位" in r.getMessage() for r in caplog.records)
 
 
-class _AstrBotContext:
-    provider_manager = _ProviderManager()
-
-    def __init__(self, response: Any) -> None:
-        self.response = response
-        self.calls: list[dict[str, Any]] = []
-
-    async def llm_generate(self, **kwargs: Any) -> Any:
-        self.calls.append(kwargs)
-        return self.response
+async def test_unconfigured_adapter_raises_when_mock_is_disabled() -> None:
+    try:
+        await LLMAdapter().generate("q", allow_mock=False)
+    except RuntimeError as exc:
+        assert "mock fallback is disabled" in str(exc)
+    else:  # pragma: no cover - 契约要求抛错
+        raise AssertionError("expected RuntimeError")
 
 
-class _ProviderWithTextChat(_Provider):
-    def __init__(self, text_chat_response: Any = None) -> None:
-        self.text_chat_response = text_chat_response
-        self.text_chat_calls: list[dict[str, Any]] = []
-
-    async def text_chat(self, **kwargs: Any) -> Any:
-        self.text_chat_calls.append(kwargs)
-        return self.text_chat_response
-
-
-class _ProviderManagerWith:
-    def __init__(self, provider: Any) -> None:
-        self.curr_provider_inst = provider
-
-
-class _QueuedAstrBotContext:
-    """llm_generate() 按调用顺序依次返回 responses 中的项，供「首次 reasoning-only、
-    重试后拿到真答案」这类多次调用场景使用。provider_manager 携带的 provider 可选配
-    text_chat，用于验证 reasoning-only 重试后仍失败时才会落到 text_chat 兜底。"""
-
-    def __init__(self, responses: list[Any], provider: Any | None = None) -> None:
-        self.responses = list(responses)
-        self.calls: list[dict[str, Any]] = []
-        self.provider_manager = _ProviderManagerWith(provider or _Provider())
-
-    async def llm_generate(self, **kwargs: Any) -> Any:
-        self.calls.append(kwargs)
-        return self.responses[len(self.calls) - 1]
-
-
-async def test_generate_uses_astrbot_llm_generate_completion_text() -> None:
-    context = _AstrBotContext(_LLMResponse("real answer"))
-    adapter = LLMAdapter(context)
-
-    answer = await adapter.generate("question", system_prompt="system", allow_mock=False)
-
-    assert answer == "real answer"
-    assert context.calls == [
-        {
-            "chat_provider_id": "default-chat",
-            "prompt": "question",
-            "system_prompt": "system",
-        }
-    ]
-
-
-async def test_generate_reads_astrbot_result_chain_text() -> None:
-    adapter = LLMAdapter(_AstrBotContext(_LLMResponseWithChain("chain answer")))
-
-    assert await adapter.generate("question", allow_mock=False) == "chain answer"
-
-
-async def test_extract_graph_uses_astrbot_llm_generate() -> None:
-    payload = (
-        '{"entities":[{"name":"Transformer","type":"Method",'
-        '"description":"model"}],"relations":[]}'
-    )
-    context = _AstrBotContext(_LLMResponse(payload))
-    adapter = LLMAdapter(context)
-
-    graph = await adapter.extract_graph("Transformer model", ["Method"])
-
-    assert graph["entities"][0]["name"] == "Transformer"
-    assert context.calls
-    assert context.calls[0]["chat_provider_id"] == "default-chat"
-
-
-# ── 失败可见性（v1.0.9）──────────────────────────────────────────
-
-
-async def test_offline_stub_fallback_is_logged_as_warning(caplog: Any) -> None:
-    """回归：主 LLM 不通时会返回离线占位答案——这必须是显眼的 WARNING。
-
-    此前记 INFO，用户看到的是一段「像模像样但完全是假的」回答，终端页却几乎无痕迹。
-    """
-    import logging
-
-    caplog.set_level(logging.INFO, logger="LLMAdapter")
-    adapter = LLMAdapter(context=None)
-
-    answer = await adapter.generate("问题：知识库里有什么？")
-
-    assert "离线测试占位答案" in answer
-    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
-    assert any("离线占位" in r.getMessage() for r in warnings)
-
-
-async def test_provider_exception_is_logged_with_traceback(caplog: Any) -> None:
-    """provider 抛异常时必须留 traceback；调用方只会拿到空串，日志是唯一线索。"""
-    import logging
-
-    class _ExplodingContext:
-        async def llm_generate(self, **_kwargs: Any) -> Any:
-            raise RuntimeError("provider exploded")
-
-        provider_manager = _ProviderManager()
-
-    caplog.set_level(logging.INFO, logger="LLMAdapter")
-    adapter = LLMAdapter(context=_ExplodingContext())
-
-    assert await adapter._call_context_llm("hi") == ""
-    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
-    assert any("provider exploded" in r.getMessage() for r in errors)
-    assert any(r.exc_info for r in errors)
+async def test_client_exception_is_logged_with_traceback(caplog: Any) -> None:
+    adapter = LLMAdapter(_Client(ConnectionError("refused")))
+    with caplog.at_level("ERROR", logger="LLMAdapter"):
+        result = await adapter._call_client_result("q")
+    assert result.status == STATUS_ERROR
+    record = next(r for r in caplog.records if "主 LLM 调用失败" in r.getMessage())
+    assert record.exc_info is not None
 
 
 async def test_main_llm_call_is_time_boxed(caplog: Any) -> None:
-    """回归：AstrBot provider 挂死时，ask 必须放弃等待而不是永远不返回。
+    class _Slow:
+        async def generate_result(self, prompt: str, system_prompt: str = "", **_: Any):
+            await asyncio.sleep(5)
+            return _ok("late")
 
-    没有这道闸，整条问答链路会一直挂着——前端只看到「请求超时」，服务端却还在等，
-    重试再叠一份负载。
-    """
-    import asyncio
-    import logging
-
-    class _HangingContext:
-        async def llm_generate(self, **_kwargs: Any) -> Any:
-            await asyncio.sleep(30)
-            return _LLMResponse("never")
-
-        provider_manager = _ProviderManager()
-
-    caplog.set_level(logging.INFO, logger="LLMAdapter")
-    adapter = LLMAdapter(context=_HangingContext(), timeout_seconds=1)
-
-    assert await adapter._call_context_llm("hi") == ""
-    assert any("超时" in r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR)
+    adapter = LLMAdapter(_Slow(), timeout_seconds=1)
+    adapter._timeout_seconds = 0.05  # type: ignore[assignment]
+    with caplog.at_level("ERROR", logger="LLMAdapter"):
+        result = await adapter.generate_result("q", allow_mock=True)
+    assert "离线测试占位答案" in result.text
+    assert any("调用超时" in r.getMessage() for r in caplog.records)
+    raw = await adapter._call_client_result("q")
+    assert raw.status == STATUS_TIMEOUT
 
 
 async def test_llm_timeout_zero_keeps_unbounded_wait() -> None:
-    """timeout_seconds<=0 保留旧的不设限行为（给自建慢模型的用户）。"""
-
-    class _SlowContext:
-        async def llm_generate(self, **_kwargs: Any) -> Any:
-            import asyncio
-
+    class _Delayed:
+        async def generate_result(self, prompt: str, system_prompt: str = "", **_: Any):
             await asyncio.sleep(0.05)
-            return _LLMResponse("slow but fine")
+            return _ok("done")
 
-        provider_manager = _ProviderManager()
-
-    adapter = LLMAdapter(context=_SlowContext(), timeout_seconds=0)
-    assert await adapter._call_context_llm("hi") == "slow but fine"
+    adapter = LLMAdapter(_Delayed(), timeout_seconds=0)
+    assert await adapter.generate("q") == "done"
 
 
-# ── reasoning-only 识别与重复调用治理（v1.0.12）──────────────────────
-
-
-async def test_reasoning_only_retries_once_before_falling_back() -> None:
-    """首次 reasoning-only 时对同一 llm_generate 路径重试一次（带强制指令），
-
-    重试拿到真答案就直接返回，不落到 text_chat/legacy 兜底链——杜绝对 reasoning
-    模型无意义地重复调用整条 provider 兜底链。
-    """
-    reasoning_only = _LLMResponse(reasoning_content="……推理过程……")
-    real_answer = _LLMResponse("real answer")
-    provider = _ProviderWithTextChat()
-    context = _QueuedAstrBotContext([reasoning_only, real_answer], provider=provider)
-    adapter = LLMAdapter(context)
-
-    answer = await adapter.generate("question", system_prompt="system", allow_mock=False)
-
-    assert answer == "real answer"
-    assert len(context.calls) == 2
-    assert context.calls[0]["system_prompt"] == "system"
-    assert "请直接输出最终结论" in context.calls[1]["system_prompt"]
-    assert not provider.text_chat_calls  # 未滚到 text_chat 兜底
-
-
-async def test_reasoning_only_persists_falls_back_to_text_chat_and_logs_distinctly(
-    caplog: Any,
-) -> None:
-    """重试后仍 reasoning-only 才落到 text_chat 兜底；日志需明确写「reasoning_content」
-
-    而不是笼统的空响应，方便和真正的空响应区分排查。
-    """
-    import logging
-
-    reasoning_only_1 = _LLMResponse(reasoning_content="……", finish_reason="stop")
-    reasoning_only_2 = _LLMResponse(reasoning_content="……仍是推理……", finish_reason="stop")
-    provider = _ProviderWithTextChat(text_chat_response=_LLMResponse("from text_chat"))
-    context = _QueuedAstrBotContext(
-        [reasoning_only_1, reasoning_only_2], provider=provider
+async def test_reasoning_only_retries_once_with_direct_answer_instruction() -> None:
+    client = _Client(
+        GenerationResult("", STATUS_REASONING_ONLY, reasoning_present=True),
+        _ok("final"),
     )
-    caplog.set_level(logging.INFO, logger="LLMAdapter")
-    adapter = LLMAdapter(context)
-
-    answer = await adapter.generate("question", allow_mock=False)
-
-    assert answer == "from text_chat"
-    assert len(context.calls) == 2  # 只重试一次，不无限重试
-    assert len(provider.text_chat_calls) == 1
-    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
-    assert any("reasoning_content" in r.getMessage() for r in warnings)
+    result = await LLMAdapter(client).generate_result("q", "sys")
+    assert result.text == "final"
+    assert len(client.calls) == 2
+    assert client.calls[1][1].startswith("sys") and "最终结论" in client.calls[1][1]
 
 
-async def test_true_empty_response_still_falls_back_to_text_chat() -> None:
-    """两个字段都空的真空响应：行为不变，直接落到 text_chat 兜底（不做多余重试）。"""
-    empty = _LLMResponse()
-    provider = _ProviderWithTextChat(text_chat_response=_LLMResponse("from text_chat"))
-    context = _QueuedAstrBotContext([empty], provider=provider)
-    adapter = LLMAdapter(context)
-
-    answer = await adapter.generate("question", allow_mock=False)
-
-    assert answer == "from text_chat"
-    assert len(context.calls) == 1  # 真空响应不重试 llm_generate
-    assert len(provider.text_chat_calls) == 1
-
-
-# ── GenerationResult 状态分流（v1.0.12）──────────────────────────────
-
-
-async def test_generate_result_ok_carries_finish_reason_and_tokens() -> None:
-    """正常完成：status=ok，finish_reason/tokens/provider_id 尽量透出。"""
-
-    class _Usage:
-        prompt_tokens = 120
-        completion_tokens = 40
-
-    class _RawCompletion:
-        usage = _Usage()
-
-    response = _LLMResponse("real answer", finish_reason="stop")
-    response.raw_completion = _RawCompletion()
-    response.model = "deepseek-v4-flash"
-    adapter = LLMAdapter(_AstrBotContext(response))
-
-    result = await adapter.generate_result("question", allow_mock=False)
-
-    assert result.status == STATUS_OK
-    assert result.text == "real answer"
-    assert result.finish_reason == "stop"
-    assert result.prompt_tokens == 120
-    assert result.completion_tokens == 40
-    assert result.provider_id == "default-chat"
-    assert result.model == "deepseek-v4-flash"
-    assert result.reasoning_present is False
+async def test_reasoning_only_twice_reports_reasoning_only_status(caplog: Any) -> None:
+    client = _Client(
+        GenerationResult("", STATUS_REASONING_ONLY, reasoning_present=True),
+        GenerationResult("", STATUS_EMPTY, reasoning_present=True, finish_reason="stop"),
+    )
+    adapter = LLMAdapter(client)
+    with caplog.at_level("WARNING", logger="LLMAdapter"):
+        raw = await adapter._call_client_result("q")
+    assert raw.status == STATUS_REASONING_ONLY
+    assert any("reasoning_content" in r.getMessage() for r in caplog.records)
+    # 占位兜底保留状态，调用方据此提示「本次生成不寻常」。
+    client2 = _Client(
+        GenerationResult("", STATUS_REASONING_ONLY, reasoning_present=True),
+        GenerationResult("", STATUS_REASONING_ONLY, reasoning_present=True),
+    )
+    mocked = await LLMAdapter(client2).generate_result("q")
+    assert mocked.status == STATUS_REASONING_ONLY and "离线测试占位答案" in mocked.text
 
 
-async def test_generate_result_missing_usage_is_none_not_zero() -> None:
-    """provider 完全没报用量时，prompt_tokens/completion_tokens 必须是 None（未知）
-    而不是 0（已知为零）——二者语义不同，见 GenerationResult 契约。"""
-    response = _LLMResponse("real answer", finish_reason="stop")
-    adapter = LLMAdapter(_AstrBotContext(response))
-
-    result = await adapter.generate_result("question", allow_mock=False)
-
-    assert result.prompt_tokens is None
-    assert result.completion_tokens is None
+async def test_true_empty_response_is_not_retried() -> None:
+    client = _Client(GenerationResult("", STATUS_EMPTY))
+    raw = await LLMAdapter(client)._call_client_result("q")
+    assert raw.status == STATUS_EMPTY and len(client.calls) == 1
 
 
-async def test_generate_result_reported_zero_usage_is_preserved() -> None:
-    """provider 明确报告 0 token（如极短 prompt）时应如实保留为 0，不视为「未知」。"""
-
-    class _Usage:
-        prompt_tokens = 0
-        completion_tokens = 0
-
-    class _RawCompletion:
-        usage = _Usage()
-
-    response = _LLMResponse("ok", finish_reason="stop")
-    response.raw_completion = _RawCompletion()
-    adapter = LLMAdapter(_AstrBotContext(response))
-
-    result = await adapter.generate_result("question", allow_mock=False)
-
-    assert result.prompt_tokens == 0
-    assert result.completion_tokens == 0
+async def test_length_and_content_filter_status_pass_through() -> None:
+    for status in (STATUS_LENGTH, STATUS_CONTENT_FILTER):
+        client = _Client(GenerationResult("partial", status, finish_reason=status))
+        result = await LLMAdapter(client).generate_result("q")
+        assert result.status == status and result.text == "partial"
 
 
-async def test_generate_result_true_empty_status() -> None:
-    """真空响应（无文本也无 reasoning）：status=empty。
-
-    generate_result(allow_mock=False) 在文本为空时会抛异常（与 generate() 契约一致），
-    所以按状态断言时改用不抛异常的内部结构化方法 `_call_context_llm_result`。
-    """
-    provider = _ProviderWithTextChat()  # 无 text_chat 兜底可用响应
-    context = _QueuedAstrBotContext([_LLMResponse()], provider=provider)
-    adapter = LLMAdapter(context)
-
-    result = await adapter._call_context_llm_result("question")
-
-    assert result.status == STATUS_EMPTY
-    assert result.text == ""
+async def test_missing_usage_stays_none_not_zero() -> None:
+    result = await LLMAdapter(_Client(_ok("a"))).generate_result("q")
+    assert result.prompt_tokens is None and result.completion_tokens is None
+    client = _Client(_ok("a", prompt_tokens=0, completion_tokens=0))
+    zero = await LLMAdapter(client).generate_result("q")
+    assert zero.prompt_tokens == 0 and zero.completion_tokens == 0
 
 
-async def test_generate_result_reasoning_only_after_retry_status() -> None:
-    """重试后仍 reasoning-only：status=reasoning_only（而不是笼统的 empty）。"""
-    reasoning_only = _LLMResponse(reasoning_content="……", finish_reason="stop")
-    provider = _ProviderWithTextChat()  # text_chat 也拿不到东西
-    context = _QueuedAstrBotContext([reasoning_only, reasoning_only], provider=provider)
-    adapter = LLMAdapter(context)
-
-    result = await adapter._call_context_llm_result("question")
-
-    assert result.status == STATUS_REASONING_ONLY
-    assert result.reasoning_present is True
-    assert result.text == ""
+async def test_extract_graph_uses_client_and_parses_json() -> None:
+    payload = (
+        '{"entities": [{"name": "RAG", "type": "Method", "description": "d"}], '
+        '"relations": []}'
+    )
+    client = _Client(_ok(f"```json\n{payload}\n```"))
+    graph = await LLMAdapter(client).extract_graph("text", ["Method"])
+    assert graph["entities"][0]["name"] == "RAG"
+    assert "Method" in client.calls[0][1]
 
 
-async def test_generate_result_reasoning_only_mock_fallback_keeps_status() -> None:
-    """allow_mock=True 时用离线占位文本兜底，但 status 仍如实反映真实调用的诊断结果
-
-    （不能因为塞了假文本就让调用方误以为是 status=ok 的真实回答）。
-    """
-    reasoning_only = _LLMResponse(reasoning_content="……", finish_reason="stop")
-    provider = _ProviderWithTextChat()
-    context = _QueuedAstrBotContext([reasoning_only, reasoning_only], provider=provider)
-    adapter = LLMAdapter(context)
-
-    result = await adapter.generate_result("question")  # allow_mock=True（默认）
-
-    assert result.status == STATUS_REASONING_ONLY
-    assert result.text  # 已被离线占位文本填充，非空
-    assert "占位" in result.text
-
-
-async def test_generate_result_timeout_status() -> None:
-    """provider 挂死超时：status=timeout。"""
-    import asyncio
-
-    class _HangingContext:
-        async def llm_generate(self, **_kwargs: Any) -> Any:
-            await asyncio.sleep(30)
-            return _LLMResponse("never")
-
-        provider_manager = _ProviderManager()
-
-    adapter = LLMAdapter(context=_HangingContext(), timeout_seconds=1)
-
-    result = await adapter._call_context_llm_result("question")
-
-    assert result.status == STATUS_TIMEOUT
-    assert result.text == ""
-
-
-async def test_generate_result_length_and_content_filter_status() -> None:
-    """finish_reason 指示截断/内容过滤时，即便有部分文本也要能识别出来。"""
-    length_response = _LLMResponse("partial answer...", finish_reason="length")
-    adapter = LLMAdapter(_AstrBotContext(length_response))
-    result = await adapter.generate_result("question", allow_mock=False)
-    assert result.status == STATUS_LENGTH
-    assert result.text == "partial answer..."
-
-    filtered_response = _LLMResponse("", finish_reason="content_filter")
-    adapter2 = LLMAdapter(_AstrBotContext(filtered_response))
-    result2 = await adapter2._call_context_llm_result("question")
-    assert result2.status == STATUS_CONTENT_FILTER
+async def test_extract_graph_falls_back_to_offline_stub_without_client() -> None:
+    graph = await LLMAdapter().extract_graph("Transformer uses Attention heavily", ["Method"])
+    assert {e["name"] for e in graph["entities"]} >= {"Transformer", "Attention"}

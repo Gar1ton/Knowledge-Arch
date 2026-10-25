@@ -161,7 +161,7 @@ class ExternalEmbeddingProvider(EmbeddingProvider):
         if self._observed_dimension is not None and dimension != self._observed_dimension:
             raise _NonRetryableEmbeddingError(
                 f"Embedding 维度漂移：已锁定 {self._observed_dimension}，实际为 {dimension}；"
-                "检查模型配置并重启插件，沿现有索引兼容检查决定是否重建"
+                "检查模型配置并重启服务，沿现有索引兼容检查决定是否重建"
             )
         self._observed_dimension = self._dimension = dimension
         return result

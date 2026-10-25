@@ -22,7 +22,7 @@ python .agents/skills/operate-knowledge-arch/scripts/knowledge_arch_client.py gr
 
 Tell the user the collection, document/chunk estimate, and these cost boundaries:
 
-- plugin/AstrBot/main/external LLM generation is not called;
+- Knowledge Arch's own main/external LLM generation is not called;
 - Codex performs extraction in the current task;
 - the configured embedding provider runs during each accepted submission and may consume local compute
   or paid embedding quota;

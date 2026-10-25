@@ -1,7 +1,7 @@
 """Web 运行事件记录器（横切工具，无业务依赖）。
 
 把业务门面的开始、阶段进度与终态写入可选 RuntimeEventSink。事件仅进入 Web 内存缓冲，
-不调用 logging，因而不会扩大 AstrBot 宿主终端输出。
+不调用 logging，因而不会放大后端进程的终端/日志文件输出。
 """
 from __future__ import annotations
 

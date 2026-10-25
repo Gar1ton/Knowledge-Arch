@@ -10,7 +10,6 @@ from kacore.config import (
     ENV_DEEP_THINKING_LLM_API_KEY,
     ENV_EMBEDDING_API_KEY,
     ENV_R2_SECRET_ACCESS_KEY,
-    ENV_WEB_PASSWORD,
     NOTION_SYNC_PRESERVE,
     NOTION_SYNC_STRICT,
     Config,
@@ -18,26 +17,11 @@ from kacore.config import (
 from kacore.runtime_config import RuntimeConfigStore
 
 
-def test_astrbot_conf_schema_only_keeps_core_sections() -> None:
-    schema_path = Path(__file__).resolve().parents[2] / "_conf_schema.json"
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
-
-    # v0.28.0：移除 ask 段（原仅含已废弃的 conversation_enhancement_mode）。
-    assert list(schema.keys()) == [
-        "web_console",
-        "r2_sync",
-        "notion_sync",
-        "embedding",
-    ]
-
-
 def test_defaults_when_empty() -> None:
     cfg = Config({})
     assert cfg.get_source_store_config().db_filename == "knowledge_repository.db"
     assert cfg.get_r2_sync_config().free_tier_gb == 10
-    assert cfg.get_notion_sync_config().mcp_server_name == "notion"
     assert cfg.get_notion_sync_config().sync_mode == NOTION_SYNC_PRESERVE
-    assert cfg.get_web_console_config().port == 26618
     assert cfg.get_graph_config().query_mode == "mix"
     assert cfg.get_graph_config().lightrag_llm_provider == "main"
     assert cfg.get_vector_db_config().backend == "milvus"
@@ -171,11 +155,6 @@ def test_secret_falls_back_to_config(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.get_r2_sync_config().secret_access_key == "from-config"
 
 
-def test_web_password_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(ENV_WEB_PASSWORD, "pw")
-    assert Config({}).get_web_console_config().password == "pw"
-
-
 def test_malformed_section_falls_back_to_defaults() -> None:
     # 子配置类型不符（非 dict）时应安全回退默认值
     cfg = Config({"graph": "not-a-dict"})
@@ -211,13 +190,12 @@ def test_graph_lightrag_llm_provider_modes_and_legacy_endpoint() -> None:
 def test_public_config_masks_secrets() -> None:
     cfg = Config({
         "r2_sync": {"access_key_id": "abcdef", "secret_access_key": "secret123"},
-        "web_console": {"password": "password123"},
         "notion_sync": {"database_id": "db1", "parent_page_id": "parent1"},
     })
     public = cfg.to_public_dict()
     assert public["r2_sync"]["access_key_id"] == "ab****ef"
     assert public["r2_sync"]["secret_access_key"] == "se****23"
-    assert public["web_console"]["password"] == "pa****23"
+    assert "web_console" not in public
     assert public["notion_sync"]["database_id"] == "db1"
 
 
@@ -306,11 +284,9 @@ def test_embedding_diagnostics_report_unsupported_or_unconfigured_provider(
 ) -> None:
     monkeypatch.delenv(ENV_EMBEDDING_API_KEY, raising=False)
 
-    # astr 已实现：静态配置无可诊断项（既不再报「未实现」，也不要求 KR_EMBEDDING_API_KEY——
-    # 密钥在 AstrBot 侧）。解析失败的原因由组合根在运行期追加。
-    astr_diagnostics = Config({"embedding": {"provider": "astr"}}).get_diagnostics()
-    assert not any("embedding.provider=astr" in item for item in astr_diagnostics)
-    assert not any("KR_EMBEDDING_API_KEY" in item for item in astr_diagnostics)
+    # 已移除的旧来源归一为 local：不要求 KR_EMBEDDING_API_KEY。
+    legacy_diagnostics = Config({"embedding": {"provider": "astr"}}).get_diagnostics()
+    assert not any("KR_EMBEDDING_API_KEY" in item for item in legacy_diagnostics)
     assert (
         "KR_EMBEDDING_API_KEY is required when embedding.provider=external."
         in Config({"embedding": {"provider": "external"}}).get_diagnostics()
@@ -366,7 +342,7 @@ def test_runtime_config_store_permits_vector_db_and_ask_keys(tmp_path: Path) -> 
     store.set_value("vector_db", "backend", "milvus")
     store.set_value("embedding", "provider", "local")
     store.set_value("embedding", "model", "BAAI/bge-m3")
-    store.set_value("ask", "persona_enabled", True)
+    store.set_value("ask", "answer_language", "zh")
     store.set_value("source_store", "default_collection", "papers")
     store.set_value("deep_thinking", "verify_enabled", False)
     store.set_value("deep_thinking", "max_verify_rounds", 2)
@@ -375,32 +351,25 @@ def test_runtime_config_store_permits_vector_db_and_ask_keys(tmp_path: Path) -> 
     assert data["vector_db"]["backend"] == "milvus"
     assert data["embedding"]["provider"] == "local"
     assert data["embedding"]["model"] == "BAAI/bge-m3"
-    assert data["ask"]["persona_enabled"] is True
+    assert data["ask"]["answer_language"] == "zh"
     assert data["source_store"]["default_collection"] == "papers"
     assert data["deep_thinking"]["verify_enabled"] is False
     assert data["deep_thinking"]["max_verify_rounds"] == 2
 
 
-def test_runtime_config_store_persists_ka_toggle_keys(tmp_path: Path) -> None:
-    """/ka 的四个运行时开关键均可持久化并经 get_ask_agent_config 读回。"""
-    path = tmp_path / "runtime_config.json"
-    store = RuntimeConfigStore(path)
-
-    store.set_value("ask", "agent_enabled", True)
-    store.set_value("ask", "research_enabled", True)
-    store.set_value("ask", "persona_enabled", True)
-    store.set_value("web_console", "enabled", False)
-
-    data = store.load()
-    assert data["ask"]["agent_enabled"] is True
-    assert data["ask"]["research_enabled"] is True
-    assert data["ask"]["persona_enabled"] is True
-    assert data["web_console"]["enabled"] is False
-
-    ask_cfg = Config(data).get_ask_agent_config()
-    assert ask_cfg.agent_enabled is True
-    assert ask_cfg.research_enabled is True
-    assert ask_cfg.persona_enabled is True
+def test_runtime_config_store_rejects_removed_chat_toggles(tmp_path: Path) -> None:
+    """宿主对话期的 agent/research/persona 开关与 Web 控制台开关已删除，不再允许持久化。"""
+    store = RuntimeConfigStore(tmp_path / "runtime_config.json")
+    for section, key in (
+        ("ask", "agent_enabled"),
+        ("ask", "research_enabled"),
+        ("ask", "persona_enabled"),
+        ("web_console", "enabled"),
+    ):
+        with pytest.raises(ValueError, match="runtime config key is not allowed"):
+            store.set_value(section, key, True)
+    ask_cfg = Config({"ask": {"persona_enabled": True}}).get_ask_agent_config()
+    assert not hasattr(ask_cfg, "persona_enabled")
 
 
 # ── Deep Thinking / Rerank config ───────────────────────────

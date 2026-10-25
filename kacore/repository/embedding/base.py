@@ -1,8 +1,8 @@
 """Embedding 计算接口（repository 层，接口先行）。
 
 定义将文本分块或提问转换为稠密浮点向量（dense vector）的契约。
-本层只依赖 domain。实现：local（本地模型）/ external（OpenAI 兼容 API）/
-astrbot（委托 AstrBot 已配置的 EmbeddingProvider）；`cached` 是套在任一实现外的磁盘缓存装饰器。
+本层只依赖 domain。实现：local（本地模型）/ external（OpenAI 兼容 API）；
+`cached` 是套在任一实现外的磁盘缓存装饰器。
 """
 from __future__ import annotations
 

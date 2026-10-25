@@ -1,9 +1,14 @@
-"""HTTP 路由与 WebUI 服务（见 web/README.md 与 ../ARCHITECTURE.md §7）。
+"""HTTP 路由（见 web/README.md 与 ../ARCHITECTURE.md §7）。
 
 只做 HTTP↔业务的翻译：解析请求 → 调 `kacore/api` → 序列化响应。零业务逻辑。
-认证经中间件统一处理；静态前端由 `static_dir` 托管（生产指向 pages/，调试指向 web/frontend/）。
+服务只监听 127.0.0.1，只接受桌面壳窗口的请求：
+- 鉴权：每次启动随机生成的 token，经 `Authorization: Bearer <token>` 携带（GET 下载类请求
+  可退而用 `?access_token=`，因为浏览器导航无法附带请求头）。没有登录页与会话。
+- CORS：只放行桌面壳窗口的 Origin（`tauri://localhost` 与 `http://tauri.localhost`），
+  其余带 Origin 的请求一律 403；开发期经 build_app 的 allowed_origins 追加。
+界面静态文件由桌面壳从安装包加载，本服务不托管。
 
-依赖经 build_app 注入（api 门面 + 配置），自身不构造依赖。
+依赖经 build_app 注入（api 门面 + token），自身不构造依赖。
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ import json
 import logging as _logging
 import secrets
 import time
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -25,17 +31,19 @@ if TYPE_CHECKING:
 
 # ── 常量 ────────────────────────────────────────────────────────
 
-SESSION_COOKIE = "kr_session"
+# 桌面壳窗口的 Origin：macOS/Linux 为 tauri://localhost，Windows（WebView2）为 http://tauri.localhost。
+DEFAULT_ALLOWED_ORIGINS = ("tauri://localhost", "http://tauri.localhost")
+ACCESS_TOKEN_QUERY = "access_token"
 _MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 上传上限：超出返回 413，防内存/磁盘耗尽
 _UPLOAD_CHUNK_BYTES = 1 << 20  # 流式读块大小：内存占用 O(chunk) 而非 O(file)
 _API_PREFIX = "/api/"
-_PUBLIC_PATHS = frozenset({"/api/login", "/api/auth"})
 _API_KEY = web.AppKey("api", object)
 _UPLOAD_DIR_KEY = web.AppKey("upload_dir", Path)
-_AUTH_REQUIRED_KEY = web.AppKey("auth_required", bool)
-_USERNAME_KEY = web.AppKey("username", str)
-_PASSWORD_KEY = web.AppKey("password", str)
-_SESSIONS_KEY = web.AppKey("sessions", set)
+_TOKEN_KEY = web.AppKey("token", str)
+_ORIGINS_KEY = web.AppKey("allowed_origins", frozenset)
+_SHUTDOWN_KEY = web.AppKey("shutdown_callback", object)
+_CORS_ALLOW_HEADERS = "Authorization, Content-Type"
+_CORS_ALLOW_METHODS = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
 _LOG_HANDLER_KEY = web.AppKey("log_handler", object)
 
 
@@ -160,16 +168,54 @@ async def _error_middleware(request: web.Request, handler: web.Handler) -> web.S
         return web.json_response({"error": str(exc)}, status=500)
 
 
+def _cors_headers(origin: str) -> dict[str, str]:
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Headers": _CORS_ALLOW_HEADERS,
+        "Access-Control-Allow-Methods": _CORS_ALLOW_METHODS,
+        "Access-Control-Max-Age": "600",
+        "Vary": "Origin",
+    }
+
+
+@web.middleware
+async def _cors_middleware(request: web.Request, handler: web.Handler) -> web.StreamResponse:
+    """只放行桌面壳窗口的 Origin；预检请求在鉴权之前应答（预检本身不带 Authorization）。
+
+    不带 Origin 的请求（桌面壳原生侧 / 本机脚本）不经 CORS 判定，交由 token 鉴权。
+    """
+    origin = request.headers.get("Origin")
+    if origin is None:
+        return await handler(request)
+    if origin not in request.app[_ORIGINS_KEY]:
+        return web.json_response({"error": "origin not allowed"}, status=403)
+    if request.method == "OPTIONS":
+        return web.Response(status=204, headers=_cors_headers(origin))
+    try:
+        response = await handler(request)
+    except web.HTTPException as exc:
+        exc.headers.update(_cors_headers(origin))
+        raise
+    response.headers.update(_cors_headers(origin))
+    return response
+
+
+def _request_token(request: web.Request) -> str:
+    header = request.headers.get("Authorization", "")
+    scheme, _, value = header.partition(" ")
+    if scheme.lower() == "bearer" and value:
+        return value.strip()
+    if request.method == "GET":
+        return request.query.get(ACCESS_TOKEN_QUERY, "")
+    return ""
+
+
 @web.middleware
 async def _auth_middleware(request: web.Request, handler: web.Handler) -> web.StreamResponse:
-    """保护 /api/*（登录/鉴权探测除外）；auth_required=False 时直接放行。"""
-    app = request.app
-    if not app[_AUTH_REQUIRED_KEY]:
-        return await handler(request)
-    path = request.path
-    if path.startswith(_API_PREFIX) and path not in _PUBLIC_PATHS:
-        token = request.cookies.get(SESSION_COOKIE)
-        if token not in app[_SESSIONS_KEY]:
+    """保护全部 /api/*：token 用常数时间比较，避免逐字符短路的定时侧信道。"""
+    if request.path.startswith(_API_PREFIX):
+        token = _request_token(request)
+        if not token or not secrets.compare_digest(token, request.app[_TOKEN_KEY]):
             return web.json_response({"error": "unauthorized"}, status=401)
     return await handler(request)
 
@@ -178,7 +224,14 @@ async def _auth_middleware(request: web.Request, handler: web.Handler) -> web.St
 
 
 def _api(request: web.Request) -> KnowledgeRepositoryApi:
-    return cast("KnowledgeRepositoryApi", request.app[_API_KEY])
+    """取当前业务门面。服务软重启期间门面尚未重建，返回 503 让前端稍后重试。"""
+    api = request.app[_API_KEY]()  # type: ignore[operator]
+    if api is None:
+        raise web.HTTPServiceUnavailable(
+            text=json.dumps({"error": "service is restarting"}),
+            content_type="application/json",
+        )
+    return cast("KnowledgeRepositoryApi", api)
 
 
 def _parse_int(raw: object, name: str, default: int, lo: int, hi: int) -> int:
@@ -229,44 +282,18 @@ def _fulltext_confirmation_payload(exc: Any) -> dict[str, Any]:
     }
 
 
-async def handle_auth(request: web.Request) -> web.Response:
-    """前端探测是否需要登录 / 当前是否已登录。"""
-    app = request.app
-    logged_in = (
-        not app[_AUTH_REQUIRED_KEY]
-        or request.cookies.get(SESSION_COOKIE) in app[_SESSIONS_KEY]
-    )
-    return web.json_response({"auth_required": app[_AUTH_REQUIRED_KEY], "logged_in": logged_in})
+async def handle_health(request: web.Request) -> web.Response:
+    """存活探测：桌面壳在 KA_READY 之后与重启服务后轮询它。"""
+    return web.json_response({"status": "ok"})
 
 
-async def handle_login(request: web.Request) -> web.Response:
-    app = request.app
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON body"}, status=400)
-    if not isinstance(body, dict):
-        return web.json_response({"error": "invalid JSON body"}, status=400)
-    # compare_digest：常数时间比较，避免逐字符短路的定时侧信道。
-    username_ok = secrets.compare_digest(str(body.get("username") or ""), app[_USERNAME_KEY])
-    password_ok = secrets.compare_digest(str(body.get("password") or ""), app[_PASSWORD_KEY])
-    if username_ok and password_ok:
-        token = secrets.token_urlsafe(24)
-        app[_SESSIONS_KEY].add(token)
-        resp = web.json_response({"ok": True})
-        resp.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="Lax")
-        return resp
-    return web.json_response({"error": "invalid credentials"}, status=401)
-
-
-async def handle_logout(request: web.Request) -> web.Response:
-    app = request.app
-    token = request.cookies.get(SESSION_COOKIE)
-    if token in app[_SESSIONS_KEY]:
-        app[_SESSIONS_KEY].remove(token)
-    resp = web.json_response({"ok": True})
-    resp.del_cookie(SESSION_COOKIE)
-    return resp
+async def handle_shutdown(request: web.Request) -> web.Response:
+    """请求后端有序退出（停定时任务 → 刷盘 Milvus → 关库）；实际退出由进程薄壳完成。"""
+    callback = request.app[_SHUTDOWN_KEY]
+    if not callable(callback):
+        return web.json_response({"error": "shutdown is not supported here"}, status=501)
+    callback()
+    return web.json_response({"status": "shutting_down"}, status=202)
 
 
 async def handle_list_collections(request: web.Request) -> web.Response:
@@ -1477,7 +1504,6 @@ async def handle_ask(request: web.Request) -> web.Response:
     collection = body.get("collection") or None
     top_k = _parse_int(body.get("top_k"), "top_k", 6, 1, 20)
     conversation_id = body.get("conversation_id") or None
-    persona_enabled = bool(body.get("persona_enabled") or False)
     retrieval_mode = body.get("retrieval_mode") or "default"
     use_english_retrieval = bool(body.get("use_english_retrieval") or False)
     answer_language = str(body.get("answer_language") or "auto")
@@ -1500,7 +1526,6 @@ async def handle_ask(request: web.Request) -> web.Response:
             collection=collection,
             top_k=top_k,
             conversation_id=conversation_id,
-            persona_enabled=persona_enabled,
             retrieval_mode=retrieval_mode,
             use_english_retrieval=use_english_retrieval,
             answer_language=answer_language,
@@ -1737,40 +1762,50 @@ def _graph_query_dict(payload: bytes) -> dict:
 
 def build_app(
     *,
-    api: KnowledgeRepositoryApi,
-    static_dir: Path,
+    api: KnowledgeRepositoryApi | None = None,
+    api_provider: Callable[[], KnowledgeRepositoryApi | None] | None = None,
     upload_dir: Path,
-    auth_required: bool = True,
-    username: str = "admin",
-    password: str = "",
+    token: str,
+    allowed_origins: Iterable[str] = DEFAULT_ALLOWED_ORIGINS,
+    shutdown_callback: Callable[[], None] | None = None,
     log_handler: MemoryLogHandler | None = None,
 ) -> web.Application:
-    """构造 aiohttp 应用：注入 api、配置认证与静态目录。
+    """构造 aiohttp 应用：注入业务门面、token 与 CORS 白名单。
 
-    auth_required=True 且 password 为空时拒绝构造（避免无密码暴露）。
+    api 与 api_provider 二选一：固定门面（测试）或每次请求现取（进程薄壳——服务软重启会
+    重建门面，HTTP 服务本身不重启）。token 为空时拒绝构造（避免无鉴权暴露）。
+    shutdown_callback 为空时 /api/shutdown 返回 501。
     """
-    if auth_required and not password:
-        raise ValueError(
-            "web console password is empty; set a password or pass auth_required=False"
-        )
+    if not token:
+        raise ValueError("an access token is required")
+    if (api is None) == (api_provider is None):
+        raise ValueError("exactly one of api / api_provider is required")
+    if api_provider is None:
+        fixed_api = api
+
+        def api_provider() -> KnowledgeRepositoryApi | None:
+            return fixed_api
 
     app = web.Application(
-        middlewares=[_request_observability_middleware, _error_middleware, _auth_middleware]
+        middlewares=[
+            _cors_middleware,
+            _request_observability_middleware,
+            _error_middleware,
+            _auth_middleware,
+        ]
     )
-    app[_API_KEY] = api
+    app[_API_KEY] = api_provider
     app[_UPLOAD_DIR_KEY] = upload_dir
-    app[_AUTH_REQUIRED_KEY] = auth_required
-    app[_USERNAME_KEY] = username
-    app[_PASSWORD_KEY] = password
-    app[_SESSIONS_KEY] = set()
+    app[_TOKEN_KEY] = token
+    app[_ORIGINS_KEY] = frozenset(allowed_origins)
+    app[_SHUTDOWN_KEY] = shutdown_callback
 
     from kacore.log_capture import install as _install_log_handler
 
     app[_LOG_HANDLER_KEY] = log_handler or _install_log_handler()
 
-    app.router.add_get("/api/auth", handle_auth)
-    app.router.add_post("/api/login", handle_login)
-    app.router.add_post("/api/logout", handle_logout)
+    app.router.add_get("/api/health", handle_health)
+    app.router.add_post("/api/shutdown", handle_shutdown)
     app.router.add_get("/api/collections", handle_list_collections)
     app.router.add_post("/api/collections", handle_create_collection)
     app.router.add_patch("/api/collections/by-key/{coll_key}", handle_patch_collection)
@@ -1876,43 +1911,7 @@ def build_app(
     )
 
     # 日志 handler 已在路由装配前注入；生产由组合根传入，独立测试/开发则幂等安装默认实例。
-
-    # 静态文件服务：兼容 Next.js export 产物（pages/ 下存在子目录 index.html）
-    # 和旧的单文件 HTML 产物。
-    if static_dir.exists():
-        # Next.js 资源包（_next/static/…）直接映射，避免走 SPA 回退逻辑
-        next_dir = static_dir / "_next"
-        if next_dir.is_dir():
-            app.router.add_static("/_next/", next_dir)
-
-        _static_root = static_dir.resolve()
-
-        async def handle_spa(request: web.Request) -> web.StreamResponse:
-            """SPA 路径回退：按 Next.js export 目录结构查找 index.html，否则回退根页面。"""
-            rel = request.match_info.get("path", "").strip("/")
-            try:
-                if rel:
-                    # 安全检查：防止路径穿越
-                    direct = (static_dir / rel).resolve()
-                    direct.relative_to(_static_root)
-                    if direct.is_file():
-                        return web.FileResponse(direct)
-                    subindex = direct / "index.html"
-                    if subindex.is_file():
-                        return web.FileResponse(subindex)
-                    html = static_dir / f"{rel}.html"
-                    if html.is_file():
-                        return web.FileResponse(html)
-            except (ValueError, OSError):
-                pass
-            root_index = static_dir / "index.html"
-            if root_index.is_file():
-                return web.FileResponse(root_index)
-            return web.Response(status=404, text="Not Found")
-
-        app.router.add_get("/", handle_spa)
-        app.router.add_get("/{path:.*}", handle_spa)
     return app
 
 
-__all__ = ["build_app", "SESSION_COOKIE"]
+__all__ = ["ACCESS_TOKEN_QUERY", "DEFAULT_ALLOWED_ORIGINS", "build_app"]

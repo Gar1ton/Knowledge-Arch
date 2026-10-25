@@ -9,6 +9,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from static_retriever import StaticRetriever
 
 from kacore.api import KnowledgeRepositoryApi, LightRAGNotReadyError
 from kacore.domain.models import (
@@ -21,7 +22,6 @@ from kacore.domain.models import (
     SyncStatus,
     SyncTargetKind,
 )
-from kacore.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
 from kacore.repository.source_store.memory import InMemorySourceDocumentStore
 from kacore.repository.sync_targets.memory import InMemorySyncTarget
 
@@ -43,12 +43,14 @@ async def _make_api() -> KnowledgeRepositoryApi:
     store = InMemorySourceDocumentStore()
     await store.add_document(_doc("d1", "c1", ["t"]))
     await store.add_document(_doc("d2", "c2"))
-    kb = InMemoryKnowledgeBaseReader({"kb1": [DocumentChunk("c0", "x", 0, "alpha", "h0")]})
+    kb = StaticRetriever({"kb1": [DocumentChunk("c0", "x", 0, "alpha", "h0")]})
     targets = {
         SyncTargetKind.R2: InMemorySyncTarget(SyncTargetKind.R2, 10, base_used_bytes=4),
         SyncTargetKind.NOTION: InMemorySyncTarget(SyncTargetKind.NOTION, 0),
     }
-    return KnowledgeRepositoryApi(source_store=store, kb_reader=kb, sync_targets=targets)
+    return KnowledgeRepositoryApi(
+        source_store=store, retrieval_orchestrator=kb, sync_targets=targets
+    )
 
 
 async def test_list_documents_and_filter() -> None:
@@ -114,7 +116,6 @@ async def test_list_document_chunks_rebuilds_legacy_preview_chunks() -> None:
     ingest = FakeIngestManager()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         ingest_manager=ingest,  # type: ignore[arg-type]
     )
 
@@ -177,7 +178,6 @@ async def test_get_chunk_context_alone_rebuilds_legacy_chunks_once() -> None:
     ingest = FakeIngestManager()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         ingest_manager=ingest,  # type: ignore[arg-type]
     )
 
@@ -248,7 +248,10 @@ async def test_classify_missing_returns_false() -> None:
 
 async def test_kb_facade() -> None:
     api = await _make_api()
-    assert await api.list_kb_collections() == ["kb1"]
+    # 可检索集合来自源文档库（自动建的 default 之外，测试仓储里还有 c1/c2）。
+    assert await api.list_kb_collections() == sorted(
+        c.name for c in await api.list_collections()
+    )
     hits = await api.search_kb("kb1", "alpha", top_k=5)
     assert [c.chunk_id for c in hits] == ["c0"]
 
@@ -306,7 +309,6 @@ async def test_delete_document_cleans_remote_and_managed_file(tmp_path: Path) ->
     target._objects["c/d1"] = b"pdf"
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         sync_targets={SyncTargetKind.R2: target},
         managed_documents_dir=managed_dir,
     )
@@ -357,7 +359,6 @@ async def test_zotero_reset_removes_linked_artifacts_but_not_external_original(
     await store.add_document(local_doc)
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         managed_documents_dir=managed_dir,
     )
 
@@ -380,7 +381,7 @@ async def test_list_quota() -> None:
 async def test_list_quota_empty_when_no_targets() -> None:
     store = InMemorySourceDocumentStore()
     api = KnowledgeRepositoryApi(
-        source_store=store, kb_reader=InMemoryKnowledgeBaseReader({})
+        source_store=store
     )
     assert await api.list_quota() == []
 
@@ -395,7 +396,7 @@ async def test_notion_failed_ledger_is_visible_without_sync_records_and_takes_pr
             "document", str(i), status="failed", message="MCP 接口不兼容",
         ))
     api = KnowledgeRepositoryApi(
-        source_store=store, kb_reader=InMemoryKnowledgeBaseReader({}), config=Config({}),
+        source_store=store, config=Config({}),
     )
     assert len(await api.get_sync_status()) == 106
     await store.upsert_sync_record(SyncRecord("0", SyncTargetKind.NOTION, status=SyncStatus.SYNCED))
@@ -428,7 +429,6 @@ async def test_sync_all_fans_out_to_each_target() -> None:
     notion_pipeline = StubNotionPipeline()
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         sync_pipeline=pipeline,  # type: ignore[arg-type]
     )
     api.attach_notion_sync_pipeline(notion_pipeline)
@@ -464,7 +464,6 @@ def _notion_api(store: InMemorySourceDocumentStore, notion_pipeline) -> Knowledg
 
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"notion_sync": {"enabled": True}}),
     )
     api.attach_notion_sync_pipeline(notion_pipeline)
@@ -474,7 +473,6 @@ def _notion_api(store: InMemorySourceDocumentStore, notion_pipeline) -> Knowledg
 async def test_notion_init_without_pipeline_reports_unavailable() -> None:
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
     )
 
     result = await api.initialize_notion_database()
@@ -524,7 +522,6 @@ async def test_push_note_to_notion_disabled_returns_hint() -> None:
     store = InMemorySourceDocumentStore()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"notion_sync": {"enabled": False}}),
     )
     api.attach_notion_sync_pipeline(_StubNotionPipeline())
@@ -546,7 +543,6 @@ async def test_sync_notion_push_runs_background_job_and_exposes_active() -> None
 
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
     )
     pipeline = StubNotionPipeline()
     api.attach_notion_sync_pipeline(pipeline)
@@ -578,7 +574,6 @@ async def test_sync_notion_push_is_single_flight() -> None:
 
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
     )
     pipeline = BlockingNotionPipeline()
     api.attach_notion_sync_pipeline(pipeline)
@@ -619,10 +614,10 @@ async def test_ask_with_mock_llm_calls_generate() -> None:
 
     store = InMemorySourceDocumentStore()
     await store.add_document(_doc("d1", "kb1"))
-    kb = InMemoryKnowledgeBaseReader({"kb1": [DocumentChunk("c0", "d1", 0, "relevant text", "h0")]})
+    kb = StaticRetriever({"kb1": [DocumentChunk("c0", "d1", 0, "relevant text", "h0")]})
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=kb,
+        retrieval_orchestrator=kb,
         llm_adapter=MockLLM(),  # type: ignore[arg-type]
     )
     result = await api.ask(question="relevant", collection="kb1")
@@ -633,49 +628,38 @@ async def test_ask_with_mock_llm_calls_generate() -> None:
     assert len(result["sources"]) == 1
 
 
-async def test_ask_with_persona_enabled() -> None:
-    """开启 persona_enabled 时 ask() 应从 LLMAdapter 绑定的 context 中动态提取并拼接 Persona。"""
-
-    class MockContext:
-        def get_active_persona_prompt(self) -> str:
-            return "Active Persona Prompt: You are a cute cat."
+async def test_ask_uses_plain_rag_system_prompt_without_persona() -> None:
+    """未配置系统提示词时 ask() 只发送 RAG 约束，不拼任何人格前缀。"""
 
     class MockLLM:
-        called: bool = False
         captured_system_prompt: str = ""
-
-        def __init__(self) -> None:
-            self._context = MockContext()
 
         async def generate_result(self, prompt: str, system_prompt: str = "", **_kw):
             from kacore.domain.llm_generation import GenerationResult
 
-            MockLLM.called = True
             self.captured_system_prompt = system_prompt
             return GenerationResult(text="Mock answer [1]")
 
     store = InMemorySourceDocumentStore()
     await store.add_document(_doc("d1", "kb1"))
-    kb = InMemoryKnowledgeBaseReader({"kb1": [DocumentChunk("c0", "d1", 0, "relevant text", "h0")]})
-    
+    kb = StaticRetriever({"kb1": [DocumentChunk("c0", "d1", 0, "relevant text", "h0")]})
     mock_llm = MockLLM()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=kb,
+        retrieval_orchestrator=kb,
         llm_adapter=mock_llm,  # type: ignore[arg-type]
     )
-    
-    _ = await api.ask(question="relevant", collection="kb1", persona_enabled=True)
-    assert MockLLM.called
-    assert "Active Persona Prompt: You are a cute cat." in mock_llm.captured_system_prompt
-    assert "RAG Constraints" in mock_llm.captured_system_prompt
+
+    await api.ask(question="relevant", collection="kb1")
+    assert mock_llm.captured_system_prompt.startswith("You are a helpful academic assistant.")
+    assert "RAG Constraints" not in mock_llm.captured_system_prompt
 
 
 async def test_ask_returns_empty_message_when_no_chunks() -> None:
     """知识库无内容时 ask() 应返回未找到相关内容的提示。"""
     store = InMemorySourceDocumentStore()
-    kb = InMemoryKnowledgeBaseReader({})
-    api = KnowledgeRepositoryApi(source_store=store, kb_reader=kb)
+    kb = StaticRetriever({})
+    api = KnowledgeRepositoryApi(source_store=store, retrieval_orchestrator=kb)
     result = await api.ask(question="anything")
     assert result["sources"] == []
     assert result["answer"]  # 有内容（降级提示）
@@ -741,7 +725,6 @@ async def test_graph_mixed_uses_context_and_one_outer_llm_call(
     llm = LLM()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
         retrieval_orchestrator=Orchestrator(),  # type: ignore[arg-type]
         index_compatibility=compatibility,
@@ -772,7 +755,6 @@ async def test_graph_mixed_requires_ready_lightrag() -> None:
     await store.add_document(_doc("d1", "papers"))
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
     )
     with pytest.raises(LightRAGNotReadyError, match="workspace"):
@@ -810,7 +792,6 @@ async def test_lightrag_build_resets_incompatible_workspace(tmp_path: Path) -> N
     compatibility.mark_lightrag_compatible("papers", "old-fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
         index_compatibility=compatibility,
         embedding_fingerprint="new-fp",
@@ -848,7 +829,6 @@ async def test_graph_stats_skip_pending_lightrag_workspace(tmp_path: Path) -> No
     registry = Registry()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=registry,  # type: ignore[arg-type]
         index_compatibility=compatibility,
         embedding_fingerprint="fp",
@@ -896,7 +876,6 @@ async def test_lightrag_build_only_indexes_pending_docs_when_workspace_is_compat
     compatibility.mark_lightrag_compatible("papers", "fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
         index_compatibility=compatibility,
         embedding_fingerprint="fp",
@@ -945,7 +924,6 @@ async def test_graph_mixed_can_answer_with_only_lightrag_context(tmp_path: Path)
     llm = LLM()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
         retrieval_orchestrator=Orchestrator(),  # type: ignore[arg-type]
         index_compatibility=compatibility,
@@ -987,7 +965,6 @@ async def test_embedding_change_marks_docs_pending_and_rebuilds_incompatible_mil
     vector_store = CountingVectorStore()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=vector_store,
         embedding_provider=MockEmbeddingProvider(dimension=4),
@@ -1036,7 +1013,6 @@ async def test_rerank_config_update_hot_swaps_deep_thinking(
     probe = HotSwapProbe()
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"rerank": {"provider": "noop"}}),
         deep_thinking_orchestrator=probe,  # type: ignore[arg-type]
     )
@@ -1060,7 +1036,6 @@ async def test_zotero_config_same_value_save_reports_no_consequence() -> None:
     await store.add_document(_doc("d1", "papers"))
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"zotero_sync": {"storage_mode": "zotmoov", "zotmoov_root": "/data/z"}}),
     )
 
@@ -1106,7 +1081,6 @@ async def test_vector_db_sync_and_rebuild(tmp_path: Path) -> None:
 
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=config,
         vector_store=v_store,
         embedding_provider=embedding,
@@ -1153,7 +1127,6 @@ async def test_capabilities_reports_milvus_rebuild_required(tmp_path: Path) -> N
 
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=InMemoryVectorStore(),
         embedding_provider=MockEmbeddingProvider(dimension=4),
@@ -1190,7 +1163,6 @@ async def test_capabilities_uses_aggregate_chunk_count(tmp_path: Path) -> None:
 
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=InMemoryVectorStore(),
         embedding_provider=MockEmbeddingProvider(dimension=4),
@@ -1252,7 +1224,6 @@ async def test_rebuild_index_pending_retries_transient_embedding_failure(tmp_pat
     embedding = FlakyEmbedding()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=vector_store,
         embedding_provider=embedding,  # type: ignore[arg-type]
@@ -1304,7 +1275,6 @@ async def test_start_milvus_rebuild_progresses_to_success(tmp_path: Path) -> Non
     compatibility.mark_milvus_compatible("fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=InMemoryVectorStore(),
         embedding_provider=MockEmbeddingProvider(dimension=4),
@@ -1384,7 +1354,6 @@ async def test_start_milvus_rebuild_cleans_legacy_chunks_before_indexing(
     compatibility.mark_milvus_compatible("fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=vector_store,
         embedding_provider=MockEmbeddingProvider(dimension=4),
@@ -1419,7 +1388,6 @@ async def test_start_milvus_rebuild_is_single_flight(tmp_path: Path) -> None:
     store = InMemorySourceDocumentStore()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=InMemoryVectorStore(),
         embedding_provider=MockEmbeddingProvider(dimension=4),
@@ -1448,7 +1416,6 @@ async def test_mark_needs_reindex_notifies_auto_reindex_scheduler() -> None:
     await store.add_document(_doc("d1", "papers"))
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
     )
     scheduler = RecordingScheduler()
     api.attach_auto_reindex_scheduler(scheduler)
@@ -1472,7 +1439,6 @@ async def test_notify_auto_reindex_survives_scheduler_error() -> None:
     await store.add_document(_doc("d1", "papers"))
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
     )
     api.attach_auto_reindex_scheduler(ExplodingScheduler())
 
@@ -1494,7 +1460,6 @@ async def test_enabling_auto_rebuild_wakes_the_scheduler(tmp_path: Path) -> None
 
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus", "auto_rebuild_enabled": False}}),
         config_persist=lambda section, key, value: None,
     )
@@ -1524,7 +1489,6 @@ async def test_run_milvus_rebuild_to_completion_reuses_running_job(tmp_path: Pat
     compatibility.mark_milvus_compatible("fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=InMemoryVectorStore(),
         embedding_provider=MockEmbeddingProvider(dimension=4),
@@ -1560,7 +1524,6 @@ async def test_run_milvus_rebuild_to_completion_returns_terminal_snapshot(
     compatibility.mark_milvus_compatible("fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=InMemoryVectorStore(),
         embedding_provider=MockEmbeddingProvider(dimension=4),
@@ -1589,7 +1552,6 @@ async def test_capabilities_degraded_while_milvus_building(tmp_path: Path) -> No
     compatibility.mark_milvus_compatible("fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=InMemoryVectorStore(),
         embedding_provider=MockEmbeddingProvider(dimension=4),
@@ -1642,7 +1604,6 @@ async def test_start_milvus_rebuild_partial_failure(
     compatibility.mark_milvus_compatible("fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=InMemoryVectorStore(),
         embedding_provider=AlwaysFailEmbedding(),  # type: ignore[arg-type]
@@ -1693,7 +1654,6 @@ async def test_start_milvus_rebuild_cleaning_failure_skips_index(
     compatibility.mark_milvus_compatible("fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=vector_store,
         embedding_provider=MockEmbeddingProvider(dimension=4),
@@ -1737,7 +1697,6 @@ async def test_lightrag_readiness_fully_ready(tmp_path: Path) -> None:
     compatibility.mark_lightrag_compatible("papers", "fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
         index_compatibility=compatibility,
         embedding_fingerprint="fp",
@@ -1765,7 +1724,6 @@ async def test_lightrag_readiness_partially_indexed(tmp_path: Path) -> None:
     compatibility.mark_lightrag_compatible("papers", "fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
         index_compatibility=compatibility,
         embedding_fingerprint="fp",
@@ -1788,7 +1746,6 @@ async def test_build_graph_raises_when_not_confirmed() -> None:
     await store.add_document(_doc("d1", "papers"))
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
     )
 
@@ -1819,7 +1776,6 @@ async def test_build_graph_partial_failure_when_insert_raises(tmp_path: Path) ->
     await store.replace_chunks("d1", [DocumentChunk("c1", "d1", 0, "content", "h1")])
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
     )
     api._graph_build_jobs["job"] = BuildJob(job_id="job", collection="papers")
@@ -1861,7 +1817,6 @@ async def test_build_graph_reports_lrag_chunk_progress() -> None:
     await store.replace_chunks("d1", [DocumentChunk("c1", "d1", 0, "content", "h1")])
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
     )
     api._graph_build_jobs["job"] = BuildJob(job_id="job", collection="papers")
@@ -1890,7 +1845,6 @@ async def test_probe_lightrag_core_delegates_to_registry() -> None:
 
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
     )
 
@@ -1927,7 +1881,6 @@ async def test_query_graph_delegates_to_registry_when_ready(tmp_path: Path) -> N
     compatibility.mark_lightrag_compatible("papers", "fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
         index_compatibility=compatibility,
         embedding_fingerprint="fp",
@@ -1980,10 +1933,10 @@ async def test_ask_task_timeout_lets_background_task_finish_and_persist() -> Non
 
     store = InMemorySourceDocumentStore()
     await store.add_document(_doc("d1", "papers"))
-    kb = InMemoryKnowledgeBaseReader({"papers": []})
+    kb = StaticRetriever({"papers": []})
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=kb,
+        retrieval_orchestrator=kb,
         deep_thinking_orchestrator=_SlowDeepThinking(),  # type: ignore[arg-type]
     )
     # 绕开 config 只接受整秒的限制，直接把总超时压到远小于 orchestrator 的 0.15s 耗时。
@@ -2037,8 +1990,8 @@ async def test_resolve_ask_collections_global_covers_all_active() -> None:
     store = InMemorySourceDocumentStore()
     for name in ["_uncategorized", "a", "b", "c", "d", "e", "f"]:
         await store.upsert_collection(Collection(name=name))
-    kb = InMemoryKnowledgeBaseReader({})
-    api = KnowledgeRepositoryApi(source_store=store, kb_reader=kb, sync_targets={})
+    kb = StaticRetriever({})
+    api = KnowledgeRepositoryApi(source_store=store, retrieval_orchestrator=kb, sync_targets={})
     cols = await api._resolve_ask_collections(None, None)
     assert set(cols) == {"a", "b", "c", "d", "e", "f"}
     assert "_uncategorized" not in cols
@@ -2057,7 +2010,7 @@ async def test_search_exact_mentions_wrapper_scopes_by_name() -> None:
         "doc-child", [DocumentChunk("ch-0", "doc-child", 0, "body has EXACT_TERM_A", "h0")]
     )
     api = KnowledgeRepositoryApi(
-        source_store=store, kb_reader=InMemoryKnowledgeBaseReader({}), sync_targets={}
+        source_store=store, sync_targets={}
     )
     assert {h["doc_id"] for h in await api.search_exact_mentions(["EXACT_TERM_A"])} == {"doc-child"}
     assert {
@@ -2105,12 +2058,12 @@ async def test_deep_thinking_returns_trace_and_synthesizes() -> None:
     )
     store = InMemorySourceDocumentStore()
     await store.add_document(_doc("d1", "papers"))
-    kb = InMemoryKnowledgeBaseReader(
+    kb = StaticRetriever(
         {"papers": [DocumentChunk("c0", "d1", 0, "evidence text", "h0")]}
     )
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=kb,
+        retrieval_orchestrator=kb,
         llm_adapter=_MockSynthLLM(),  # type: ignore[arg-type]
         deep_thinking_orchestrator=_MockDeepThinking(outcome),  # type: ignore[arg-type]
     )
@@ -2157,10 +2110,10 @@ async def test_deep_thinking_trace_serializes_discovered_and_origin() -> None:
     )
     store = InMemorySourceDocumentStore()
     await store.add_document(_doc("d1", "papers"))
-    kb = InMemoryKnowledgeBaseReader({"papers": [DocumentChunk("c0", "d1", 0, "ev", "h0")]})
+    kb = StaticRetriever({"papers": [DocumentChunk("c0", "d1", 0, "ev", "h0")]})
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=kb,
+        retrieval_orchestrator=kb,
         llm_adapter=_MockSynthLLM(),  # type: ignore[arg-type]
         deep_thinking_orchestrator=_MockDeepThinking(outcome),  # type: ignore[arg-type]
     )
@@ -2194,11 +2147,11 @@ async def test_deep_thinking_verify_disabled_uses_deep_synth_fallback() -> None:
     )
     store = InMemorySourceDocumentStore()
     await store.add_document(_doc("d1", "papers"))
-    kb = InMemoryKnowledgeBaseReader({"papers": [DocumentChunk("c0", "d1", 0, "ev", "h0")]})
+    kb = StaticRetriever({"papers": [DocumentChunk("c0", "d1", 0, "ev", "h0")]})
     llm = _RecordingLLM()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=kb,
+        retrieval_orchestrator=kb,
         llm_adapter=llm,  # type: ignore[arg-type]
         deep_thinking_orchestrator=_MockDeepThinking(outcome),  # type: ignore[arg-type]
     )
@@ -2217,10 +2170,10 @@ async def test_deep_thinking_degraded_reports_mode() -> None:
     )
     store = InMemorySourceDocumentStore()
     await store.add_document(_doc("d1", "papers"))
-    kb = InMemoryKnowledgeBaseReader({"papers": []})
+    kb = StaticRetriever({"papers": []})
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=kb,
+        retrieval_orchestrator=kb,
         llm_adapter=_MockSynthLLM(),  # type: ignore[arg-type]
         deep_thinking_orchestrator=_MockDeepThinking(outcome),  # type: ignore[arg-type]
     )
@@ -2264,7 +2217,7 @@ async def test_enhanced_mode_returns_trace_and_verified_answer() -> None:
     await store.add_document(_doc("d1", "papers"))
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({"papers": []}),
+        retrieval_orchestrator=StaticRetriever({"papers": []}),
         enhanced_recall_orchestrator=orch,  # type: ignore[arg-type]
     )
     result = await api.ask(question="q", collection="papers", retrieval_mode="enhanced")
@@ -2287,7 +2240,6 @@ async def test_enhanced_mode_allows_global_scope_without_collection() -> None:
     orch = _MockDeepThinking(outcome)
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         enhanced_recall_orchestrator=orch,  # type: ignore[arg-type]
     )
     result = await api.ask(question="q", collection=None, retrieval_mode="enhanced")
@@ -2314,7 +2266,7 @@ async def test_deep_thinking_english_retrieval_keeps_original_answer_question() 
     await store.add_document(_doc("d1", "papers"))
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({"papers": []}),
+        retrieval_orchestrator=StaticRetriever({"papers": []}),
         llm_adapter=_TranslateOnlyLLM(),  # type: ignore[arg-type]
         deep_thinking_orchestrator=deep,  # type: ignore[arg-type]
     )
@@ -2356,7 +2308,7 @@ async def test_english_retrieval_skips_translation_for_non_cjk_question() -> Non
     await store.add_document(_doc("d1", "papers"))
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({"papers": []}),
+        retrieval_orchestrator=StaticRetriever({"papers": []}),
         llm_adapter=llm,  # type: ignore[arg-type]
         deep_thinking_orchestrator=deep,  # type: ignore[arg-type]
     )
@@ -2389,10 +2341,10 @@ async def test_deep_thinking_uses_verified_answer_when_present() -> None:
     )
     store = InMemorySourceDocumentStore()
     await store.add_document(_doc("d1", "papers"))
-    kb = InMemoryKnowledgeBaseReader({"papers": []})
+    kb = StaticRetriever({"papers": []})
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=kb,
+        retrieval_orchestrator=kb,
         llm_adapter=_ShouldNotSynth(),  # type: ignore[arg-type]
         deep_thinking_orchestrator=_MockDeepThinking(outcome),  # type: ignore[arg-type]
     )
@@ -2420,7 +2372,7 @@ async def test_deep_thinking_degraded_answer_gets_notice_field() -> None:
     await store.add_document(_doc("d1", "papers"))
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({"papers": []}),
+        retrieval_orchestrator=StaticRetriever({"papers": []}),
         llm_adapter=_SynthLLM(),  # type: ignore[arg-type]
         deep_thinking_orchestrator=_MockDeepThinking(outcome),  # type: ignore[arg-type]
     )
@@ -2452,7 +2404,7 @@ async def test_deep_thinking_unverified_missing_gets_notice_field() -> None:
     await store.add_document(_doc("d1", "papers"))
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({"papers": []}),
+        retrieval_orchestrator=StaticRetriever({"papers": []}),
         llm_adapter=_MockSynthLLM(),  # type: ignore[arg-type]
         deep_thinking_orchestrator=_MockDeepThinking(outcome),  # type: ignore[arg-type]
     )
@@ -2483,7 +2435,7 @@ async def test_verified_answer_has_empty_notice() -> None:
     await store.add_document(_doc("d1", "papers"))
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({"papers": []}),
+        retrieval_orchestrator=StaticRetriever({"papers": []}),
         deep_thinking_orchestrator=_MockDeepThinking(outcome),  # type: ignore[arg-type]
     )
     result = await api.ask(question="q", collection="papers", retrieval_mode="deep_thinking")
@@ -2514,7 +2466,6 @@ async def test_restart_plugin_schedules_reload() -> None:
 
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         reload_callback=_reload,
     )
     result = await api.restart_plugin()
@@ -2536,7 +2487,6 @@ async def test_clear_milvus_lock_delegates_to_callback() -> None:
 
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         clear_milvus_lock_callback=_clear,
     )
     result = await api.clear_milvus_lock()
@@ -2571,7 +2521,6 @@ async def test_capabilities_excludes_detached_documents_from_vector_stats(tmp_pa
     compatibility.mark_milvus_compatible("fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=InMemoryVectorStore(),
         embedding_provider=MockEmbeddingProvider(dimension=4),
@@ -2604,7 +2553,6 @@ async def test_rebuild_reports_missing_milvus_lite_instead_of_generic_hint(
     )
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
     )
 
@@ -2626,7 +2574,6 @@ async def test_rebuild_reports_embedding_not_ready_when_deps_are_installed(
     monkeypatch.setattr("kacore.capabilities.module_available", lambda name: True)
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         config=Config({"vector_db": {"backend": "milvus"}}),
     )
 
@@ -2635,23 +2582,22 @@ async def test_rebuild_reports_embedding_not_ready_when_deps_are_installed(
     assert "Embedding provider 未就绪" in str(excinfo.value)
 
 
-async def test_rebuild_reports_astr_backend_without_telling_user_to_install_milvus(
+async def test_rebuild_reports_lexical_backend_without_telling_user_to_install_milvus(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """后端选的是 astr 时，没有 Milvus 索引可重建——不该把用户送去装依赖。"""
+    """后端选的是 lexical 时，没有 Milvus 索引可重建——不该把用户送去装依赖。"""
     from kacore.config import Config
 
     monkeypatch.setattr("kacore.capabilities.module_available", lambda name: False)
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
-        config=Config({"vector_db": {"backend": "astr"}}),
+        config=Config({"vector_db": {"backend": "lexical"}}),
     )
 
     with pytest.raises(RuntimeError) as excinfo:
         await api.rebuild_index_pending()
     message = str(excinfo.value)
-    assert "astr" in message
+    assert "lexical" in message
     assert "安装" not in message
 
 
@@ -2666,7 +2612,6 @@ async def test_install_dependency_installs_milvus_lite_explicitly(
     """
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
     )
     seen: list[tuple[str, ...]] = []
 
@@ -2693,7 +2638,6 @@ async def test_install_dependency_flags_pip_success_that_left_milvus_unusable(
     )
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
     )
 
     async def _ok_install(*specs: str) -> dict:
@@ -2746,11 +2690,11 @@ async def test_ask_enriches_local_document_from_local_meta() -> None:
             },
         )
     )
-    kb = InMemoryKnowledgeBaseReader(
+    kb = StaticRetriever(
         {"kb1": [DocumentChunk("c0", "d1", 0, "relevant text", "h0", metadata={"pages": [4]})]}
     )
     api = KnowledgeRepositoryApi(
-        source_store=store, kb_reader=kb, llm_adapter=_HarvardLLM()  # type: ignore[arg-type]
+        source_store=store, retrieval_orchestrator=kb, llm_adapter=_HarvardLLM()  # type: ignore[arg-type]
     )
 
     result = await api.ask(question="relevant", collection="kb1")
@@ -2773,11 +2717,11 @@ async def test_ask_normalizes_filename_style_title_in_reference_list() -> None:
     doc = _doc("d1", "kb1")
     doc.title = "Hui (2021) - Art and Cosmotechnics.pdf"
     await store.add_document(doc)
-    kb = InMemoryKnowledgeBaseReader(
+    kb = StaticRetriever(
         {"kb1": [DocumentChunk("c0", "d1", 0, "relevant text", "h0")]}
     )
     api = KnowledgeRepositoryApi(
-        source_store=store, kb_reader=kb, llm_adapter=_HarvardLLM()  # type: ignore[arg-type]
+        source_store=store, retrieval_orchestrator=kb, llm_adapter=_HarvardLLM()  # type: ignore[arg-type]
     )
 
     result = await api.ask(question="relevant", collection="kb1")
@@ -2809,11 +2753,11 @@ async def test_ask_enriches_zotero_document_with_full_bibliography() -> None:
             doi="10.5555/bbb",
         )
     )
-    kb = InMemoryKnowledgeBaseReader(
+    kb = StaticRetriever(
         {"kb1": [DocumentChunk("c0", "z1", 0, "relevant text", "h0", metadata={"pages": [3, 4]})]}
     )
     api = KnowledgeRepositoryApi(
-        source_store=store, kb_reader=kb, llm_adapter=_HarvardLLM()  # type: ignore[arg-type]
+        source_store=store, retrieval_orchestrator=kb, llm_adapter=_HarvardLLM()  # type: ignore[arg-type]
     )
 
     result = await api.ask(question="relevant", collection="kb1")
@@ -2844,11 +2788,11 @@ async def test_ask_falls_back_to_filename_hint_when_zotero_item_missing() -> Non
         "year": "2020",
     }
     await store.add_document(doc)
-    kb = InMemoryKnowledgeBaseReader(
+    kb = StaticRetriever(
         {"kb1": [DocumentChunk("c0", "z1", 0, "relevant text", "h0", metadata={"pages": [1]})]}
     )
     api = KnowledgeRepositoryApi(
-        source_store=store, kb_reader=kb, llm_adapter=_HarvardLLM()  # type: ignore[arg-type]
+        source_store=store, retrieval_orchestrator=kb, llm_adapter=_HarvardLLM()  # type: ignore[arg-type]
     )
 
     result = await api.ask(question="relevant", collection="kb1")
@@ -2885,11 +2829,11 @@ async def test_ask_prefers_real_zotero_creators_over_filename_hint() -> None:
             year="2017",
         )
     )
-    kb = InMemoryKnowledgeBaseReader(
+    kb = StaticRetriever(
         {"kb1": [DocumentChunk("c0", "z1", 0, "relevant text", "h0", metadata={"pages": [1]})]}
     )
     api = KnowledgeRepositoryApi(
-        source_store=store, kb_reader=kb, llm_adapter=_HarvardLLM()  # type: ignore[arg-type]
+        source_store=store, retrieval_orchestrator=kb, llm_adapter=_HarvardLLM()  # type: ignore[arg-type]
     )
 
     result = await api.ask(question="relevant", collection="kb1")
@@ -2902,9 +2846,9 @@ async def test_ask_references_are_embedded_in_stored_history() -> None:
     store = InMemorySourceDocumentStore()
     await store.add_document(_local_doc_with_meta("d1", "kb1", {"title": "T", "year": "2020"}))
     chunk = DocumentChunk("c0", "d1", 0, "relevant text", "h0")
-    kb = InMemoryKnowledgeBaseReader({"kb1": [chunk]})
+    kb = StaticRetriever({"kb1": [chunk]})
     api = KnowledgeRepositoryApi(
-        source_store=store, kb_reader=kb, llm_adapter=_HarvardLLM()  # type: ignore[arg-type]
+        source_store=store, retrieval_orchestrator=kb, llm_adapter=_HarvardLLM()  # type: ignore[arg-type]
     )
 
     result = await api.ask(question="relevant", collection="kb1")
@@ -2922,8 +2866,8 @@ async def test_ask_without_llm_keeps_excerpt_headers_unrewritten() -> None:
     """
     store = InMemorySourceDocumentStore()
     await store.add_document(_doc("d1", "kb1"))
-    kb = InMemoryKnowledgeBaseReader({"kb1": [DocumentChunk("c0", "d1", 0, "relevant text", "h0")]})
-    api = KnowledgeRepositoryApi(source_store=store, kb_reader=kb)
+    kb = StaticRetriever({"kb1": [DocumentChunk("c0", "d1", 0, "relevant text", "h0")]})
+    api = KnowledgeRepositoryApi(source_store=store, retrieval_orchestrator=kb)
 
     result = await api.ask(question="relevant", collection="kb1")
 
@@ -2960,7 +2904,7 @@ async def test_agent_evidence_carries_harvard_strings() -> None:
     )
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({"kb1": []}),
+        retrieval_orchestrator=StaticRetriever({"kb1": []}),
         agent_evidence_orchestrator=_MockAgentEvidence(),  # type: ignore[arg-type]
     )
 
@@ -2977,7 +2921,7 @@ async def test_update_document_meta_normalizes_creators_and_year() -> None:
     store = InMemorySourceDocumentStore()
     await store.add_document(_doc("d1", "kb1"))
     api = KnowledgeRepositoryApi(
-        source_store=store, kb_reader=InMemoryKnowledgeBaseReader({"kb1": []})
+        source_store=store, retrieval_orchestrator=StaticRetriever({"kb1": []})
     )
 
     doc = await api.update_document_meta(
@@ -3026,7 +2970,7 @@ async def _make_fulltext_api(
     await store.add_document(doc)
     return KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({"papers": []}),
+        retrieval_orchestrator=StaticRetriever({"papers": []}),
         llm_adapter=llm,  # type: ignore[arg-type]
     )
 
@@ -3274,7 +3218,6 @@ async def test_reprocess_documents_with_stale_cleaning() -> None:
     vector_store = _FakeVectorStoreForReprocess()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         ingest_manager=ingest,  # type: ignore[arg-type]
         vector_store=vector_store,  # type: ignore[arg-type]
         embedding_provider=_FakeEmbeddingProviderForReprocess(),  # type: ignore[arg-type]
@@ -3305,7 +3248,6 @@ async def test_reprocess_documents_with_stale_cleaning_without_vector_store() ->
     ingest = _FakeIngestManagerForReprocess()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         ingest_manager=ingest,  # type: ignore[arg-type]
     )
 
@@ -3317,7 +3259,7 @@ async def test_reprocess_documents_with_stale_cleaning_without_vector_store() ->
 
 async def test_reprocess_documents_with_stale_cleaning_requires_ingest_manager() -> None:
     api = KnowledgeRepositoryApi(
-        source_store=InMemorySourceDocumentStore(), kb_reader=InMemoryKnowledgeBaseReader({})
+        source_store=InMemorySourceDocumentStore()
     )
     with pytest.raises(RuntimeError, match="IngestManager"):
         await api.reprocess_documents_with_stale_cleaning()
@@ -3338,7 +3280,6 @@ async def test_mark_stale_processing_documents_needs_reindex_is_one_shot() -> No
         await store.add_document(doc)
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         sync_targets={},
     )
 
@@ -3371,7 +3312,6 @@ async def test_zotero_pull_marks_stale_documents_after_sync() -> None:
     await store.add_document(_doc("legacy"))  # 无 processing_version = 旧分块逻辑处理过
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         sync_targets={},
     )
 

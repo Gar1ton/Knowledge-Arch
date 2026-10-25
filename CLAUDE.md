@@ -8,12 +8,11 @@
 
 ## 0. 这是什么
 
-这是一个**通用项目框架模板**（不限于 astrbot 插件）。它的目标不是提供功能，而是：
+这是 **Knowledge Arch** 桌面应用（Win / macOS / Linux）：Tauri 桌面壳 + 本地 Python 后端
+（`ka_server` → `kacore`）+ Next.js 静态导出的界面。本仓库沿用「结构与约定先行」的治理框架：
 
 > **规范并约束「vibe coding」的代码可视性**——让任何人/任何 agent 一眼就知道
 > 「代码该放在哪一层、依赖该指向哪个方向、文档该怎么写」。
-
-复制本模板后，请保留全部规范文件，删除/替换 `*.example.*` 占位与各目录 `README.md` 中的示例段落。
 
 ---
 
@@ -22,7 +21,6 @@
 - **只允许在本工作区内修改代码。** 严禁改动本工作区以外的任何目录。
 - 下列内容为**只读/禁改区**（除非用户明确指示）：
   - 任何位于本仓库根目录之外的路径；
-  - `pages/`（前端构建产物，由 `tools/` 脚本生成，不要手改）；
   - 已标记 `(completed)` 的 `TODO.md` 计划段落的内部技术细节（仅可修正错误）。
 - 非必要**不修改框架核心代码**（组合根、各层 `base` 接口）。确需改动时，必须在计划中单列理由。
 
@@ -76,9 +74,11 @@ python -m pytest
 # 代码检查 / 类型检查
 ruff check . && mypy
 
-# 前端（v0.10.0 起，Next.js App Router）
-cd web/frontend && npm run build      # FRONTEND_BUILD_CMD（产物输出到 out/）
-python tools/sync_frontend.py         # FRONTEND_SYNC_CMD（out/ → pages/）
+# 前端（Next.js App Router，静态导出到 web/frontend/out/，由桌面壳加载）
+cd web/frontend && npm run lint && npx tsc --noEmit && npm run build
+
+# 本地后端（开发）：token 只经环境变量传入
+KA_TOKEN=dev-token python -m ka_server serve --port 26618 --data-dir .dev_data
 ```
 
 ## 6. 语言约定

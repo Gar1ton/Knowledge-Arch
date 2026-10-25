@@ -13,6 +13,7 @@ from kacore.domain.models import (
     ZoteroCollection,
     ZoteroTag,
 )
+from kacore.index_compatibility import IndexCompatibilityStore
 from kacore.pipelines.retrieval_orchestrator import (
     SCOPE_COLLECTION,
     SCOPE_ITEM,
@@ -21,26 +22,9 @@ from kacore.pipelines.retrieval_orchestrator import (
     RetrievalOrchestrator,
     RetrievalScope,
 )
-from kacore.repository.kb_reader.base import KnowledgeBaseReader
 from kacore.repository.source_store.memory import InMemorySourceDocumentStore
 
 LIB = "1"
-
-
-class _KB(KnowledgeBaseReader):
-    """返回固定 chunk 的 mock KB（用于触发 astrbot 召回通道以验证硬过滤）。"""
-
-    def __init__(self, chunks: list[DocumentChunk]) -> None:
-        self._chunks = chunks
-
-    async def list_collections(self) -> list[str]:
-        return ["kb"]
-
-    async def list_chunks(self, collection: str) -> list[DocumentChunk]:
-        return self._chunks
-
-    async def search(self, collection: str, query: str, top_k: int) -> list[DocumentChunk]:
-        return list(self._chunks)
 
 
 def _doc(doc_id: str, item_key: str, *, lifecycle=DocumentLifecycle.ACTIVE) -> SourceDocument:
@@ -92,9 +76,9 @@ async def _store_with_mirror() -> InMemorySourceDocumentStore:
     return store
 
 
-def _orch(store: InMemorySourceDocumentStore, kb: _KB) -> RetrievalOrchestrator:
+def _orch(store: InMemorySourceDocumentStore) -> RetrievalOrchestrator:
     return RetrievalOrchestrator(
-        source_store=store, kb_reader=kb, config=Config({"vector_db": {"backend": "astr"}})
+        source_store=store, config=Config({"vector_db": {"backend": "lexical"}})
     )
 
 
@@ -103,21 +87,21 @@ def _orch(store: InMemorySourceDocumentStore, kb: _KB) -> RetrievalOrchestrator:
 
 async def test_resolve_scope_item() -> None:
     store = await _store_with_mirror()
-    orch = _orch(store, _KB([]))
+    orch = _orch(store)
     allowed = await orch.resolve_scope(RetrievalScope(SCOPE_ITEM, "ITEMA", LIB))
     assert allowed == {"dA"}
 
 
 async def test_resolve_scope_collection_includes_descendants() -> None:
     store = await _store_with_mirror()
-    orch = _orch(store, _KB([]))
+    orch = _orch(store)
     allowed = await orch.resolve_scope(RetrievalScope(SCOPE_COLLECTION, "root", LIB))
     assert allowed == {"dA", "dB"}  # root + child 后代
 
 
 async def test_resolve_scope_tag() -> None:
     store = await _store_with_mirror()
-    orch = _orch(store, _KB([]))
+    orch = _orch(store)
     allowed = await orch.resolve_scope(RetrievalScope(SCOPE_TAG, "shared", LIB))
     assert allowed == {"dA", "dC"}
 
@@ -126,14 +110,14 @@ async def test_resolve_scope_library_excludes_detached() -> None:
     store = await _store_with_mirror()
     detached = _doc("dD", "ITEMD", lifecycle=DocumentLifecycle.DETACHED)
     await store.add_document(detached)
-    orch = _orch(store, _KB([]))
+    orch = _orch(store)
     allowed = await orch.resolve_scope(RetrievalScope(SCOPE_LIBRARY, LIB, LIB))
     assert allowed == {"dA", "dB", "dC"}  # 排除 detached dD
 
 
 async def test_no_scope_returns_none() -> None:
     store = await _store_with_mirror()
-    orch = _orch(store, _KB([]))
+    orch = _orch(store)
     assert await orch.resolve_scope(None) is None
     assert await orch.resolve_scope(RetrievalScope("", "", "")) is None
 
@@ -141,24 +125,58 @@ async def test_no_scope_returns_none() -> None:
 # ── 跨通道硬过滤 ─────────────────────────────────────────────────
 
 
-async def test_hard_filter_restricts_candidates_before_rrf() -> None:
+class _UnfilteredVectors:
+    """不支持过滤下推的稠密通道：无论作用域如何都返回全部候选，硬过滤必须由编排器兜底。"""
+
+    def __init__(self, chunk_ids: list[str]) -> None:
+        self._chunk_ids = chunk_ids
+
+    async def search(self, collection: str, query_vector: list[float], top_k: int, **_: object):
+        return [(cid, 1.0 - i * 0.1) for i, cid in enumerate(self._chunk_ids)][:top_k]
+
+
+class _Embedding:
+    async def embed_query(self, text: str) -> list[float]:
+        return [1.0, 0.0]
+
+
+def _dense_orch(store: InMemorySourceDocumentStore, tmp_path, chunk_ids: list[str]):
+    compat = IndexCompatibilityStore(tmp_path / "compat.json")
+    compat.mark_milvus_compatible("fp")
+    orch = RetrievalOrchestrator(
+        source_store=store,
+        config=Config({"vector_db": {"backend": "milvus"}}),
+        vector_store=_UnfilteredVectors(chunk_ids),  # type: ignore[arg-type]
+        embedding_provider=_Embedding(),  # type: ignore[arg-type]
+        index_compatibility=compat,
+        embedding_fingerprint="fp",
+    )
+    chunks = {
+        "dA_c0": DocumentChunk("dA_c0", "dA", 0, "alpha", "h"),
+        "dB_c0": DocumentChunk("dB_c0", "dB", 0, "beta", "h"),
+    }
+
+    async def _hydrate(ids: list[str]) -> list[DocumentChunk]:
+        # 内存仓储没有 SQL 连接；这里只替换「chunk_id → chunk」的取数，过滤逻辑仍走真实编排器。
+        return [chunks[cid] for cid in ids if cid in chunks]
+
+    orch._find_local_chunks = _hydrate  # type: ignore[method-assign]
+    return orch
+
+
+async def test_hard_filter_restricts_candidates_before_rrf(tmp_path) -> None:
     store = await _store_with_mirror()
-    # KB 召回通道返回 dA 与 dB 的 chunk；item 作用域应只保留 dA。
-    kb = _KB([
-        DocumentChunk("dA_c0", "dA", 0, "alpha", "h"),
-        DocumentChunk("dB_c0", "dB", 0, "beta", "h"),
-    ])
-    orch = _orch(store, kb)
+    # 稠密通道返回 dA 与 dB 的 chunk；item 作用域应只保留 dA。
+    orch = _dense_orch(store, tmp_path, ["dA_c0", "dB_c0"])
     outcome = await orch.retrieve_with_outcome(
         "kb", "alpha beta", top_k=5, scope=RetrievalScope(SCOPE_ITEM, "ITEMA", LIB)
     )
     assert [c.doc_id for c in outcome.chunks] == ["dA"]
 
 
-async def test_empty_scope_returns_no_chunks() -> None:
+async def test_empty_scope_returns_no_chunks(tmp_path) -> None:
     store = await _store_with_mirror()
-    kb = _KB([DocumentChunk("dA_c0", "dA", 0, "alpha", "h")])
-    orch = _orch(store, kb)
+    orch = _dense_orch(store, tmp_path, ["dA_c0"])
     outcome = await orch.retrieve_with_outcome(
         "kb", "alpha", top_k=5, scope=RetrievalScope(SCOPE_ITEM, "NONEXIST", LIB)
     )
@@ -170,7 +188,7 @@ async def test_empty_scope_returns_no_chunks() -> None:
 
 async def test_lightrag_context_rejects_item_and_tag_scope() -> None:
     store = await _store_with_mirror()
-    orch = _orch(store, _KB([]))
+    orch = _orch(store)
     with pytest.raises(RuntimeError, match="item/tag scope"):
         await orch.retrieve_lightrag_context("kb", "q", RetrievalScope(SCOPE_ITEM, "ITEMA", LIB))
     with pytest.raises(RuntimeError, match="item/tag scope"):

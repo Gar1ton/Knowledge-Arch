@@ -113,13 +113,13 @@ def test_milvus_ready_when_installed_and_probed(monkeypatch: pytest.MonkeyPatch)
     assert "milvus" in _stage(pipeline, "retrieval")["detail"]["engines"]
 
 
-def test_milvus_degraded_falls_back_to_astrbot(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 本地 embedding 在位，但缺 pymilvus：向量库降级，检索回退 AstrBot KB。
+def test_milvus_degraded_falls_back_to_lexical(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 本地 embedding 在位，但缺 pymilvus：向量库降级，检索只剩 SQLite 词法通道。
     _patch_modules(monkeypatch, {"sentence_transformers"})
     cfg = _cfg({"vector_db": {"backend": "milvus"}, "embedding": {"provider": "local"}}, dim=384)
     pipeline = detect_pipeline(cfg)
     assert _stage(pipeline, "vector_store")["status"] == STATUS_DEGRADED
-    assert "astrbot_kb" in _stage(pipeline, "retrieval")["detail"]["engines"]
+    assert _stage(pipeline, "retrieval")["detail"]["engines"] == ["sqlite_lexical"]
 
 
 def test_milvus_not_ready_when_only_pymilvus_installed(
@@ -220,8 +220,8 @@ def test_milvus_lock_error_hint_matches_datadirlockederror() -> None:
     )
     hint = milvus_lock_error_hint(text)
     assert hint is not None
-    assert "当前 AstrBot" in hint
-    assert "完整退出 AstrBot" in hint
+    assert "另一个仍在运行的 Knowledge Arch 后端进程" in hint
+    assert "完整退出应用" in hint
     assert "不要直接删除锁文件" in hint
 
 

@@ -3,7 +3,7 @@
 
 PRAGMA foreign_keys = ON;
 
--- 1) 集合表（对应 AstrBot 知识库分类）
+-- 1) 集合表（知识库分类）
 CREATE TABLE IF NOT EXISTS collections (
     name TEXT PRIMARY KEY,
     description TEXT NOT NULL DEFAULT '',

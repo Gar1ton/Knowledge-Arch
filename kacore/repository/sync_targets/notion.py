@@ -72,11 +72,7 @@ class NotionSyncTarget(SyncTarget):
     ) -> None:
         self._config = config
         self._source_store = source_store
-        self._adapter = adapter or NotionMCPAdapter(
-            context,
-            server_name=config.mcp_server_name,
-            rate_limit_rps=config.rate_limit_rps,
-        )
+        self._adapter = adapter or NotionMCPAdapter(context, rate_limit_rps=config.rate_limit_rps)
         self._adapter.configure_data_sources(
             {
                 config.database_id: config.data_source_id,

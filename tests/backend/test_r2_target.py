@@ -176,7 +176,7 @@ async def test_r2_missing_optional_dependency_does_not_break_module_import(
 ) -> None:
     with patch.dict(sys.modules, {"boto3": None, "botocore": None}):
         target = R2SyncTarget(r2_config)
-        with pytest.raises(RuntimeError, match="requirements-additional.txt"):
+        with pytest.raises(RuntimeError, match="optional R2 component"):
             await target.push(_doc("d1"), b"data")
 
 

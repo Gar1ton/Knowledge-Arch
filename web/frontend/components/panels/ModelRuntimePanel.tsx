@@ -40,9 +40,13 @@ export function useModelRuntime() {
   }, []);
 
   useEffect(() => {
-    void refresh();
+    // 首次拉取放到下一拍：effect 体内同步触发 setState 会引起级联渲染。
+    const first = window.setTimeout(() => void refresh(), 0);
     const timer = window.setInterval(() => void refresh(), 5000);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(timer);
+    };
   }, [refresh]);
 
   const doUnload = useCallback(

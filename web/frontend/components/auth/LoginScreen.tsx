@@ -233,7 +233,7 @@ export function LoginScreen({ onLogin }: { onLogin: () => void }) {
         <div className={styles.shell}>
           <header className={styles.masthead}>
             <h1 className={styles.title}>KNOWLEDGE ARCH</h1>
-            <p className={styles.subtitle}>ASTRBOT · PLUGIN</p>
+            <p className={styles.subtitle}>KNOWLEDGE ARCH</p>
           </header>
 
           <div className={styles.rule} aria-hidden="true" />

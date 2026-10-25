@@ -1,6 +1,6 @@
 // 把 pdfjs-dist 自带的运行时资源同步到 public/pdfjs/，供阅读面板 getDocument 加载。
 // pdfjs v6 把 JBIG2/JPEG2000 图像解码器迁到了 WASM，扫描件 PDF 需要 wasmUrl 才能渲染图像。
-// public/ 内容经 next export → out/ → tools/sync_frontend.py → pages/，dev 与 prod 均可在 /pdfjs/... 访问。
+// public/ 内容经 next export → out/（桌面壳加载），dev 与 prod 均可在 /pdfjs/... 访问。
 import { cpSync, rmSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";

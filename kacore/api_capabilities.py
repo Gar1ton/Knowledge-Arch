@@ -152,15 +152,15 @@ class CapabilitiesApiMixin:
     def vector_store_unavailable_reason(self) -> str:
         """向量库不可用时的确切原因 + 下一步；可用时返回空串。
 
-        为何存在：旧文案对所有情况都说「请安装 Milvus 并重启插件，或配置 embedding provider」，
+        为何存在：旧文案对所有情况都说「请安装 Milvus 并重启服务，或配置 embedding provider」，
         而真实原因可能是①后端根本没选 milvus ②milvus-lite 缺失（装了 pymilvus 也没用）
         ③embedding 探针失败/超时 ④依赖齐全但装配报错。用户照着一句话去装，往往完全无效。
         判断顺序即排查顺序：先看配置，再看依赖，最后看运行态。
         """
         if self._config is not None and self._config.get_vector_db_config().backend != "milvus":
             return (
-                "当前向量库后端为 astr（AstrBot/SQLite 基础召回），没有可重建的 Milvus 索引；"
-                "如需向量检索请在数据流页把向量库切换为 milvus 后重启插件。"
+                "当前向量库后端为 lexical（仅 SQLite 词法召回），没有可重建的 Milvus 索引；"
+                "如需向量检索请在数据流页把向量库切换为 milvus 后重启服务。"
             )
 
         runtime = milvus_runtime_status()
@@ -170,7 +170,7 @@ class CapabilitiesApiMixin:
         if self._embedding_provider is None:
             return (
                 "Embedding provider 未就绪（启动探针失败或超时），向量索引无法重建："
-                "请在数据流页查看诊断信息，修正 embedding 配置、或等本地模型下载完成后重启插件。"
+                "请在数据流页查看诊断信息，修正 embedding 配置、或等本地模型下载完成后重启服务。"
             )
 
         if self._vector_store is None:
@@ -183,11 +183,11 @@ class CapabilitiesApiMixin:
                     )
                 return (
                     f"Milvus 依赖已就绪，但向量库在启动时装配失败："
-                    f"{self._vector_store_init_error}。修复后重启插件。"
+                    f"{self._vector_store_init_error}。修复后重启服务。"
                 )
             return (
                 "Milvus 依赖已就绪，但向量库在启动时装配失败："
-                "请在终端日志中查看 Milvus 初始化报错，修复后重启插件。"
+                "请在终端日志中查看 Milvus 初始化报错，修复后重启服务。"
             )
 
         return ""
@@ -348,7 +348,7 @@ class CapabilitiesApiMixin:
         returncode = await proc.wait()
         ok = returncode == 0
         if ok:
-            logger.info("pip install succeeded: %s (restart plugin to load)", spec)
+            logger.info("pip install succeeded: %s (restart service to load)", spec)
         else:
             logger.error("pip install failed (exit %s): %s", returncode, spec)
         return {
@@ -357,7 +357,7 @@ class CapabilitiesApiMixin:
             "returncode": returncode,
             "restart_required": ok,
             "message": (
-                "已安装，需重启插件生效；Docker 部署请注意依赖持久化。"
+                "已安装，需重启服务生效。"
                 if ok
                 else f"安装失败，退出码 {returncode}，详见终端日志。"
             ),

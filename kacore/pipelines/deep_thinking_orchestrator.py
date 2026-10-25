@@ -64,7 +64,7 @@ _BASELINE_FLOOR_N = 5
 
 # actual_mode 三态（杜绝魔法字面量散落）。
 MODE_MILVUS_DEEP = "milvus_deep"
-MODE_ASTRBOT_DEEP_FALLBACK = "astrbot_deep_fallback"
+MODE_LEXICAL_DEEP_FALLBACK = "lexical_deep_fallback"
 MODE_DEGRADED = "deep_degraded_to_default"
 
 
@@ -119,7 +119,7 @@ class DeepThinkingOrchestrator:
         base_mode = (
             MODE_MILVUS_DEEP
             if "milvus" in baseline_outcome.engines
-            else MODE_ASTRBOT_DEEP_FALLBACK
+            else MODE_LEXICAL_DEEP_FALLBACK
         )
 
         est_tokens = 0

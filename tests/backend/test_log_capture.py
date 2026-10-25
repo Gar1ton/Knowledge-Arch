@@ -40,7 +40,7 @@ def test_categorize_by_logger_prefix():
     assert _categorize("KRWebServer", "anything") == "web"
     assert _categorize("SyncPipeline", "anything") == "sync"
     assert _categorize("NotionSyncTarget", "anything") == "sync"
-    assert _categorize("PluginInitializer", "anything") == "system"
+    assert _categorize("AppInitializer", "anything") == "system"
 
 
 def test_categorize_keyword_fallback_for_cross_domain_logger():

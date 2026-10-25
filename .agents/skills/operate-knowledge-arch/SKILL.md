@@ -94,7 +94,7 @@ If a shell command fails before the client starts with `windows sandbox: helper_
 
 2. In the Codex approval prompt, authorize only the project path and the specific Knowledge Arch client command. Do not approve global Python or broad filesystem access.
 3. After approval, run `connection-status`, then run `doctor` once only when the status is `configured` or `environment_override`.
-4. If the ACL failure remains, restart Codex and ensure Codex and AstrBot run at the same Windows privilege level. Do not edit project ACLs, disable security software, or edit the installed AstrBot runtime directory.
+4. If the ACL failure remains, restart Codex and ensure Codex and Knowledge Arch run at the same Windows privilege level. Do not edit project ACLs, disable security software, or edit the installed Knowledge Arch application directory.
 5. For support, share only the error text, Codex version, workspace path, and whether scoped approval succeeded. Never share a password or environment-variable value.
 
 Different failures require different actions:

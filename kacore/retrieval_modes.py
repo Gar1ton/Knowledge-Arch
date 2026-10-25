@@ -1,6 +1,6 @@
 """召回模式公共常量与兼容规范化（core 横切支撑）。
 
-后端 API、Research 服务与 AstrBot 薄壳共同消费这些值，避免公开模式名在多入口漂移。
+后端 API、外部 agent 证据接口与前端共同消费这些值，避免公开模式名在多入口漂移。
 v0.30.1 将 ``high_precision`` 更名为语义准确的 ``graph_mixed``；旧输入仅兼容一版，
 所有内部控制流与响应统一使用新值。
 """
@@ -29,7 +29,7 @@ STRICT_COLLECTION_MODES = frozenset(
     {MODE_GRAPH_MIXED, MODE_GRAPH_ONLY, MODE_DEEP_THINKING}
 )
 # 与 STRICT_COLLECTION_MODES 对称：这些模式必须绑定**一篇具体文档**（doc_id），
-# 光有 collection 不足以执行。没有 doc_id 概念的入口（AstrBot research 工具）见到
+# 光有 collection 不足以执行。没有 doc_id 概念的入口见到
 # 这些模式必须降级，而不是把请求透传下去撞 ValueError。
 STRICT_DOCUMENT_MODES = frozenset({MODE_FULLTEXT})
 

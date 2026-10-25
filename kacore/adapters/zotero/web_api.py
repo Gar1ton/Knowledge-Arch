@@ -23,7 +23,7 @@ from kacore.domain.models import (
     ZoteroTag,
 )
 
-logger = logging.getLogger("astrbot_plugin_knowledge_repository")
+logger = logging.getLogger("ZoteroSync")
 
 API_BASE_URL = "https://api.zotero.org"
 API_VERSION = "3"

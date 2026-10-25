@@ -1,6 +1,6 @@
 # Enhanced Memory 前端主题色系表
 
-来源目录：`D:\Program Files\Git Lib\astrbot-plugin-enhanced-memory\web\frontend`
+来源：另一个本地插件项目的 `web/frontend` 主题实现（只借鉴配色，不含其代码）。
 
 正式主题文件位于：`web\frontend\styles\themes\*.css`
 

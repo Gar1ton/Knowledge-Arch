@@ -17,9 +17,9 @@ _ROOT = Path(__file__).parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from kacore.managers.chunk_token_limits import limit_chunk_spans
-from kacore.managers.chunking import build_structural_chunk_spans
-from kacore.managers.markdown_extractor import extract_pdf_markdown
+from kacore.managers.chunk_token_limits import limit_chunk_spans  # noqa: E402
+from kacore.managers.chunking import build_structural_chunk_spans  # noqa: E402
+from kacore.managers.markdown_extractor import extract_pdf_markdown  # noqa: E402
 
 
 def main() -> None:

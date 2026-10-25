@@ -1,0 +1,956 @@
+"""组合根（Composition Root，见 ../ARCHITECTURE.md §3）。
+
+【唯一】把零件 new 出来并接起来的地方：按依赖顺序构造、构造器注入、生命周期对称。
+业务层不出现在本文件之外的任何「装配代码」。
+
+装配数据库、仓储、检索编排、索引、同步目标与周期任务。HTTP 服务不归本类所有：
+由 `ka_server` 薄壳在 initialize() 之后构造并在 teardown() 之前关闭。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import time
+from contextlib import AsyncExitStack
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import aiosqlite
+
+from kacore.api import KnowledgeRepositoryApi
+from kacore.ask_progress import ProgressStore
+
+# 依赖探测收口至能力注册表；保留模块内 _module_available 名以兼容既有测试的 monkeypatch。
+from kacore.capabilities import milvus_runtime_status
+from kacore.capabilities import module_available as _module_available
+from kacore.config import Config
+from kacore.domain.models import Collection, SyncTargetKind
+from kacore.managers.category_manager import CategoryManager
+from kacore.managers.ingest_manager import IngestManager
+from kacore.managers.quota_manager import QuotaManager
+from kacore.metrics import PerformanceTracker
+from kacore.migration_runner import run_migrations
+from kacore.pipelines.sync_pipeline import SyncPipeline
+from kacore.repository.source_store.sqlite import SQLiteSourceDocumentStore
+from kacore.repository.sync_targets.r2 import R2SyncTarget
+from kacore.runtime_config import RuntimeConfigStore
+from kacore.secret_store import EncryptedSecretStore
+
+if TYPE_CHECKING:
+    from kacore.index_compatibility import IndexCompatibilityStore
+    from kacore.pipelines.retrieval_orchestrator import RetrievalOrchestrator
+    from kacore.repository.embedding.base import EmbeddingProvider
+    from kacore.repository.source_store.base import SourceDocumentStore
+    from kacore.repository.vector_store.base import VectorStore
+
+logger = logging.getLogger("AppInitializer")
+
+# 维度探针文本：内容无所谓，只为拿到一条真实向量的长度。
+_EMBEDDING_PROBE_TEXT = "knowledge-repository-dimension-probe"
+
+
+class _EmbeddingProbeTimeout(RuntimeError):
+    """维度探针在配置时限内未返回；消息已是面向用户的中文说明。"""
+
+
+class AppInitializer:
+    """装配全部子系统并拥有其生命周期。
+
+    raw_config 是启动时的基础配置（可为空 dict，全部取默认值）；运行期写入的覆盖项落在
+    data_dir/runtime_config.json，二者合并后构造 Config。
+    """
+
+    def __init__(self, raw_config: dict[str, Any], data_dir: Path) -> None:
+        self._data_dir = data_dir
+        self._raw_config = raw_config
+        self._runtime_config = RuntimeConfigStore(data_dir / "runtime_config.json")
+        self._config = Config(self._runtime_config.merged_with(raw_config))
+        self._exit_stack: AsyncExitStack | None = None
+        self._backup_task: asyncio.Task[Any] | None = None
+        self._zotero_sync_task: asyncio.Task[Any] | None = None
+        self._notion_sync_task: asyncio.Task[Any] | None = None
+        self._auto_reindex_task: asyncio.Task[Any] | None = None
+        self.auto_reindex_scheduler: Any | None = None
+        # 超时后仍在后台跑的维度探针（模型下载不可中断，只能让它跑完再补记结果）。
+        self._pending_probe_task: asyncio.Task[Any] | None = None
+        self.zotero_sync_pipeline: Any | None = None
+        self.notion_sync_pipeline: Any | None = None
+        self._log_handler: Any | None = None
+
+        # 子系统句柄 —— 在 initialize() 中按依赖顺序赋值，供 ka_server / web 引用。
+        self.source_store: SourceDocumentStore | None = None
+        self.api: KnowledgeRepositoryApi | None = None
+        self.lightrag_registry: Any | None = None
+        self.vector_store: VectorStore | None = None
+        # 最近一次 Milvus 装配失败的具体异常文本；vector_store 装配成功时清空。
+        # 供 capabilities 面板展示具体原因（而非套话），以及「清除残留锁」的前置守卫。
+        self._vector_store_init_error: str | None = None
+        self._milvus_db_path: Path | None = None
+        self.embedding_provider: EmbeddingProvider | None = None
+        self.embedding_dimension: int | None = None
+        self.embedding_fingerprint: str | None = None
+        self.index_compatibility: IndexCompatibilityStore | None = None
+        self.retrieval_orchestrator: RetrievalOrchestrator | None = None
+        self.metrics: PerformanceTracker = PerformanceTracker()
+        self.progress_store: ProgressStore = ProgressStore()
+        self.secret_store: EncryptedSecretStore = EncryptedSecretStore(data_dir / "secrets")
+
+        # 依赖句柄
+        self.ingest_manager: IngestManager | None = None
+        self.category_manager: CategoryManager | None = None
+        self.quota_manager: QuotaManager | None = None
+        self.sync_pipeline: SyncPipeline | None = None
+        self.r2_backup_manager: Any | None = None
+
+    @property
+    def config(self) -> Config:
+        """对外暴露 typed config 门面（只读）。"""
+        return self._config
+
+    @property
+    def log_handler(self) -> Any | None:
+        """initialize() 安装的内存日志 handler（供 HTTP 层的日志页复用同一实例）。"""
+        return self._log_handler
+
+    # ── 启动：按依赖顺序构造 ────────────────────────────────────
+    async def initialize(self) -> None:
+        # 0) 最优先安装日志 handler，确保后续所有启动日志可被终端页捕获。
+        from kacore.log_capture import install as _install_log_capture
+
+        self._log_handler = _install_log_capture()
+        logger.info("AppInitializer.initialize() 开始")
+
+        # 启动是一条长链路，任何一环卡住都表现为「重启没反应」。逐段落记累计耗时，
+        # 让终端页最后一条 INFO 直接指出卡在哪一步。
+        init_started = time.monotonic()
+
+        def _stage_done(stage: str) -> None:
+            logger.info(
+                "初始化步骤完成：%s（累计 %.1fs）", stage, time.monotonic() - init_started
+            )
+
+        # 完整恢复必须发生在 SQLite/Milvus/LightRAG 建立连接之前。
+        self._data_dir.mkdir(parents=True, exist_ok=True)
+        from kacore.managers.r2_backup_manager import apply_pending_restore
+
+        if await asyncio.to_thread(apply_pending_restore, self._data_dir, self._config):
+            self._config = Config(self._runtime_config.merged_with(self._raw_config))
+            logger.info("R2 pending restore 已应用，按恢复后的运行时配置继续初始化")
+
+        self._exit_stack = AsyncExitStack()
+
+        # 1) 解析各子系统专属 typed config（此处已可用，供后续构造使用）。
+        source_cfg = self._config.get_source_store_config()
+        r2_cfg = self._config.get_r2_sync_config()
+        notion_cfg = self._config.get_notion_sync_config()
+
+        _ask_cfg = self._config.get_ask_agent_config()
+
+        # 2) 无依赖层先行：DB 连接 + 迁移 + 仓储生产实现（v0.3.0 接入 sqlite）。
+        db_path = self._data_dir / source_cfg.db_filename
+
+        db = await self._exit_stack.enter_async_context(aiosqlite.connect(str(db_path)))
+        await db.execute("PRAGMA foreign_keys = ON")
+        await run_migrations(db)
+
+        self.source_store = SQLiteSourceDocumentStore(db)
+        interrupted = await self.source_store.mark_interrupted_build_jobs()
+        if interrupted > 0:
+            logger.warning(
+                "%d 个图谱构建任务因进程重启被中断。"
+                "重新发起构建将自动从断点续建（仅处理 pending/error 文档）。",
+                interrupted,
+            )
+        existing_collections = {
+            collection.name for collection in await self.source_store.list_collections()
+        }
+        if source_cfg.default_collection not in existing_collections:
+            await self.source_store.upsert_collection(
+                Collection(
+                    name=source_cfg.default_collection,
+                    description="Default collection",
+                )
+            )
+        _stage_done(f"SQLite 迁移与仓储（{db_path.name}）")
+
+        # 3) 构造同步目标
+        from kacore.repository.sync_targets.base import SyncTarget
+
+        sync_targets: dict[SyncTargetKind, SyncTarget] = {}
+        # R2SyncTarget 延迟初始化 boto3.client，故总是先实例化并配置。
+        r2_target = R2SyncTarget(r2_cfg)
+        sync_targets[SyncTargetKind.R2] = r2_target
+
+        from kacore.repository.sync_targets.notion import NotionSyncTarget
+
+        notion_target = NotionSyncTarget(config=notion_cfg, source_store=self.source_store)
+        sync_targets[SyncTargetKind.NOTION] = notion_target
+
+        # 4) 依赖前者的编排层 managers/pipelines
+        graph_cfg = self._config.get_graph_config()
+
+        self.ingest_manager = IngestManager(
+            source_store=self.source_store,
+            config=source_cfg,
+            data_dir=self._data_dir,
+        )
+        self.category_manager = CategoryManager(source_store=self.source_store)
+        self.quota_manager = QuotaManager(sync_targets=sync_targets, r2_config=r2_cfg)
+        self.sync_pipeline = SyncPipeline(
+            source_store=self.source_store,
+            sync_targets=sync_targets,
+            quota_manager=self.quota_manager,
+            db_path=db_path,
+        )
+
+        _stage_done("同步目标与编排层（managers/pipelines）")
+
+        # 4.5) 主 LLM：chat client 由模型路由提供；未配置时 LLMAdapter 走离线占位。
+        from kacore.adapters.llm import LLMAdapter
+
+        llm_adapter = LLMAdapter(timeout_seconds=_ask_cfg.llm_timeout_seconds)
+
+        # 4.6) 构造共享 Embedding，并用真实探针维度装配 Milvus/LightRAG。
+        vdb_cfg = self._config.get_vector_db_config()
+        embedding_cfg = self._config.get_embedding_config()
+        from kacore.index_compatibility import (
+            IndexCompatibilityStore,
+            embedding_fingerprint,
+        )
+
+        self.index_compatibility = IndexCompatibilityStore(
+            self._data_dir / "index_compatibility.json"
+        )
+        embedding_runtime_available = not (
+            embedding_cfg.provider == "local"
+            and not _module_available("sentence_transformers")
+        )
+        if not embedding_runtime_available:
+            logger.warning(
+                "未安装本地 Embedding 可选依赖；Milvus/LightRAG 已跳过，"
+                "SQLite 词法召回保持可用。"
+            )
+
+        if (vdb_cfg.backend == "milvus" or graph_cfg.enabled) and embedding_runtime_available:
+            from kacore.repository.embedding.factory import EmbeddingProviderFactory
+
+            logger.info(
+                "开始 Embedding 维度探针：%s 超时上限 %ss",
+                self._config.describe_embedding(),
+                embedding_cfg.load_timeout_seconds or "不限",
+            )
+
+            probe_started = time.monotonic()
+            try:
+                self.embedding_provider = EmbeddingProviderFactory.create_provider(
+                    self._config, db_dir=str(self._data_dir)
+                )
+                probe = await self._probe_embedding_dimension(
+                    self.embedding_provider, embedding_cfg
+                )
+                if not probe:
+                    raise RuntimeError("Embedding dimension probe returned an empty vector")
+                self.embedding_dimension = len(probe)
+                self.embedding_fingerprint = embedding_fingerprint(
+                    embedding_cfg, self.embedding_dimension
+                )
+                self._config.set_embedding_dimension(self.embedding_dimension)
+                logger.info(
+                    "Embedding 维度探针完成：%s dim=%d 耗时 %.1fs",
+                    self._config.describe_embedding(),
+                    self.embedding_dimension,
+                    time.monotonic() - probe_started,
+                )
+            except _EmbeddingProbeTimeout as exc:
+                logger.error(
+                    "Embedding 维度探针超时（%ss），跳过向量/图谱继续启动：%s",
+                    embedding_cfg.load_timeout_seconds,
+                    exc,
+                )
+                self._config.add_diagnostic(str(exc))
+                self.embedding_provider = None
+            except NotImplementedError as exc:
+                logger.warning(
+                    "Embedding provider 初始化失败，图谱/向量检索功能已禁用：%s", exc
+                )
+                self._config.add_diagnostic(f"Embedding provider unavailable: {exc}")
+                self.embedding_provider = None
+            except Exception as exc:
+                logger.error(
+                    "Embedding provider 初始化异常，图谱/向量检索功能已禁用：%s", exc, exc_info=True
+                )
+                self._config.add_diagnostic(f"Embedding dimension probe failed: {exc}")
+                self.embedding_provider = None
+            _stage_done("Embedding 探针")
+
+        # 就绪判定收口至 capabilities（pymilvus ∧ milvus_lite）：只探 pymilvus 会在 Windows
+        # 上放行一个必然抛 ConnectionConfigException 的装配，并让依赖面板显示假绿灯。
+        milvus_runtime = milvus_runtime_status()
+        if (
+            vdb_cfg.backend == "milvus"
+            and self.embedding_provider is not None
+            and self.embedding_dimension is not None
+            and milvus_runtime["ready"]
+        ):
+            from kacore.repository.vector_store.milvus_lite import (
+                MilvusLiteVectorStore,
+                MilvusSchemaMismatchError,
+            )
+
+            milvus_path = self._data_dir / vdb_cfg.db_filename
+            self._milvus_db_path = milvus_path
+            self._vector_store_init_error = None
+            is_new_index = not milvus_path.exists()
+            milvus = None
+            try:
+                milvus = MilvusLiteVectorStore(
+                    db_path=str(milvus_path),
+                    dim=self.embedding_dimension,
+                )
+                milvus.validate_schema()
+                self.vector_store = milvus
+                created_collection = bool(
+                    getattr(milvus, "created_collection", is_new_index)
+                )
+                source_has_documents = bool(await self.source_store.list_documents())
+                if (
+                    created_collection
+                    and source_has_documents
+                    and self.embedding_fingerprint
+                ):
+                    self.index_compatibility.mark_milvus_incompatible(
+                        "Milvus collection was recreated while SQLite contains documents."
+                    )
+                    self._config.add_diagnostic(
+                        "Milvus collection is empty while SQLite contains documents; rebuild it."
+                    )
+                    await self._mark_all_documents_needs_reindex()
+                elif created_collection and self.embedding_fingerprint:
+                    self.index_compatibility.mark_milvus_compatible(
+                        self.embedding_fingerprint
+                    )
+                elif (
+                    self.embedding_fingerprint
+                    and not self.index_compatibility.is_milvus_compatible(
+                        self.embedding_fingerprint
+                    )
+                ):
+                    self._config.add_diagnostic(
+                        "Milvus index is incompatible with the active embedding; rebuild it."
+                    )
+                    await self._mark_all_documents_needs_reindex()
+            except MilvusSchemaMismatchError as exc:
+                logger.error(
+                    "Milvus schema mismatch; retrieval is disabled until a full rebuild: %s",
+                    exc,
+                )
+                self.index_compatibility.mark_milvus_incompatible(str(exc))
+                self._config.add_diagnostic(str(exc))
+                self.vector_store = milvus
+                await self._mark_all_documents_needs_reindex()
+            except Exception as exc:
+                logger.error(
+                    "Milvus initialization failed; SQLite lexical retrieval remains active: %s",
+                    exc,
+                )
+                self._config.add_diagnostic(f"Milvus unavailable: {exc}")
+                self._vector_store_init_error = str(exc)
+                if milvus is not None:
+                    try:
+                        await milvus.close()
+                    except Exception:
+                        logger.exception("Failed to close partially initialized Milvus store")
+                self.vector_store = None
+        elif (
+            vdb_cfg.backend == "milvus"
+            and self.embedding_provider is not None
+            and self.embedding_dimension is not None
+        ):
+            # 缺什么、怎么修，一次说清；不再笼统地说「未安装 Milvus Lite 可选依赖」。
+            logger.warning("Milvus 本地向量库不可用：%s", milvus_runtime["hint"])
+            self._config.add_diagnostic(f"Milvus 不可用：{milvus_runtime['hint']}")
+        if vdb_cfg.backend == "milvus":
+            _stage_done(
+                f"Milvus 向量库（{'已装配' if self.vector_store is not None else '未激活'}）"
+            )
+
+        # 4.6.5) 构造官方 LightRAG Core registry（按 collection 懒加载实例）。
+        if (
+            graph_cfg.enabled
+            and self.embedding_provider is not None
+            and self.embedding_dimension is not None
+        ):
+            if not _module_available("lightrag"):
+                logger.warning(
+                    "graph.enabled=true 但未安装 LightRAG 可选依赖，LightRAG Core 已跳过。"
+                )
+            else:
+                from kacore.lightrag_core import LightRAGCoreRegistry
+
+                # 图谱构建专用 LLM 选择：main 复用主 LLM；local/api 使用
+                # OpenAI-compatible endpoint，与答案生成 LLM 完全独立。
+                lightrag_llm_adapter = llm_adapter
+                if graph_cfg.lightrag_llm_provider in {"local", "api"}:
+                    if graph_cfg.lightrag_llm_base_url and graph_cfg.lightrag_llm_model:
+                        from kacore.adapters.llm import LMStudioLLMAdapter
+                        from kacore.config import ENV_LIGHTRAG_LLM_API_KEY
+
+                        lightrag_llm_adapter = LMStudioLLMAdapter(
+                            base_url=graph_cfg.lightrag_llm_base_url,
+                            model=graph_cfg.lightrag_llm_model,
+                            api_key=os.environ.get(ENV_LIGHTRAG_LLM_API_KEY, ""),
+                            timeout_seconds=graph_cfg.lightrag_llm_timeout_seconds,
+                            max_retries=graph_cfg.lightrag_llm_max_retries,
+                            retry_backoff_seconds=graph_cfg.lightrag_llm_retry_backoff_seconds,
+                        )
+                        logger.info(
+                            "LightRAG 图谱构建将使用 %s OpenAI-compatible LLM：%s  model=%s",
+                            graph_cfg.lightrag_llm_provider,
+                            graph_cfg.lightrag_llm_base_url,
+                            graph_cfg.lightrag_llm_model,
+                        )
+                    else:
+                        logger.warning(
+                            "graph.lightrag_llm_provider=%s 但 endpoint/model 未完整配置，"
+                            "LightRAG 图谱构建回退使用主 LLM。",
+                            graph_cfg.lightrag_llm_provider,
+                        )
+                        self._config.add_diagnostic(
+                            "LightRAG LLM provider is set but endpoint/model is incomplete; "
+                            "falling back to main LLM."
+                        )
+                else:
+                    logger.info("LightRAG 图谱构建将复用主 LLM。")
+
+                self.lightrag_registry = LightRAGCoreRegistry(
+                    config=graph_cfg,
+                    data_dir=self._data_dir,
+                    llm_adapter=lightrag_llm_adapter,
+                    embedding_provider=self.embedding_provider,
+                    embedding_dim=self.embedding_dimension,
+                    max_token_size=embedding_cfg.max_token_size,
+                    embedding_model=embedding_cfg.model,
+                )
+                incompatible_lightrag = [
+                    collection
+                    for collection in self.lightrag_registry.existing_collections()
+                    if not self.embedding_fingerprint
+                    or not self.index_compatibility.is_lightrag_compatible(
+                        collection, self.embedding_fingerprint
+                    )
+                ]
+                if incompatible_lightrag:
+                    self._config.add_diagnostic(
+                        "LightRAG indexes are incompatible with the active embedding; "
+                        "rebuild affected collections."
+                    )
+        elif graph_cfg.enabled and self.embedding_provider is None:
+            logger.warning(
+                "graph.enabled=true 但 embedding provider 不可用，LightRAG Core 已跳过。"
+                " 请检查 embedding 配置（provider 可选 'local' / 'external'）。"
+            )
+
+        # 4.7) 构造统一检索编排器 (RetrievalOrchestrator)
+        from kacore.pipelines.retrieval_orchestrator import RetrievalOrchestrator
+
+        self.retrieval_orchestrator = RetrievalOrchestrator(
+            source_store=self.source_store,
+            config=self._config,
+            vector_store=self.vector_store,
+            embedding_provider=self.embedding_provider,
+            lightrag_registry=self.lightrag_registry,
+            index_compatibility=self.index_compatibility,
+            embedding_fingerprint=self.embedding_fingerprint,
+        )
+
+        # 4.8) 构造 reranker 与 Deep Thinking 编排器（FAIR-RAG 迭代检索）。
+        # reranker 懒加载，构造不触发模型下载；缺依赖自动 noop，不影响普通 ask。
+        from kacore.pipelines.deep_thinking_orchestrator import DeepThinkingOrchestrator
+        from kacore.repository.reranker import build_reranker
+
+        rerank_cfg = self._config.get_rerank_config()
+        self.reranker = build_reranker(
+            provider=rerank_cfg.provider,
+            model=rerank_cfg.model,
+            device=rerank_cfg.device,
+            batch_size=rerank_cfg.batch_size,
+            max_candidates=rerank_cfg.max_candidates,
+        )
+        dt_cfg = self._config.get_deep_thinking_config()
+        # 深度思考优先使用独立 OpenAI-compatible endpoint（若已配置），
+        # 回退使用主 LLM adapter（未配置模型时走离线占位）。
+        if dt_cfg.llm_base_url and dt_cfg.llm_model:
+            from kacore.adapters.llm import LMStudioLLMAdapter
+            from kacore.config import ENV_DEEP_THINKING_LLM_API_KEY
+
+            dt_api_key = os.environ.get(ENV_DEEP_THINKING_LLM_API_KEY) or dt_cfg.llm_api_key
+            dt_llm_adapter = LMStudioLLMAdapter(
+                base_url=dt_cfg.llm_base_url,
+                model=dt_cfg.llm_model,
+                api_key=dt_api_key,
+            )
+            logger.info(
+                "深度思考将使用独立 OpenAI-compat LLM：%s  model=%s",
+                dt_cfg.llm_base_url,
+                dt_cfg.llm_model,
+            )
+        else:
+            dt_llm_adapter = llm_adapter
+        self.deep_thinking_orchestrator = DeepThinkingOrchestrator(
+            retrieval_orchestrator=self.retrieval_orchestrator,
+            reranker=self.reranker,
+            llm_adapter=dt_llm_adapter,
+            dt_config=dt_cfg,
+            rerank_config=rerank_cfg,
+        )
+
+        # 4.8a) Codex/外部 agent 的无生成式 LLM 证据召回器。只复用检索、reranker
+        # 与各档证据预算；问题拆解、充分性判断和作答留给调用方 agent。
+        from kacore.pipelines.agent_evidence import AgentEvidenceOrchestrator
+
+        self.agent_evidence_orchestrator = AgentEvidenceOrchestrator(
+            retrieval_orchestrator=self.retrieval_orchestrator,
+            reranker=self.reranker,
+            enhanced_config=self._config.get_enhanced_recall_config(),
+            deep_config=dt_cfg,
+        )
+
+        # 4.8b) 增强召回编排器（A-RAG「2+1」中间档）。与 deep 共享 reranker 实例与
+        # 独立 LLM endpoint 决策（同为研究型内部 agent，不重复膨胀配置面）。
+        from kacore.pipelines.enhanced_recall_orchestrator import EnhancedRecallOrchestrator
+
+        self.enhanced_recall_orchestrator = EnhancedRecallOrchestrator(
+            retrieval_orchestrator=self.retrieval_orchestrator,
+            reranker=self.reranker,
+            llm_adapter=dt_llm_adapter,
+            er_config=self._config.get_enhanced_recall_config(),
+            rerank_config=rerank_cfg,
+        )
+
+        # 4.9) R2 完整备份管理器：inventory/manifest 是 R2 v1 的唯一恢复真相源。
+        from kacore.managers.r2_backup_manager import R2BackupManager
+
+        self.r2_backup_manager = R2BackupManager(
+            target=r2_target,
+            source_store=self.source_store,
+            config=self._config,
+            r2_config=r2_cfg,
+            data_dir=self._data_dir,
+            db_path=db_path,
+            quiesce_indexes=self._quiesce_indexes_for_backup,
+            reload_callback=self.reload,
+            runtime_event_sink=self._log_handler,
+        )
+
+        # 5) 业务门面（依赖已装配的仓储/managers）。
+        self.api = KnowledgeRepositoryApi(
+            source_store=self.source_store,
+            sync_targets=sync_targets,
+            ingest_manager=self.ingest_manager,
+            category_manager=self.category_manager,
+            quota_manager=self.quota_manager,
+            sync_pipeline=self.sync_pipeline,
+            lightrag_registry=self.lightrag_registry,
+            config=self._config,
+            config_persist=self._persist_config_value,
+            llm_adapter=llm_adapter,
+            managed_documents_dir=self._data_dir / "library",
+            vector_store=self.vector_store,
+            vector_store_init_error=self._vector_store_init_error,
+            clear_milvus_lock_callback=self.clear_stale_milvus_lock,
+            embedding_provider=self.embedding_provider,
+            retrieval_orchestrator=self.retrieval_orchestrator,
+            deep_thinking_orchestrator=self.deep_thinking_orchestrator,
+            enhanced_recall_orchestrator=self.enhanced_recall_orchestrator,
+            agent_evidence_orchestrator=self.agent_evidence_orchestrator,
+            reranker=self.reranker,
+            metrics=self.metrics,
+            progress_store=self.progress_store,
+            index_compatibility=self.index_compatibility,
+            embedding_fingerprint=self.embedding_fingerprint,
+            secret_store=self.secret_store,
+            reload_callback=self.reload,
+            r2_backup_manager=self.r2_backup_manager,
+            runtime_event_sink=self._log_handler,
+        )
+        await self.api.restore_paused_build_job()
+
+        # 5.5) Zotero 单向 Pull 管线（api 构造后注入，回调引用 api 的索引/LRAG 助手）。
+        from kacore.pipelines.zotero_sync_pipeline import ZoteroSyncPipeline
+
+        self.zotero_sync_pipeline = ZoteroSyncPipeline(
+            source_store=self.source_store,
+            ingest_manager=self.ingest_manager,
+            config=self._config,
+            zotero_api_key_provider=self.api._zotero_server_key,
+            web_cache_dir=self._data_dir / "zotero_web_cache",
+            index_document=self.api._index_document,
+            remove_index=self.api._remove_document_index,
+            lightrag_cleanup=self.api._lightrag_cleanup,
+            lightrag_mark_pending=self.api._mark_lightrag_pending,
+        )
+        self.api.attach_zotero_pipeline(self.zotero_sync_pipeline)
+
+        # 5.55) Notion 单向推送管线（文章两表增量 + QA 暂存箱补推）。
+        from kacore.pipelines.notion_sync_pipeline import NotionSyncPipeline
+
+        self.notion_sync_pipeline = NotionSyncPipeline(
+            source_store=self.source_store,
+            notion_target=notion_target,
+            config_provider=self._config.get_notion_sync_config,
+        )
+        self.api.attach_notion_sync_pipeline(self.notion_sync_pipeline)
+        _stage_done("业务门面 API 与检索编排")
+
+        # 6) 周期任务（如 R2 周期备份，v0.3.0 起注册）。
+        if r2_cfg.enabled and r2_cfg.backup_interval_sec > 0:
+            self._backup_task = asyncio.create_task(
+                self._periodic_backup(r2_cfg.backup_interval_sec)
+            )
+
+        # 6.1) Zotero 自动同步：启用时重启即增量拉取一次 + 可选定时增量拉取。
+        zotero_cfg = self._config.get_zotero_sync_config()
+        if zotero_cfg.enabled and zotero_cfg.auto_sync_enabled:
+            self._zotero_sync_task = asyncio.create_task(
+                self._periodic_zotero_sync(zotero_cfg.auto_sync_interval_sec)
+            )
+
+        # 常驻轻量检测；开关每轮重读，禁用时不读库、不推送。
+        if self.source_store is not None:
+            self._notion_sync_task = asyncio.create_task(self._periodic_notion_sync())
+
+        # 6.3) Milvus 索引自动重建：常驻调度器（开关每轮重读，故不在这里按配置决定是否创建）。
+        # 启动即打一次信号做「补跑」——此时 4.6 段的 _mark_all_documents_needs_reindex() 已跑完，
+        # 待重建队列是终态，调度器自己查队列决定跑不跑。
+        if vdb_cfg.backend == "milvus":
+            from kacore.auto_reindex import AutoReindexScheduler
+
+            # 升级后旧分块逻辑处理的文档一次性入队（Zotero 拉取结束也会再扫一次，见 api）。
+            await self.api.mark_stale_processing_documents_needs_reindex()
+            self.auto_reindex_scheduler = AutoReindexScheduler(
+                pending_count=self.api.get_pending_reindex_count,
+                run_rebuild=self.api.run_milvus_rebuild_to_completion,
+                config_provider=self._config.get_vector_db_config,
+                is_ready=lambda: self.vector_store is not None
+                and self.embedding_provider is not None,
+            )
+            self.api.attach_auto_reindex_scheduler(self.auto_reindex_scheduler)
+            self._auto_reindex_task = asyncio.create_task(self.auto_reindex_scheduler.run())
+            self.auto_reindex_scheduler.notify()
+
+        # 6.5) 启动摘要——记录各关键组件激活状态，方便终端页快速诊断。
+        logger.info(
+            "初始化完成 | embedding=%s dim=%s | vector_store=%s | lightrag=%s",
+            self._config.get_embedding_config().provider if self._config else "N/A",
+            self.embedding_dimension or "N/A",
+            "Milvus" if self.vector_store is not None else "未激活",
+            "已启用" if self.lightrag_registry is not None else "未激活",
+        )
+        vdb_backend = self._config.get_vector_db_config().backend if self._config else None
+        if self.vector_store is None and vdb_backend == "milvus":
+            logger.warning(
+                "VectorStore 未激活——重建索引在此之前会失败。原因：%s",
+                self.api.vector_store_unavailable_reason()
+                if self.api is not None
+                else milvus_runtime["hint"],
+            )
+
+        from kacore.managers.r2_backup_manager import commit_applied_restore
+
+        await asyncio.to_thread(commit_applied_restore, self._data_dir)
+        logger.info(
+            "AppInitializer.initialize() 完成，总耗时 %.1fs", time.monotonic() - init_started
+        )
+
+    # ── Embedding 维度探针 ──────────────────────────────────────
+    async def _probe_embedding_dimension(
+        self, provider: EmbeddingProvider, embedding_cfg: Any
+    ) -> list[float]:
+        """探一次真实向量维度，最多等 `embedding.load_timeout_seconds` 秒。
+
+        为何不用 `asyncio.wait_for`：超时时它会取消探针任务，而本地 provider 的权重下载跑在
+        `asyncio.to_thread` 的线程里、根本无法取消，取消只会丢掉「已下载一半」的进度信息。
+        故改为 `asyncio.wait`——放弃等待但保留任务，完成时由回调补记日志与诊断。
+
+        超时抛 `_EmbeddingProbeTimeout`（消息即用户可读的中文说明），由 `initialize()`
+        按既有失败兜底路径降级：embedding_provider 置空、写诊断、继续把 Web 控制台拉起来。
+        """
+        timeout_seconds = float(getattr(embedding_cfg, "load_timeout_seconds", 0) or 0)
+        if timeout_seconds <= 0:
+            return await provider.embed_query(_EMBEDDING_PROBE_TEXT)
+
+        task = asyncio.create_task(provider.embed_query(_EMBEDDING_PROBE_TEXT))
+        done, _pending = await asyncio.wait({task}, timeout=timeout_seconds)
+        if task in done:
+            return list(task.result())
+
+        self._pending_probe_task = task
+        task.add_done_callback(self._on_late_embedding_probe)
+        if str(getattr(embedding_cfg, "provider", "")) == "local":
+            raise _EmbeddingProbeTimeout(
+                f"本地 Embedding 模型 {embedding_cfg.model} 加载超时（{timeout_seconds:g}s）："
+                "首次使用需从 HuggingFace 下载权重，下载仍在后台继续。"
+                "本次启动已跳过向量检索与知识图谱（SQLite 词法召回仍可用）；"
+                "下载完成后请再次点击「重启服务」。"
+            )
+        raise _EmbeddingProbeTimeout(
+            f"Embedding 接口探测超时（{timeout_seconds:g}s，model={embedding_cfg.model}）："
+            "请检查 base_url、网络与 KR_EMBEDDING_API_KEY 后重启服务。"
+            "本次启动已跳过向量检索与知识图谱（SQLite 词法召回仍可用）。"
+        )
+
+    def _on_late_embedding_probe(self, task: asyncio.Task[Any]) -> None:
+        """超时后仍在后台跑的探针有了结果时补记一条日志/诊断。
+
+        用户据此知道「模型已经下完了，现在重启就能用」，而不是反复盲试。
+        """
+        self._pending_probe_task = None
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error("后台 Embedding 探针最终失败：%s", exc)
+            return
+        vector = task.result() or []
+        logger.info(
+            "后台 Embedding 探针已完成（维度 %d）：模型已就绪，点击「重启服务」即可启用向量检索。",
+            len(vector),
+        )
+        self._config.add_diagnostic(
+            "Embedding 模型已在后台就绪，点击「重启服务」即可启用向量检索与知识图谱。"
+        )
+
+    async def _quiesce_indexes_for_backup(self) -> None:
+        """完成索引落盘并释放文件锁；后续访问会按现有懒初始化契约重新打开。"""
+        if self.api is not None:
+            active_graph = await self.api.get_active_build_job()
+            active_jobs = [
+                ("LightRAG", active_graph),
+                ("Milvus", self.api.get_active_milvus_build_job()),
+                ("Zotero", self.api.get_active_zotero_sync_job()),
+                ("文档摄入", self.api.get_active_ingest_job()),
+            ]
+            running = [
+                name
+                for name, job in active_jobs
+                if job is not None
+                and (
+                    name == "LightRAG"
+                    or str(job.get("status") or "") == "running"
+                )
+            ]
+            if running:
+                raise RuntimeError(
+                    f"以下持久化任务仍在运行，请完成后再备份：{', '.join(running)}"
+                )
+        if self.lightrag_registry is not None:
+            await self.lightrag_registry.close()
+        if self.vector_store is not None:
+            await self.vector_store.close()
+
+    def _persist_config_value(self, section: str, key: str, value: object) -> None:
+        self._runtime_config.set_value(section, key, value)
+
+    async def _periodic_backup(self, interval_sec: int) -> None:
+        """周期性触发 R2 同步备份任务的后台循环。"""
+        logger.info(f"Background periodic backup scheduled every {interval_sec} seconds.")
+        try:
+            while True:
+                await asyncio.sleep(interval_sec)
+                if self.r2_backup_manager is not None:
+                    logger.info("Triggering periodic background backup to R2...")
+                    await self.r2_backup_manager.backup(force=False)
+        except asyncio.CancelledError:
+            logger.info("Background periodic backup task cancelled.")
+        except Exception as e:
+            logger.error(f"Error in background periodic backup: {e}")
+
+    async def _periodic_notion_sync(self) -> None:
+        """10 秒合并本地变更 + 周期补偿，共用手动推送进度任务。"""
+        from kacore.notion_auto_sync import NotionAutoSync
+
+        assert self.source_store is not None
+        await NotionAutoSync(
+            self.source_store, self._config.get_notion_sync_config, self._auto_notion_push
+        ).run()
+
+    async def _auto_notion_push(self) -> bool | None:
+        """本地维护/既有推送忙时等待，不把新变更误认为已消费。"""
+        if self.api is None:
+            return None
+        if self.api._processing_lock.locked():
+            return None
+        task = self.api._notion_sync_task
+        if task is not None and not task.done():
+            return None
+        zotero = self.api.get_active_zotero_sync_job()
+        if zotero is not None and zotero.get("status") == "running":
+            return None
+        await self.api.sync_notion_push(force=False)
+        task = self.api._notion_sync_task
+        if task is None:
+            return False
+        await task
+        job = self.api._notion_sync_job
+        return job is not None and job.status == "success"
+
+    async def _periodic_zotero_sync(self, interval_sec: int) -> None:
+        """Zotero 自动同步：启动即增量拉取一次，之后每 interval_sec 再增量拉取。"""
+        logger.info("Zotero auto-sync scheduled (restart + every %ss).", interval_sec)
+        try:
+            while True:
+                if self.api is not None:
+                    try:
+                        await self.api.sync_zotero_pull(incremental=True)
+                    except Exception as exc:
+                        logger.error("Zotero auto-sync failed: %s", exc)
+                await asyncio.sleep(interval_sec)
+        except asyncio.CancelledError:
+            logger.info("Zotero auto-sync task cancelled.")
+
+    async def _mark_all_documents_needs_reindex(self) -> None:
+        if self.source_store is None:
+            return
+        for doc in await self.source_store.list_documents():
+            if not doc.needs_reindex:
+                doc.needs_reindex = True
+                try:
+                    await self.source_store.update_document(doc)
+                except Exception as exc:
+                    logger.error("Failed to mark document %s for reindex: %s", doc.doc_id, exc)
+
+    async def clear_stale_milvus_lock(self) -> dict[str, Any]:
+        """保留既有端口，但拒绝删除 LOCK；OS 锁必须由持有服务释放。
+
+        空文件不代表锁已失效，删除文件可能绕过仍在工作的服务的互斥保护。
+        旧实例已丢失释放入口时，应完整退出持锁进程，不做文件层面的恢复。
+        """
+        from kacore.capabilities import milvus_lock_error_hint
+
+        if self._config is None or self._config.get_vector_db_config().backend != "milvus":
+            return {"status": "error", "message": "当前向量库后端不是 milvus，无需清除锁定。"}
+        if self.vector_store is not None:
+            return {"status": "error", "message": "Milvus 已正常装配，无需清除锁定。"}
+        if not self._vector_store_init_error or not milvus_lock_error_hint(
+            self._vector_store_init_error
+        ):
+            return {"status": "error", "message": "未检测到 Milvus 数据目录锁定问题，拒绝清除。"}
+        if self._milvus_db_path is None:
+            return {"status": "error", "message": "尚未确定 Milvus 数据目录路径，无法清除。"}
+
+        return {
+            "status": "error",
+            "message": milvus_lock_error_hint(self._vector_store_init_error),
+        }
+
+    # ── 关闭：与构造顺序相反释放 ────────────────────────────────
+    async def teardown(self) -> None:
+        teardown_started = time.monotonic()
+        logger.info("AppInitializer.teardown() 开始释放子系统")
+
+        if self._backup_task is not None:
+            self._backup_task.cancel()
+            try:
+                await self._backup_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+            self._backup_task = None
+
+        if self._zotero_sync_task is not None:
+            self._zotero_sync_task.cancel()
+            try:
+                await self._zotero_sync_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._zotero_sync_task = None
+
+        if self._notion_sync_task is not None:
+            self._notion_sync_task.cancel()
+            try:
+                await self._notion_sync_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._notion_sync_task = None
+
+        if self.api is not None and self.api._notion_sync_task is not None:
+            self.api._notion_sync_task.cancel()
+            await asyncio.gather(self.api._notion_sync_task, return_exceptions=True)
+            self.api._notion_sync_task = None
+
+        if self._auto_reindex_task is not None:
+            self._auto_reindex_task.cancel()
+            try:
+                await self._auto_reindex_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._auto_reindex_task = None
+            self.auto_reindex_scheduler = None
+
+        # 后台探针：取消任务本身（不等待）。底层模型下载线程无法中断，会继续跑完写入
+        # HuggingFace 缓存——这正是我们要的：下次 initialize 直接命中缓存。
+        if self._pending_probe_task is not None:
+            self._pending_probe_task.cancel()
+            self._pending_probe_task = None
+
+        # 先停止调度器和 HTTP 请求，避免取消后又产生构建；再收走独立 Milvus 任务。
+        if self.api is not None:
+            await self.api.cancel_build_tasks()
+
+        if self.lightrag_registry is not None:
+            try:
+                await self.lightrag_registry.close()
+            except Exception as e:
+                logger.error(f"Failed to close LightRAG Core on teardown: {e}")
+            self.lightrag_registry = None
+
+        if self.vector_store is not None:
+            try:
+                await self.vector_store.close()
+            except Exception as e:
+                logger.error(f"Failed to close vector store on teardown: {e}")
+            self.vector_store = None
+
+        if self._exit_stack is not None:
+            await self._exit_stack.aclose()
+            self._exit_stack = None
+        # 门面已不可用（数据库已关）：置空让 HTTP 层在软重启窗口内回 503 而非撞已关闭的连接。
+        self.api = None
+        logger.info(
+            "AppInitializer.teardown() 完成，耗时 %.1fs", time.monotonic() - teardown_started
+        )
+
+    async def reload(self) -> None:
+        """软重启：teardown 全部子系统后，重读持久化配置重建 Config 并重新 initialize。
+
+        供「重启服务」按钮经 api.restart_plugin 触发；进程与 HTTP 端口不变，只在进程内
+        重建全部子系统。重启期间到达的请求可能短暂失败，由前端轮询重连。
+        """
+        reload_started = time.monotonic()
+        logger.info("AppInitializer.reload() 触发服务软重启")
+        await self.teardown()
+        self._config = Config(self._runtime_config.merged_with(self._raw_config))
+        try:
+            await self.initialize()
+        except Exception:
+            logger.error(
+                "软重启的 initialize() 阶段失败（耗时 %.1fs），尝试回滚待应用的 R2 恢复",
+                time.monotonic() - reload_started,
+                exc_info=True,
+            )
+            from kacore.managers.r2_backup_manager import rollback_applied_restore
+
+            if await asyncio.to_thread(rollback_applied_restore, self._data_dir):
+                self._config = Config(self._runtime_config.merged_with(self._raw_config))
+                await self.initialize()
+            raise
+        logger.info(
+            "AppInitializer.reload() 软重启完成，总耗时 %.1fs",
+            time.monotonic() - reload_started,
+        )
+
+
+__all__ = ["AppInitializer"]

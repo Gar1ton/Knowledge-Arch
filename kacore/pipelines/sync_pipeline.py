@@ -254,7 +254,7 @@ class SyncPipeline:
             return {
                 "status": "success",
                 "restart_required": True,
-                "message": "数据库快照已安全替换，请重启插件以加载恢复后的数据。",
+                "message": "数据库快照已安全替换，请重启服务以加载恢复后的数据。",
             }
         except Exception as e:
             logger.error(f"Failed to restore database from R2: {e}")

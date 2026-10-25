@@ -1,38 +1,10 @@
-# Notion 同步：MCP v2、正文笔记与消耗
+# Notion 同步：正文笔记与消耗
 
-## 升级运行实例
+## 接入方式（过渡期说明）
 
-本仓库只提供适配器，不安装或修改 AstrBot 宿主的 MCP server。
-开发代码已迁移到 `@suekou/mcp-notion-server@2.0.2`；不要用旧 MCP v1 搭配新代码。
-
-1. 确保运行 MCP 的环境使用 **Node.js 22 或以上**（容器内 MCP 要检查容器内版本）。
-2. 在 AstrBot MCP 配置中保留现有 server 名称（默认 `notion`）、token 与连接方式，
-   将启动参数的包名锁为 `@suekou/mcp-notion-server@2.0.2`，例如：
-
-   ```json
-   {"command": "npx", "args": ["-y", "@suekou/mcp-notion-server@2.0.2"]}
-   ```
-
-   这是启动字段示例；token 留在原有宿主配置中，不复制到 KA 配置或仓库。
-3. 重连该 MCP server，确认工具清单包含 `notion_query_data_source`、
-   `notion_retrieve_data_source`、`notion_update_data_source`、`notion_create_data_source_item`。
-4. 重新配置插件的 Articles / QA 目标：`database_id` / `qa_database_id` 填新版
-   **Database 容器 ID**，`data_source_id` / `qa_data_source_id` 填对应的 **Data Source ID**。
-   单源库可将源 ID 留空，由原有流程解析；多源库必须明确指定。
-5. 如果要由插件新建两库，清空四个目标 ID，填写已授权的 `parent_page_id`，重新加载插件，
-   再点击 WebUI「设置 → 同步 / 备份 → Notion 同步 → 初始化数据库」。
-   曾自动保存过目标 ID 时，还需移除插件数据目录 `runtime_config.json` 中这四个 ID 的
-   覆盖项，再重新加载；本轮不提供旧库迁移、映射清理或自动恢复功能。
-6. 先手动同步，检查任务错误及「同步账本」；确认正常后开启自动同步。
-
-本次只修复三点：工具能力预检、`data_sources` 响应的准确分类、真实失败账本展示。
-预检失败只结束一轮任务，不逐篇写入同一个错误，不覆盖未尝试文档的历史账本。
-`/api/sync/status` 合并 Notion 实体账本；`GET /api/sync/notion/status` 提供失败计数和合并原因。
-旧 QA 正文默认不会完整保存在本地，本次没有旧内容恢复流程。
-
-契约参考：[MCP v2.0.2 发布说明](https://github.com/suekou/mcp-notion-server/releases/tag/v2.0.2)、
-[MCP 工具文档](https://github.com/suekou/mcp-notion-server/blob/main/docs/tools.md)、
-[Notion Data Source 升级指南](https://developers.notion.com/docs/upgrade-guide-2025-09-03)。
+Knowledge Arch 桌面版直接调用 Notion REST API：在数据流的 Notion 节点填写 integration
+token 与目标库 ID，不需要 MCP server，也不需要 Node.js（P3 落地，届时本节改写为配置步骤）。
+P1–P2 过渡期 Notion 同步不可用，其余同步语义不变。
 
 ## 自动同步与正文保护
 

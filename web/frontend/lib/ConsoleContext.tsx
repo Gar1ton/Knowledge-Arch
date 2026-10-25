@@ -23,8 +23,6 @@ interface ConsoleContextValue {
   settingOpen: boolean;
   setSettingOpen: (v: boolean) => void;
 
-  astrBotOpen: boolean;
-  setAstrBotOpen: (v: boolean) => void;
 
   workflowOpen: boolean;
   setWorkflowOpen: (v: boolean) => void;
@@ -44,8 +42,6 @@ const ConsoleContext = createContext<ConsoleContextValue>({
   setNoteDocId: () => {},
   settingOpen: false,
   setSettingOpen: () => {},
-  astrBotOpen: false,
-  setAstrBotOpen: () => {},
   workflowOpen: false,
   setWorkflowOpen: () => {},
   modelsOpen: false,
@@ -58,7 +54,6 @@ export function ConsoleProvider({ children }: { children: React.ReactNode }) {
   const [highlightedChunk, setHighlightedChunk] = useState<HighlightedChunk | null>(null);
   const [noteDocId, setNoteDocId] = useState<string | null>(null);
   const [settingOpen, setSettingOpen] = useState(false);
-  const [astrBotOpen, setAstrBotOpen] = useState(false);
   const [workflowOpen, setWorkflowOpen] = useState(false);
   const [modelsOpen, setModelsOpen] = useState(false);
   const hydratedRef = useRef(false);
@@ -161,7 +156,6 @@ export function ConsoleProvider({ children }: { children: React.ReactNode }) {
         highlightedChunk, setHighlightedChunk,
         noteDocId, setNoteDocId,
         settingOpen, setSettingOpen,
-        astrBotOpen, setAstrBotOpen,
         workflowOpen, setWorkflowOpen,
         modelsOpen, setModelsOpen,
       }}

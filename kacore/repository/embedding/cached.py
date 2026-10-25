@@ -61,7 +61,7 @@ class CachedEmbeddingProvider(EmbeddingProvider):
         """静态 namespace + 被包装 provider 的运行时身份（若有）。
 
         local/external 的 `identity` 为空，namespace 与引入该机制前逐字节一致，既有缓存继续命中。
-        astr 的身份含 provider ID / adapter 类型 / 模型 / 实测维度，任一变化即换一套 key，
+        声明了身份的 provider（如 provider ID / 模型 / 实测维度）任一变化即换一套 key，
         不会把旧模型的向量当成新模型的命中。每次现读：实测维度在首次嵌入后才确定。
         """
         identity = getattr(self._inner, "identity", None)
@@ -99,7 +99,7 @@ class CachedEmbeddingProvider(EmbeddingProvider):
             return await self._embed_cached(texts)
 
     async def _ensure_dimension(self, probe_text: str) -> None:
-        """external 的映射维度未经验证；astr 未声明维度时也先走真实探针。"""
+        """external 的映射维度未经验证；未声明维度的 provider 也先走真实探针。"""
         verified = getattr(self._inner, "dimension_verified", True)
         try:
             dimension = self._inner.get_dimension()

@@ -48,7 +48,7 @@ class AutoReindexScheduler:
     - `run()` 是长驻协程，由组合根 `create_task` 持有，`CancelledError` 时干净退出；
       其余异常一律吞掉记日志——调度器不得因单次重建失败而死掉。
     - 每轮循环都**重读配置**，因此 `auto_rebuild_enabled` / `auto_rebuild_delay_seconds`
-      改完即生效，无需重启插件。
+      改完即生效，无需重启服务。
     - 单飞由 `run_rebuild` 自身保证（组合根接的 `api.start_milvus_rebuild` 已是全局单飞），
       本类不再加锁：手动重建正在跑时，自动重建会自然复用同一个 job。
     """

@@ -249,7 +249,7 @@ async def test_missing_server_raises_instead_of_stub() -> None:
 async def test_unusable_context_raises() -> None:
     adapter = NotionMCPAdapter(None, "notion", rate_limit_rps=1000)
 
-    with pytest.raises(NotionMCPError, match="get_llm_tool_manager"):
+    with pytest.raises(NotionMCPError, match="Notion 未连接"):
         await adapter.delete_block("b1")
 
 

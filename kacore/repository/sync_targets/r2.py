@@ -46,8 +46,8 @@ class R2SyncTarget(SyncTarget):
                 from botocore.config import Config as BotoConfig
             except ImportError as exc:
                 raise RuntimeError(
-                    "R2 sync requires optional dependencies. Install requirements-additional.txt "
-                    "into the AstrBot Python environment and restart."
+                    "R2 sync requires the optional R2 component (boto3). Install it from "
+                    "Preferences > Components and restart the service."
                 ) from exc
 
             self._s3_client = boto3.client(

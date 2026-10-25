@@ -215,7 +215,6 @@ export function FlowNode({
   const id = stage.id as FlowStageId;
   const meta = STAGE_META[id];
   const canSwitch = Boolean(SWITCH_MAP[id]) && stage.candidates.length > 1;
-  const lockedOptions = id === "vector_store" ? new Set(["astr"]) : undefined;
   const isDest = meta.kind === "dest";
   const isOff = stage.status === "off";
   const detailParts = buildDetailParts(stage, lang, t("flow_engines"));
@@ -288,8 +287,6 @@ export function FlowNode({
               disabled={saving}
               status={stage.status}
               justActivatedValue={justActivatedValue}
-              lockedOptions={lockedOptions}
-              lockedTitle={t("flow_vector_astr_locked")}
               onChange={(value) => onSwitch(stage, value)}
             />
           </Field>

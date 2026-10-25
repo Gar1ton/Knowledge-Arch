@@ -57,7 +57,7 @@ MILVUS_PIP_SPEC = "pymilvus[milvus_lite]>=2.6,<3.0"
 MILVUS_LITE_PIP_SPEC = "milvus-lite>=3.0,<4.0"
 
 _MILVUS_REINSTALL_HINT = (
-    "在数据流页点「一键安装」，或重新安装插件让 AstrBot 重跑 requirements.txt；装好后重启插件。"
+    "在数据流页点「一键安装」补装核心依赖；装好后重启服务。"
 )
 
 
@@ -101,8 +101,8 @@ def milvus_runtime_status() -> dict[str, Any]:
 
 
 _MILVUS_LOCK_HINT = (
-    "Milvus 数据目录仍被服务占用，持锁者也可能是当前 AstrBot 进程中的旧实例；"
-    "请完整退出 AstrBot 后重新启动，仅重启或重装插件可能无法释放旧服务。"
+    "Milvus 数据目录仍被服务占用，持锁者可能是另一个仍在运行的 Knowledge Arch 后端进程；"
+    "请完整退出应用（含托盘）后重新启动，仅重启服务可能无法释放旧服务。"
     "若仍失败，再检查重复进程、目录 ACL 或安全软件；"
     "不要直接删除锁文件或向量数据目录。"
 )
@@ -286,7 +286,7 @@ def _lightrag_llm_label(provider: str, model: str) -> str:
     """返回数据流 UI 的只读 LLM 摘要，不暴露 endpoint。"""
     display_model = (model or "").strip()
     if provider == "main":
-        display_model = display_model or "AstrBot main LLM"
+        display_model = display_model or "main LLM"
     elif provider == "local":
         display_model = display_model or "local model"
     else:
@@ -369,11 +369,6 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
     elif embedding_cfg.provider == "external":
         embed_configured = has_api_key
         embed_deps = []
-    elif embedding_cfg.uses_astrbot:
-        # 密钥/地址/模型都在 AstrBot 侧，静态配置无可缺项；能否用取决于运行期能否解析并探到向量，
-        # 由 embedding_runtime_ready（探针维度）体现，解析失败的原因在 diagnostics 里。
-        embed_configured = True
-        embed_deps = []
     else:  # 未知取值：不支持，禁用 Milvus/LightRAG
         embed_configured = False
         embed_deps = []
@@ -382,7 +377,7 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
     embedding = {
         "id": "embedding",
         "current": embedding_cfg.provider,
-        "candidates": ["local", "external", "astr"],
+        "candidates": ["local", "external"],
         "status": embed_status,
         "switchable": True,
         "consequence": CONSEQUENCE_REBUILD,
@@ -393,24 +388,21 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
             "base_url": embedding_cfg.base_url,
             "actual_dimension": dim,
             "api_key_present": has_api_key,
-            # astr 模式：配置的 ID（可空=自动选择）与运行期实际解析到的非机密身份。
-            "astrbot_provider_id": embedding_cfg.astrbot_provider_id,
-            "astrbot_identity": dict(config.runtime_embedding_identity or {}) or None,
         },
     }
 
-    # ③ 向量库：milvus 需 pymilvus + embedding 就绪，否则受控回退到 AstrBot/SQLite。
+    # ③ 向量库：milvus 需 pymilvus + embedding 就绪，否则受控回退到 SQLite 词法召回。
     if vdb_cfg.backend == "milvus":
         vector_ready = has_milvus and embedding_runtime_ready
         vector_status = STATUS_READY if vector_ready else STATUS_DEGRADED
         vector_deps = ["milvus"]
-    else:  # astr
+    else:  # lexical
         vector_status = STATUS_READY
         vector_deps = []
     vector_store = {
         "id": "vector_store",
         "current": vdb_cfg.backend,
-        "candidates": ["milvus", "astr"],
+        "candidates": ["milvus", "lexical"],
         "status": vector_status,
         "switchable": True,
         "consequence": CONSEQUENCE_RESTART,
@@ -420,7 +412,6 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
             "auto_index_enabled": vdb_cfg.auto_index_enabled,
             "auto_rebuild_enabled": vdb_cfg.auto_rebuild_enabled,
             "auto_rebuild_delay_seconds": vdb_cfg.auto_rebuild_delay_seconds,
-            "astrbot_locked": True,
             "milvus_runtime_ready": has_milvus,
             "milvus_runtime_hint": milvus_runtime["hint"],
         },
@@ -430,8 +421,6 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
     engines = ["sqlite_lexical"]
     if vdb_cfg.backend == "milvus" and has_milvus and embedding_runtime_ready:
         engines.insert(0, "milvus")
-    else:
-        engines.insert(0, "astrbot_kb")
     retrieval = {
         "id": "retrieval",
         "current": "rrf_fusion",

@@ -19,7 +19,7 @@ REQUIRED_TABLES = {"collections", "documents", "chunks"}
 
 
 async def run_migrations(db: aiosqlite.Connection) -> list[str]:
-    """Apply all pending plugin migrations in filename order."""
+    """Apply all pending migrations in filename order (tracked by file name only)."""
     await db.execute(
         "CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT)"
     )

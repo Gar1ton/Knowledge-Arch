@@ -18,7 +18,6 @@ if TYPE_CHECKING:
     from kacore.index_compatibility import IndexCompatibilityStore
     from kacore.lightrag_core import LightRAGCoreRegistry
     from kacore.repository.embedding.base import EmbeddingProvider
-    from kacore.repository.kb_reader.base import KnowledgeBaseReader
     from kacore.repository.reranker.base import Reranker
     from kacore.repository.source_store.base import SourceDocumentStore
     from kacore.repository.vector_store.base import VectorStore
@@ -74,8 +73,6 @@ class RetrievalOutcome:
 
     @property
     def actual_mode(self) -> str:
-        if "astrbot" in self.engines:
-            return "astrbot_fallback" if self.fallback_reason else "astrbot"
         if "milvus" in self.engines:
             return "milvus"
         if "sqlite_lexical" in self.engines:
@@ -90,7 +87,6 @@ class RetrievalOrchestrator:
         self,
         *,
         source_store: SourceDocumentStore,
-        kb_reader: KnowledgeBaseReader,
         config: Config,
         vector_store: VectorStore | None = None,
         embedding_provider: EmbeddingProvider | None = None,
@@ -99,7 +95,6 @@ class RetrievalOrchestrator:
         embedding_fingerprint: str | None = None,
     ) -> None:
         self._source_store = source_store
-        self._kb_reader = kb_reader
         self._config = config
         self._vector_store = vector_store
         self._embedding_provider = embedding_provider
@@ -283,26 +278,6 @@ class RetrievalOrchestrator:
         if not dense_chunks and collection:
             if vdb.backend == "milvus" and fallback_reason is None:
                 fallback_reason = "milvus_no_hits"
-            engines.append("astrbot")
-            try:
-                dense_chunks = await self._kb_reader.search(
-                    collection,
-                    query,
-                    pool_k * 4 if exclude_chunk_ids or allowed_doc_ids is not None else pool_k,
-                )
-                dense_chunks = [
-                    c
-                    for c in dense_chunks
-                    if c.chunk_id not in exclude_chunk_ids
-                    and (allowed_doc_ids is None or c.doc_id in allowed_doc_ids)
-                ]
-                if len(dense_chunks) < pool_k and (
-                    exclude_chunk_ids or allowed_doc_ids is not None
-                ):
-                    fallback_reason = (fallback_reason or "astrbot") + ":candidate_exhausted"
-                dense_chunks = dense_chunks[:pool_k]
-            except Exception as exc:
-                logger.error("AstrBot native search fallback failed: %s", exc)
 
         anchor_chunks: list[DocumentChunk] = []
         lexical_chunks: list[DocumentChunk] = []

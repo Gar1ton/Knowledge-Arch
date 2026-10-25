@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
 from kacore.adapters.llm import LLMAdapter
@@ -158,7 +156,7 @@ async def test_reindex_removes_old_revision_vectors_after_success():
             return [[1.0, 0.0] for _ in texts]
 
     api = KnowledgeRepositoryApi(
-        source_store=store, kb_reader=None, vector_store=vectors, embedding_provider=Embedding()
+        source_store=store, vector_store=vectors, embedding_provider=Embedding()
     )
     await api._index_document_chunks_with_retry("doc", "col", context="test")
     hits = await vectors.search("col", [1.0, 0.0], 10)
@@ -228,37 +226,48 @@ async def test_rechunk_preserves_notes_and_changes_identity(tmp_path):
 
 
 async def test_usage_records_internal_fallback_and_unknown_failure():
-    class Provider:
-        def meta(self):
-            return SimpleNamespace(id="provider")
+    """reasoning-only 重试与失败调用都逐次计账：成功为 actual，失败消费为 unknown。"""
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
 
-    class Context:
-        provider_manager = SimpleNamespace(curr_provider_inst=Provider())
+    from kacore.adapters.llm import LMStudioLLMAdapter
 
-        def __init__(self):
-            self.calls = 0
+    calls = 0
 
-        async def llm_generate(self, **kwargs):
-            self.calls += 1
-            return SimpleNamespace(
-                completion_text="" if self.calls == 1 else "answer",
-                reasoning_content="reasoning" if self.calls == 1 else "",
-                usage={"prompt_tokens": 10, "completion_tokens": 5},
-            )
+    async def respond(request):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            return web.json_response({"error": "down"}, status=500)
+        message = (
+            {"content": "", "reasoning_content": "reasoning"}
+            if calls == 1
+            else {"content": "answer"}
+        )
+        return web.json_response({
+            "model": "m",
+            "choices": [{"message": message, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        })
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", respond)
+    server = TestServer(app)
+    await server.start_server()
 
     @usage_request
     async def run():
-        adapter = LLMAdapter(Context())
+        client = LMStudioLLMAdapter(str(server.make_url("/v1")), "m", max_retries=0)
+        adapter = LLMAdapter(client)
         await adapter.generate_result("question", allow_mock=False)
-
-        async def fail(**kwargs):
-            raise TimeoutError()
-
-        with pytest.raises(TimeoutError):
-            await adapter._measured_provider(fail, "q", "", "provider")
+        with pytest.raises(RuntimeError):
+            await client.generate_result("q", allow_mock=False)
         return current_usage.get().summary()
 
-    usage = await run()
+    try:
+        usage = await run()
+    finally:
+        await server.close()
     assert usage["call_count"] == 3
     assert usage["known_tokens"] == 30
     assert usage["unknown_calls"] == 1
@@ -276,7 +285,7 @@ async def test_maintenance_dry_run_does_not_read_or_rebuild_chunks():
     await store.add_document(
         SourceDocument("doc", "Title", "original.pdf", "application/pdf", 1, "hash", "col")
     )
-    api = KnowledgeRepositoryApi(source_store=store, kb_reader=None, ingest_manager=object())
+    api = KnowledgeRepositoryApi(source_store=store, ingest_manager=object())
     assert await api.reprocess_documents_with_stale_cleaning(dry_run=True) == {
         "dry_run": True,
         "document_ids": ["doc"],

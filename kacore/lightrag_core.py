@@ -1,8 +1,8 @@
 """LightRAG Core integration helpers.
 
-This module is intentionally small and explicit: AstrBot deployment is the first
-place where real local LLM/Embedding endpoints are available, so every operation
-logs readable "KR LightRAG" lines for terminal-based manual verification.
+This module is intentionally small and explicit: real local LLM/Embedding endpoints
+are only available in a running app, so every operation logs readable "KR LightRAG"
+lines for log-based manual verification.
 """
 
 from __future__ import annotations

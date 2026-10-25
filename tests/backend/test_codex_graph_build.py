@@ -8,7 +8,6 @@ import pytest
 
 from kacore.api import KnowledgeRepositoryApi
 from kacore.domain.models import DocumentChunk, SourceDocument
-from kacore.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
 from kacore.repository.source_store.memory import InMemorySourceDocumentStore
 
 
@@ -82,7 +81,6 @@ async def _make_api(
     )
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=registry,  # type: ignore[arg-type]
         embedding_provider=FakeEmbeddingProvider(),  # type: ignore[arg-type]
     )
@@ -210,7 +208,6 @@ async def test_failed_embedding_is_retryable_and_waiting_job_restores() -> None:
 
     restored = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=registry,  # type: ignore[arg-type]
     )
     await restored.restore_paused_build_job()

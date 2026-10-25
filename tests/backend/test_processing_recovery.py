@@ -91,7 +91,7 @@ async def test_page_insert_failure_rolls_back_and_recovers_after_reopen(tmp_path
         assert "processing_version" not in doc.local_meta
         assert await (await db.execute("PRAGMA integrity_check")).fetchall() == [("ok",)]
         assert await (await db.execute("PRAGMA foreign_key_check")).fetchall() == []
-        api = KnowledgeRepositoryApi(source_store=store, kb_reader=None, ingest_manager=manager)
+        api = KnowledgeRepositoryApi(source_store=store, ingest_manager=manager)
         with pytest.raises(RuntimeError, match="recovery required"):
             await api.get_document_footnotes("legacy")
         with pytest.raises(RuntimeError, match="recovery required"):
@@ -110,7 +110,7 @@ async def test_page_insert_failure_rolls_back_and_recovers_after_reopen(tmp_path
             return [[1.0, 0.0]]
 
         api = KnowledgeRepositoryApi(
-            source_store=store, kb_reader=None, ingest_manager=manager, vector_store=vectors,
+            source_store=store, ingest_manager=manager, vector_store=vectors,
             embedding_provider=SimpleNamespace(embed_documents=embed),
         )
         await api._index_document_chunks_with_retry("legacy", "default", context="recovery")
@@ -172,7 +172,7 @@ async def test_missing_original_never_indexes_or_clears_pending(tmp_path):
     await store.update_document(doc)
     manager = IngestManager(source_store=store, config=SourceStoreConfig(), data_dir=tmp_path)
     api = KnowledgeRepositoryApi(
-        source_store=store, kb_reader=None, ingest_manager=manager,
+        source_store=store, ingest_manager=manager,
         vector_store=InMemoryVectorStore(), embedding_provider=SimpleNamespace(),
     )
     with pytest.raises(FileNotFoundError, match="Original PDF"):
@@ -195,7 +195,7 @@ async def test_auto_rebuild_waits_for_manual_processing(tmp_path):
         return [[1.0, 0.0] for _ in texts]
 
     api = KnowledgeRepositoryApi(
-        source_store=store, kb_reader=None, ingest_manager=manager,
+        source_store=store, ingest_manager=manager,
         vector_store=InMemoryVectorStore(),
         embedding_provider=SimpleNamespace(embed_documents=embed),
     )
@@ -287,7 +287,7 @@ async def test_maintenance_without_vectors_reports_pending_and_retries_only_inde
     await seed(store, tmp_path)
     manager = IngestManager(source_store=store, config=SourceStoreConfig(), data_dir=tmp_path)
     manager._extract_artifact = extraction
-    api = KnowledgeRepositoryApi(source_store=store, kb_reader=None, ingest_manager=manager)
+    api = KnowledgeRepositoryApi(source_store=store, ingest_manager=manager)
     result = await api.reprocess_documents_with_stale_cleaning()
     assert result["pending_reindex"] == ["legacy"]
 

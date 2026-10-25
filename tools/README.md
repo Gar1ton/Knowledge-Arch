@@ -8,11 +8,10 @@
 
 ```
 tools/
-  sync_frontend.py   # 构建前端并把产物同步到 pages/
-  diagnose_xxx.py    # 数据/状态诊断脚本
+  chunk_preview.py              # 切片预览（本地核对分块效果）
+  export_evidence_comparison.py # 证据对比导出
+  reprocess_cleaning.py         # 按新清洗规则重处理文档
 ```
-
-根目录 `bump_version.py` 负责统一更新 `metadata.yaml`、`main.py`、`README.md` badge、`TODO.md` 顶部版本计划与 `CHANGELOG.md` 的版本号。
 
 ## 约定
 

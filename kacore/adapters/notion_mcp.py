@@ -1,14 +1,12 @@
 """Notion MCP 运行态工具调用适配器（防腐层）。
 
-职责：把内部同步请求翻译成宿主 AstrBot 已连接的 Notion MCP Server
-（@suekou/mcp-notion-server，工具名带 notion_ 前缀）的真实工具调用，并统一处理
-传输（断线重连/超时）、全局频控、结果解包（CallToolResult → dict）与显式报错。
+职责：把内部同步请求翻译成 Notion MCP 工具调用（@suekou/mcp-notion-server 的工具名，
+带 notion_ 前缀），并统一处理传输（断线重连/超时）、全局频控、结果解包
+（CallToolResult → dict）与显式报错。
 
-为什么存在：屏蔽宿主 MCP 传输细节，业务层（sync_targets）只面对结构化 dict
-与 NotionMCPError；测试经 tool_caller 注入 fake，不 mock 宿主深层对象。
-真实调用路径（已核实宿主源码）：context.get_llm_tool_manager()
-→ .mcp_client_dict[server_name] → MCPClient.call_tool_with_reconnect(
-tool_name, arguments, read_timeout_seconds=timedelta)，返回 mcp CallToolResult。
+为什么存在：业务层（sync_targets）只面对结构化 dict 与 NotionMCPError；测试经
+tool_caller 注入 fake。过渡期（P1–P2）：应用不再提供 MCP 客户端注册表，未注入
+tool_caller 时调用一律报「Notion 未连接」；P3 由直连 Notion REST API 的客户端接替。
 
 工具契约锁定 @suekou/mcp-notion-server **2.0.2** / Notion API 2026-03-11。
 database 是容器，query/schema/item 操作解析到明确的 data_source_id；多源库必须指定目标。
@@ -79,7 +77,7 @@ class NotionMCPAdapter:
     - 所有公开方法失败一律抛 NotionMCPError（含超时/未连接/isError）。
     - 频控在 _call_tool 统一执行（min-interval = 1/rate_limit_rps），
       业务层不得再自行 sleep。
-    - 所有调用显式携带 format="json"，防御宿主开启 markdown 转换。
+    - 所有调用显式携带 format="json"，防御 server 开启 markdown 转换。
     """
 
     def __init__(
@@ -117,11 +115,11 @@ class NotionMCPAdapter:
             self._last_call_monotonic = time.monotonic()
 
     def _get_client(self) -> Any:
-        """每次按服务名获取宿主客户端，跟随宿主重连/替换。"""
+        """每次按服务名从客户端注册表取 MCP 客户端，跟随重连/替换。"""
         get_manager = getattr(self._context, "get_llm_tool_manager", None)
         if not callable(get_manager):
             raise NotionMCPError(
-                "宿主 context 不可用（缺少 get_llm_tool_manager），无法访问 MCP 工具。"
+                "Notion 未连接：当前没有可用的 Notion 客户端。"
             )
         manager = get_manager()
         clients = getattr(manager, "mcp_client_dict", None)
@@ -134,7 +132,7 @@ class NotionMCPAdapter:
         if client is None:
             raise NotionMCPError(
                 f"MCP server '{self._server_name}' 未配置或未连接："
-                "请在 AstrBot 面板确认该 MCP 服务已启用并连接成功。"
+                "请确认该 MCP 服务已启用并连接成功。"
             )
         return client
 

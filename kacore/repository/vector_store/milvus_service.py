@@ -22,7 +22,7 @@ class _StartupFailureCapture(logging.Handler):
 class MilvusLiteService:
     """惰性获取并保留实际启动服务的管理器；关闭仅释放本库。
 
-    AstrBot 可替换 sys.modules 中的依赖，但旧管理器仍通过 atexit 持有服务。
+    进程内热重载可能替换 sys.modules 中的依赖，但旧管理器仍通过 atexit 持有服务。
     开库与释放必须使用同一管理器对象，不能在关闭时重新导入当前单例。
     构造客户端失败也保留释放入口；本类不删除库、集合或 LOCK 文件。
     """

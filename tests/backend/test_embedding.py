@@ -328,7 +328,8 @@ def test_local_provider_passes_device_to_sentence_transformer() -> None:
     # 退出时会把 import 过程中新增的 torch 子模块一并回滚出 sys.modules，导致进程后续
     # 任何 import torch 都当作「首次导入」重跑 C 扩展初始化，抛 SystemError。提前在
     # patch 窗口外导入一次即可让 torch 在快照里，patch 退出不会动它。
-    import torch  # noqa: F401
+    # torch 属于「本地 Embedding」可选组件，未安装时跳过而不是失败。
+    pytest.importorskip("torch")
 
     provider = LocalEmbeddingProvider(model_name="intfloat/multilingual-e5-small", device="cpu")
 
@@ -373,7 +374,7 @@ def test_local_provider_device_cpu_skips_cuda_check() -> None:
     """device='cpu' 不应触发 CUDA 可用性检查（无论环境是否有 GPU 都能正常加载）。"""
     import unittest.mock as mock
 
-    import torch  # noqa: F401  # 见上一条测试里对 sys.modules patch 时序的说明
+    pytest.importorskip("torch")  # 见上一条测试里对 sys.modules patch 时序的说明
 
     provider = LocalEmbeddingProvider(model_name="intfloat/multilingual-e5-small", device="cpu")
 

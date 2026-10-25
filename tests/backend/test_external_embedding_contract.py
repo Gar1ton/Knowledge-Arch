@@ -106,7 +106,10 @@ async def test_existing_openai_dimension_request_is_preserved(http):
     response([[], [1]]), response([None, [1]]), response(["encoded", [1]]),
     response([[True], [1]]), response([["secret-response"], [1]]),
     response([[float("nan")], [1]]), response([[float("inf")], [1]]),
-    response([[1], [1, 2]]), ValueError("secret-response"),
+    # 响应体解码失败（JSONDecodeError 是 ValueError）属于坏响应：不重试、不外泄正文。
+    # 传输层异常（post 本身抛错）按网络错误有界重试：
+    # 见 test_transient_failure_has_a_bounded_retry_and_redacted_exception。
+    response([[1], [1, 2]]), (ValueError("secret-response"), 200),
 ])
 async def test_bad_batch_does_not_lock_dimension_or_retry(http, bad, caplog):
     queue, calls = http
@@ -171,7 +174,9 @@ async def test_empty_batch_has_no_network_or_cache_side_effect(http, tmp_path):
 
 def seed_cache(path: Path, namespace: str, values: dict):
     with sqlite3.connect(path) as db:
-        db.execute("CREATE TABLE embedding_cache (content_hash TEXT PRIMARY KEY, vector TEXT NOT NULL)")
+        db.execute(
+            "CREATE TABLE embedding_cache (content_hash TEXT PRIMARY KEY, vector TEXT NOT NULL)"
+        )
         for text, encoded in values.items():
             key = hashlib.sha256(f"{namespace}\0{text}".encode()).hexdigest()
             db.execute("INSERT INTO embedding_cache VALUES (?, ?)", (key, encoded))

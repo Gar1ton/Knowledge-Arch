@@ -8,13 +8,13 @@
 ## 1. 依赖方向（最重要的一张图）
 
 ```
-                外部框架 / 运行时 (astrbot / FastAPI / CLI / …)
-                              │  注册、回调
+          桌面壳 (Tauri) / 开发脚本 / 测试
+                              │  启动进程、HTTP 请求
                               ▼
    ┌──────────────────────────────────────────────────────────┐
-   │  shell (main)            框架适配薄壳：只注册 + 委派，零业务  │  最外层
+   │  shell (ka_server)       进程薄壳：目录/锁/信号/HTTP 生命周期 │  最外层
    ├──────────────────────────────────────────────────────────┤
-   │  event_handler           事件分发：框架事件 → 子系统调用     │
+   │  web (HTTP 路由)         请求 ↔ kacore/api 的翻译，零业务     │
    ├──────────────────────────────────────────────────────────┤
    │  managers / pipelines    编排服务：业务流程、用例编排         │
    ├──────────────────────────────────────────────────────────┤
@@ -32,7 +32,7 @@
 - `domain` 不 import 任何其他层（连框架、连数据库都不知道）。
 - `repository` 只依赖 `domain`。
 - `managers` 依赖 `repository` 接口 + `domain`，**不直接 import 框架**。
-- `event_handler` / `shell` 依赖框架，但把业务全部委派给 `managers`。
+- `web` / `ka_server` 依赖 aiohttp 与运行环境，但把业务全部委派给 `kacore/api` 与 managers。
 - 需要框架数据进入业务时，先经 `adapters` 翻译成 `domain` 对象。
 
 > 这条规则是「可视性」的根：看一个文件的 import，就能判断它属于哪层、是否越界。
@@ -42,21 +42,22 @@
 
 ## 2. 薄壳原则（Thin Shell）
 
-框架入口（`kacore/main.example.py` 所示）**只做两件事**：
+进程入口 `ka_server/__main__.py`（`python -I -m ka_server serve`）**只做进程生命周期**：
 
-1. 向框架**注册** hooks / commands / tools / 路由；
-2. 把每个回调**委派**给 `event_handler` 或对应 manager。
+1. 解析数据目录（`ka_server/paths.py`）、取数据目录独占锁、装配组合根；
+2. 在 127.0.0.1 上起 HTTP（`web/server.py` 的 `build_app`），打印 `KA_READY port=…`；
+3. 等待退出（`/api/shutdown`、SIGTERM/SIGINT、父进程消失），再反序拆除。
 
-入口里**不写任何业务逻辑、不做条件判断之外的计算**。好处：
+入口里**不写任何业务逻辑**。好处：
 
-- 换框架（astrbot → FastAPI → CLI）时，只重写薄壳，业务层一行不动 → 呼应「不限于 astrbot」。
-- 框架热重载时，业务状态集中在组合根，便于干净重建。
+- 换运行方式（桌面壳 sidecar / 开发脚本 / 测试子进程）时只换启动方式，业务层一行不动。
+- 服务软重启只重建组合根，HTTP 服务与端口不变；业务状态集中在组合根，便于干净重建。
 
 ---
 
 ## 3. 组合根模式（Composition Root）
 
-**所有对象的创建与装配集中在一个地方**：`kacore/plugin_initializer.example.py`（组合根）。
+**所有对象的创建与装配集中在一个地方**：`kacore/app_initializer.py` 的 `AppInitializer`（组合根）。
 
 - 按**依赖顺序**构造：先建无依赖的（config、repository），再建依赖它们的（managers、pipelines），最后建薄壳引用。
 - **构造器注入**：每个组件通过构造参数接收依赖，**自己绝不 new 依赖**、绝不读全局单例。
@@ -101,7 +102,7 @@ managers/
 
 - 杜绝业务代码里散落的 `cfg.get("some_key", default)`：键名、默认值、类型集中在 `Config`。
 - 每个子系统拿到**专属的 dataclass**，可独立单测，IDE 有补全与类型检查。
-- 配置项的 schema/默认值与 UI（如 `_conf_schema.json`）保持同源。
+- 配置项的默认值与界面保持同源（P2 起由 `kacore/settings` 的 SettingSpec 统一登记）。
 
 ---
 
@@ -115,12 +116,12 @@ managers/
 
 ## 7. 可选全栈（web）
 
-带 WebUI 的项目遵循「**业务门面 + 路由委派**」：
+界面与后端遵循「**业务门面 + 路由委派**」：
 
 - `kacore/api.py`：**框架无关**的纯业务函数（不含 HTTP 概念）。
-- `web/`：HTTP 层，把请求参数翻译后**委派给 `kacore/api`**，再把结果包装成响应。
-- `web/registry.py`：可选的面板/扩展注册中心（供第三方挂载）。
-- `web/frontend/`：前端源码；构建产物同步到 `pages/`（运行时静态资源）。
+- `web/server.py`：HTTP 层，把请求参数翻译后**委派给 `kacore/api`**，再把结果包装成响应；
+  只监听 127.0.0.1，按每次启动的 token 鉴权，CORS 只放行桌面壳窗口。
+- `web/frontend/`：前端源码（Next.js 静态导出）；产物由桌面壳从安装包加载，后端不托管静态文件。
 
 详见 `web/README.md`。
 
@@ -133,9 +134,9 @@ managers/
 1. **定位层级**：它是编排逻辑（→ `managers/` 或 `pipelines/`）、持久化（→ `repository/`）还是纯模型（→ `domain/`）？
 2. **先定接口**：在该层 `base.py` 增加 ABC / 抽象方法，**用 docstring 写清契约**（输入、输出、副作用、错误语义）。
 3. **写实现**：生产实现 + （若涉及 I/O）内存/桩实现各一份，满足同一接口。
-4. **加配置**：若需配置，在 `kacore/config` 增加 `XxxConfig` dataclass 与 `get_xxx_config()`，并在 `_conf_schema.json` 登记字段。
-5. **在组合根注入**：在 `plugin_initializer` 按依赖顺序构造它、传入依赖、注册生命周期/定时任务。
-6. **接薄壳**（若需框架触发）：在 `main`/`event_handler` 注册回调并委派，**不在薄壳写业务**。
+4. **加配置**：若需配置，在 `kacore/config` 增加 `XxxConfig` dataclass 与 `get_xxx_config()`，并登记写入策略。
+5. **在组合根注入**：在 `kacore/app_initializer.py` 按依赖顺序构造它、传入依赖、注册生命周期/定时任务。
+6. **接路由**（若需界面触发）：在 `web/server.py` 注册路由并委派给 `kacore/api`，**不在路由里写业务**。
 7. **写测试**：用内存实现做接口对换测试，覆盖契约。
 8. **更新治理**：在 `TODO.md` 勾对应 Phase；收尾在 `CHANGELOG.md` 追加条目（点名新增文件/模块）。
 

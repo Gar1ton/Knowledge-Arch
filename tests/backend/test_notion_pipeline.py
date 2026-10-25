@@ -75,7 +75,6 @@ class RoutedToolCaller:
 def _config(sync_mode: str = "preserve") -> NotionSyncConfig:
     return NotionSyncConfig(
         enabled=True,
-        mcp_server_name="notion",
         database_id="db-articles",
         qa_database_id="db-qa",
         sync_mode=sync_mode,

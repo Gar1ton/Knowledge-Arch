@@ -479,7 +479,7 @@ token 的上限）、`rerank_pair_limit`（随 query 变化）、`context_budget
 - 邻接/脚注/精确验证读取不受发现性排除阻挡，但以 visited action 集合阻止同一动作循环。
 - action key 至少包含类型、查询或来源 ID、scope、revision 和方向/窗口；不同 aspect 可以
   复用动作结果并各自添加支持边，不重复 I/O。
-- Milvus、SQLite lexical/anchor、AstrBot fallback 都必须说明过滤能力。不支持精准下推时
+- Milvus、SQLite lexical/anchor 都必须说明过滤能力。不支持精准下推时
   只允许预算内 overfetch，返回 `candidate_exhausted` 等原因，不返回越权/错代结果。
 
 ### 可落地的初始选择策略

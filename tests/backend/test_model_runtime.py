@@ -7,7 +7,6 @@ from kacore.api import KnowledgeRepositoryApi
 from kacore.api_runtime_models import KIND_EMBEDDING, KIND_RERANK
 from kacore.repository.embedding.base import EmbeddingProvider
 from kacore.repository.embedding.cached import CachedEmbeddingProvider
-from kacore.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
 from kacore.repository.reranker.base import Reranker, ScoredChunk
 from kacore.repository.reranker.noop import NoopReranker
 from kacore.repository.source_store.memory import InMemorySourceDocumentStore
@@ -70,7 +69,6 @@ class _FakeReranker(Reranker):
 def _api(embedding=None, reranker=None) -> KnowledgeRepositoryApi:
     return KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         embedding_provider=embedding,
         reranker=reranker,
     )

@@ -10,26 +10,11 @@ from kacore.config import Config
 from kacore.domain.models import Collection, DocumentChunk, SourceDocument
 from kacore.migration_runner import run_migrations
 from kacore.pipelines.retrieval_orchestrator import RetrievalOrchestrator
-from kacore.repository.kb_reader.base import KnowledgeBaseReader
 from kacore.repository.source_store.sqlite import SQLiteSourceDocumentStore
 from kacore.repository.vector_store.milvus_lite import MilvusLiteVectorStore
 
 _pymilvus_available = importlib.util.find_spec("pymilvus") is not None
 _milvus_lite_available = importlib.util.find_spec("milvus_lite") is not None
-
-
-class MockKnowledgeBaseReader(KnowledgeBaseReader):
-    def __init__(self, chunks=None):
-        self.chunks = chunks or []
-
-    async def list_collections(self) -> list[str]:
-        return ["col1"]
-
-    async def list_chunks(self, collection: str) -> list[DocumentChunk]:
-        return self.chunks
-
-    async def search(self, collection: str, query: str, top_k: int) -> list[DocumentChunk]:
-        return self.chunks[:top_k]
 
 
 class FakeEmbeddingProvider:
@@ -155,11 +140,9 @@ async def test_retrieval_orchestrator_lexical_fallback(sqlite_store):
     await sqlite_store.replace_chunks("doc1", chunks)
     
     config = Config(raw={})
-    kb_reader = MockKnowledgeBaseReader()
     
     orchestrator = RetrievalOrchestrator(
         source_store=sqlite_store,
-        kb_reader=kb_reader,
         config=config,
     )
     
@@ -192,7 +175,6 @@ async def test_retrieval_orchestrator_hydrates_milvus_chunks_in_batch(sqlite_sto
 
     orchestrator = RetrievalOrchestrator(
         source_store=sqlite_store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({"vector_db": {"backend": "milvus"}}),
         vector_store=FakeVectorStore(
             [("c-b", 0.9), ("missing", 0.8), ("c-a", 0.7)]
@@ -231,7 +213,6 @@ async def test_retrieval_orchestrator_lexical_fallback_supports_chinese_query(sq
     )
     orchestrator = RetrievalOrchestrator(
         source_store=sqlite_store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({}),
     )
 
@@ -277,7 +258,6 @@ async def test_retrieval_orchestrator_prioritizes_thesis_heading_anchor(sqlite_s
     )
     orchestrator = RetrievalOrchestrator(
         source_store=sqlite_store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({}),
     )
 
@@ -320,7 +300,6 @@ async def test_retrieval_outcome_exposes_per_chunk_signals(sqlite_store):
     )
     orchestrator = RetrievalOrchestrator(
         source_store=sqlite_store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({}),
     )
 
@@ -351,7 +330,6 @@ async def test_retrieval_dedups_identical_content_hash(sqlite_store):
     )
     orchestrator = RetrievalOrchestrator(
         source_store=sqlite_store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({}),
     )
 
@@ -409,7 +387,6 @@ async def test_retrieval_orchestrator_matches_section_label_lists(sqlite_store):
     )
     orchestrator = RetrievalOrchestrator(
         source_store=sqlite_store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({}),
     )
 
@@ -469,7 +446,6 @@ async def test_retrieval_orchestrator_matches_generic_section_queries(sqlite_sto
     )
     orchestrator = RetrievalOrchestrator(
         source_store=sqlite_store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({}),
     )
 
@@ -515,7 +491,6 @@ async def test_retrieval_orchestrator_matches_caption_anchor_lists(sqlite_store)
     )
     orchestrator = RetrievalOrchestrator(
         source_store=sqlite_store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({}),
     )
 
@@ -565,7 +540,6 @@ async def test_retrieval_orchestrator_matches_appendix_anchor(sqlite_store):
     )
     orchestrator = RetrievalOrchestrator(
         source_store=sqlite_store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({}),
     )
 
@@ -613,7 +587,6 @@ async def test_lightrag_context_queries_workspace_regardless_of_doc_status(tmp_p
     registry = Registry()
     orchestrator = RetrievalOrchestrator(
         source_store=store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({}),
         lightrag_registry=registry,  # type: ignore[arg-type]
         index_compatibility=compatibility,
@@ -648,7 +621,6 @@ async def test_lightrag_context_rejects_missing_workspace(tmp_path):
     compatibility.mark_lightrag_compatible("papers", "fp")
     orchestrator = RetrievalOrchestrator(
         source_store=store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
         index_compatibility=compatibility,
@@ -681,7 +653,6 @@ async def test_retrieval_global_and_subtree_lexical(sqlite_store):
 
     orchestrator = RetrievalOrchestrator(
         source_store=sqlite_store,
-        kb_reader=MockKnowledgeBaseReader(),
         config=Config({}),
     )
 

@@ -11,7 +11,7 @@ import { deriveModelStatus, type ModelStatus } from "@/lib/modelHealth";
 import { Z } from "@/lib/zLayers";
 
 export function TopBar() {
-  const { setSettingOpen, setAstrBotOpen, setWorkflowOpen, setModelsOpen } = useConsole();
+  const { setSettingOpen, setWorkflowOpen, setModelsOpen } = useConsole();
   const { t } = useI18n();
   const [wfStatus, setWfStatus] = useState<WorkflowStatus>("red");
   const [modelStatus, setModelStatus] = useState<ModelStatus>("green");
@@ -107,14 +107,6 @@ export function TopBar() {
         onClick={() => setSettingOpen(true)}
       >
         <Icon name="settings" size={14} /> {t("topbar_settings")}
-      </Button>
-      <Button
-        variant="tab"
-        size="sm"
-        style={{ height: 30, gap: 6 }}
-        onClick={() => setAstrBotOpen(true)}
-      >
-        <Icon name="spark2" size={14} /> AstrBot
       </Button>
       {/* 显存/模型驻留：与数据流共用 wf-pulse-* 呼吸光效，语义为「绿=已让出显存」。 */}
       <span className={`wf-pulse-${modelStatus}`}>

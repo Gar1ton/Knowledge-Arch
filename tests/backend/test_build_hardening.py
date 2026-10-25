@@ -402,13 +402,11 @@ async def test_cancel_build_job_removes_job_scoped_artifacts_only() -> None:
     的记录，更不能触碰文档本身。
     """
     from kacore.api import KnowledgeRepositoryApi
-    from kacore.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
     from kacore.repository.source_store.memory import InMemorySourceDocumentStore
 
     store = InMemorySourceDocumentStore()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=MagicMock(),  # type: ignore[arg-type]
     )
 
@@ -508,13 +506,11 @@ async def test_mark_interrupted_preserves_paused_jobs() -> None:
 @pytest.mark.asyncio
 async def test_pause_requested_is_persisted_while_llm_call_is_running() -> None:
     from kacore.api import KnowledgeRepositoryApi
-    from kacore.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
     from kacore.repository.source_store.memory import InMemorySourceDocumentStore
 
     store = InMemorySourceDocumentStore()
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=MagicMock(),  # type: ignore[arg-type]
     )
     job = BuildJob(job_id="job", collection="papers", status="running")
@@ -539,12 +535,10 @@ async def test_pause_requested_is_persisted_while_llm_call_is_running() -> None:
 @pytest.mark.asyncio
 async def test_pause_gate_enters_paused_and_resume_accumulates_seconds() -> None:
     from kacore.api import KnowledgeRepositoryApi
-    from kacore.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
     from kacore.repository.source_store.memory import InMemorySourceDocumentStore
 
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=MagicMock(),  # type: ignore[arg-type]
     )
     job = BuildJob(job_id="job", collection="papers", status="running")
@@ -578,7 +572,6 @@ async def test_restore_paused_job_resumes_same_job_id_and_only_pending_docs(tmp_
     from kacore.api import KnowledgeRepositoryApi
     from kacore.domain.models import DocumentChunk, SourceDocument
     from kacore.index_compatibility import IndexCompatibilityStore
-    from kacore.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
     from kacore.repository.source_store.memory import InMemorySourceDocumentStore
 
     inserted: list[str] = []
@@ -631,7 +624,6 @@ async def test_restore_paused_job_resumes_same_job_id_and_only_pending_docs(tmp_
     compatibility.mark_lightrag_compatible("papers", "fp")
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         lightrag_registry=Registry(),  # type: ignore[arg-type]
         index_compatibility=compatibility,
         embedding_fingerprint="fp",

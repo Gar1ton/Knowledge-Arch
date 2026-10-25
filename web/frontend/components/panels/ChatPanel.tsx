@@ -67,10 +67,9 @@ function retrievalModeLabel(
   if (mode === "lightrag_only") return t("chat_retrieval_lightrag");
   if (mode === "milvus_lightrag") return t("chat_retrieval_milvus_lightrag");
   if (mode?.includes("lightrag")) return t("chat_retrieval_lightrag_mixed");
-  if (mode === "astrbot") return t("chat_retrieval_astrbot");
   if (mode === "sqlite_lexical") return t("chat_retrieval_lexical");
   if (mode === "none") return t("chat_retrieval_none");
-  if (mode === "milvus_deep" || mode === "astrbot_deep_fallback") return t("chat_retrieval_deep_mode");
+  if (mode === "milvus_deep" || mode === "lexical_deep_fallback") return t("chat_retrieval_deep_mode");
   if (mode === "deep_degraded_to_default") return t("chat_retrieval_deep_degraded");
   if (mode === "enhanced_recall") return t("chat_retrieval_enhanced_mode");
   if (mode === "enhanced_degraded_to_default") return t("chat_retrieval_enhanced_degraded");
@@ -427,7 +426,7 @@ function MessageBubble({
           )}
         </div>
         {/* v1.1.0：校验告警前置到正文之前——读完整篇才发现「未通过证据校验」为时已晚。
-            与 AstrBot 聊天路径、存库回放（stored_answer）三处同序。 */}
+            与存库回放（stored_answer）同序。 */}
         {msg.answerNotice && (
           <div
             style={{

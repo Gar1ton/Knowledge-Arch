@@ -48,13 +48,11 @@ _WARN_ONLY_PREFIXES = (
 
 # 项目自有 logger 前缀：DEBUG 级别予以保留；名单外的三方 DEBUG 直接丢弃。
 _PROJECT_PREFIXES = (
-    "astrbot_plugin_knowledge_repository",
-    "AstrBotKnowledgeBaseReader",
+    "AppInitializer",
     "CachedEmbeddingProvider",
     "DeepThinking",
     "EmbeddingProviderFactory",
     "EnhancedRecall",
-    "EventHandler",
     "ExternalEmbeddingProvider",
     "IndexCompatibilityStore",
     "KnowledgeRepositoryApi",
@@ -66,14 +64,14 @@ _PROJECT_PREFIXES = (
     "MilvusLiteVectorStore",
     "NotionMCPAdapter",
     "NotionSyncTarget",
-    "PluginInitializer",
     "QuotaManager",
     "R2SyncTarget",
     "Reranker",
-    "ResearchService",
     "RetrievalOrchestrator",
     "RuntimeConfigStore",
     "SyncPipeline",
+    "ZoteroSync",
+    "ka_server",
 )
 
 # ── 分类映射 ──────────────────────────────────────────────────
@@ -96,19 +94,19 @@ _CATEGORY_BY_PREFIX: tuple[tuple[tuple[str, ...], str], ...] = (
         ),
         "embedding",
     ),
-    (("RetrievalOrchestrator", "MilvusLiteVectorStore", "AstrBotKnowledgeBaseReader"), "retrieval"),
+    (("RetrievalOrchestrator", "MilvusLiteVectorStore"), "retrieval"),
     (("KRWebServer",), "web"),
     (("SyncPipeline", "Notion", "R2", "Zotero"), "sync"),
     (("IngestManager", "MarkdownExtractor", "CategoryManager"), "ingest"),
     (
         (
-            "PluginInitializer",
+            "AppInitializer",
+            "ka_server",
             "RuntimeConfigStore",
             "QuotaManager",
             "IndexCompatibilityStore",
             "MigrationRunner",
             "log_capture",
-            "astrbot_plugin_knowledge_repository",
         ),
         "system",
     ),

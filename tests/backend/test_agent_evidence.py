@@ -9,7 +9,6 @@ from kacore.config import DeepThinkingConfig, EnhancedRecallConfig
 from kacore.domain.models import DocumentChunk, SourceDocument
 from kacore.pipelines.agent_evidence import AgentEvidenceOrchestrator
 from kacore.pipelines.retrieval_orchestrator import ChunkSignal, RetrievalOutcome
-from kacore.repository.kb_reader.memory import InMemoryKnowledgeBaseReader
 from kacore.repository.reranker.noop import NoopReranker
 from kacore.repository.source_store.memory import InMemorySourceDocumentStore
 
@@ -126,7 +125,6 @@ async def test_api_serializes_compact_evidence_and_never_claims_full_text() -> N
     )
     api = KnowledgeRepositoryApi(
         source_store=store,
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         agent_evidence_orchestrator=_orchestrator(retrieval),
     )
 
@@ -148,7 +146,6 @@ async def test_api_serializes_compact_evidence_and_never_claims_full_text() -> N
 async def test_deep_thinking_evidence_requires_a_collection() -> None:
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        kb_reader=InMemoryKnowledgeBaseReader({}),
         agent_evidence_orchestrator=_orchestrator(RecordingRetrieval()),
     )
     with pytest.raises(ValueError, match="requires a collection"):

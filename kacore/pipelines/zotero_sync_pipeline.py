@@ -63,7 +63,7 @@ if TYPE_CHECKING:
     from kacore.repository.source_store.base import SourceDocumentStore
     from kacore.zotero_sync_job import ZoteroSyncJob
 
-logger = logging.getLogger("astrbot_plugin_knowledge_repository")
+logger = logging.getLogger("ZoteroSync")
 
 # 同步来源默认归属集合（item 未挂任何 Zotero 集合时的 KB home）。
 DEFAULT_ZOTERO_COLLECTION = "Zotero"
