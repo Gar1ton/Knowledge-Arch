@@ -295,6 +295,38 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: knowledge-arch-${{ matrix.target }}
-          path: desktop/src-tauri/target/${{ matrix.target }}/release/bundle/
+          # AppImage 的中间目录（*.AppDir，几百 MB）不上传。
+          path: |
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/
+            !desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppDir
           if-no-files-found: error
           retention-days: 14
+
+  # tauri-action 在 Linux 只打 .deb，生成的 latest.json 没有 linux-x86_64-appimage 条目。所有平台都出完包（各自合并完
+  # latest.json）之后再补，避免和其它平台并发改写同一个文件互相覆盖。
+  updater-manifest:
+    name: Updater manifest (Linux AppImage)
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') && vars.TAURI_UPDATER_PUBKEY != ''
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Add the AppImage to latest.json
+        run: |
+          dl="$RUNNER_TEMP/release"
+          # 只要资产名，不下载 AppImage 本体。
+          appimage=$(gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --json assets \
+            -q '.assets[].name | select(endswith(".AppImage"))')
+          gh release download "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" -D "$dl" \
+            -p latest.json -p "$appimage.sig"
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$appimage"
+          python desktop/scripts/updater_add_appimage.py --latest "$dl/latest.json" \
+            --sig "$dl/$appimage.sig" --url "$url"
+          gh release upload "$GITHUB_REF_NAME" "$dl/latest.json" --clobber -R "$GITHUB_REPOSITORY"

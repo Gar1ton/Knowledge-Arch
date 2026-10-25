@@ -64,3 +64,53 @@ def test_versions_are_in_sync() -> None:
         )["version"],
     }
     assert len(set(versions.values())) == 1, versions
+
+
+def _load_updater_script():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "updater_add_appimage", ROOT / "desktop" / "scripts" / "updater_add_appimage.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_updater_manifest_gains_the_appimage_and_keeps_other_platforms(tmp_path) -> None:
+    script = _load_updater_script()
+    latest = tmp_path / "latest.json"
+    latest.write_text(json.dumps({
+        "version": "2.0.0",
+        "platforms": {
+            "darwin-aarch64": {"signature": "mac", "url": "https://x/mac.tar.gz"},
+            "linux-x86_64-deb": {"signature": "deb", "url": "https://x/a.deb"},
+        },
+    }), encoding="utf-8")
+    sig = tmp_path / "a.AppImage.sig"
+    sig.write_text("appimage-sig\n", encoding="utf-8")
+
+    args = ["--latest", str(latest), "--sig", str(sig), "--url", "https://x/a.AppImage"]
+    assert script.main(args) == 0
+
+    platforms = json.loads(latest.read_text(encoding="utf-8"))["platforms"]
+    appimage = {"signature": "appimage-sig", "url": "https://x/a.AppImage"}
+    assert platforms["linux-x86_64-appimage"] == appimage
+    assert platforms["linux-x86_64"] == appimage  # 原本没有通用键：补上
+    assert platforms["darwin-aarch64"]["signature"] == "mac"
+    assert platforms["linux-x86_64-deb"]["url"] == "https://x/a.deb"
+
+
+def test_updater_manifest_rejects_an_empty_signature() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="signature"):
+        _load_updater_script().add_appimage({"platforms": {}}, "  ", "https://x/a.AppImage")
+
+
+def test_updater_manifest_keeps_an_existing_generic_linux_entry() -> None:
+    latest = {"platforms": {"linux-x86_64": {"signature": "deb", "url": "https://x/a.deb"}}}
+    _load_updater_script().add_appimage(latest, "sig", "https://x/a.AppImage")
+    assert latest["platforms"]["linux-x86_64"]["url"] == "https://x/a.deb"
+    assert latest["platforms"]["linux-x86_64-appimage"]["url"] == "https://x/a.AppImage"

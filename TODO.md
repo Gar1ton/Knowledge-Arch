@@ -302,3 +302,6 @@
     「Lexical retrieval」标记、完成后本机标记清除）。
 - [x] 默认深色界面：next-themes `defaultTheme` 与 `prefs.appearance.theme_mode` 默认值改为 `dark`。验证：设置测试；
   Playwright 在系统浅色下打开新实例，`<html>` 为 `dark`。
+- [x] Linux AppImage 的 updater 条目与 artifact 瘦身：`updater-manifest` 作业 + `updater_add_appimage.py`（只写
+  `linux-x86_64-appimage`，通用键缺失才补）；artifact 排除 `*.AppDir`。验证：`test_release_config.py` 新增 3 项；actionlint。
+  未验证（只在推 `v*` 标签时运行）：真实 Release 上的 latest.json 合并。

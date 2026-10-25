@@ -6,6 +6,8 @@
 
 ### 改进 (Changed)
 
+- **Linux AppImage 自动更新**：`.github/workflows/desktop-release.yml` 新增 `updater-manifest` 作业（全部平台出包后运行），
+  经 `desktop/scripts/updater_add_appimage.py` 把重签后的 AppImage 写进 `latest.json`；workflow artifact 排除 `*.AppDir`。
 - **默认深色界面**：`web/frontend/app/layout.tsx` 的 `defaultTheme` 改为 `dark`，`kacore/settings/schema.py` 的
   `prefs.appearance.theme_mode` 默认值改为 `dark`；仍可在偏好设置 › 外观切换跟随系统或浅色。已选过明暗模式的用户不受影响。
 

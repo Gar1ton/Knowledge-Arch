@@ -24,8 +24,10 @@
 - **Linux**：linuxdeploy 解析不了 wheel 里 auditwheel 改名的 `.so`，内置 Python 在 AppDir 里时必然失败。
   AppImage 那一遍用 `desktop/src-tauri/tauri.appimage.conf.json` 去掉 python 资源，之后由
   `desktop/scripts/appimage_inject_python.sh` 解包、注入、冒烟、用 appimagetool（zstd 19 级）重打包；
-  启用 updater 时重签 `.AppImage.sig`。已知限制：tauri-action 生成的 `latest.json` 不含 Linux 条目
-  （它那一遍只出 `.deb`），启用 updater 前需要补上。
+  启用 updater 时重签 `.AppImage.sig`。tauri-action 那一遍只出 `.deb`，它生成的 `latest.json` 没有
+  AppImage 条目：所有平台出包后，`updater-manifest` 作业用 `desktop/scripts/updater_add_appimage.py` 写入
+  `linux-x86_64-appimage`（通用的 `linux-x86_64` 只在缺失时补上，不覆盖 deb 条目）。
+- workflow artifact 不上传 AppImage 的中间目录 `*.AppDir`。
 
 触发方式：
 
