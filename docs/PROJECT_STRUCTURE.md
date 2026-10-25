@@ -39,7 +39,11 @@ Knowledge Arch 是本地优先的学术知识库桌面应用：PDF 原件管理�
 | Linux | `~/.local/share/Knowledge Arch` |
 
 目录内的 `knowledge_repository.db`、`library/`、`vector_store.db`、`lightrag_workspaces/`
-与插件版同一 schema；`--data-dir` 可指定其他位置（开发 / 测试）。
+与插件版同一 schema；`--data-dir` 可指定其他位置（开发 / 测试）。另有：
+
+- `settings.json` + `secrets/`：设置与加密机密库；
+- `extras/<pack>/`：应用内安装的可选组件（本地模型 / 知识图谱 / R2），由 uv 安装，启动时加入 `sys.path`；
+- `.legacy_import/`：导入旧版插件数据时的 staging、回滚目录与最近一次结果。
 
 ## 分层职责速查
 

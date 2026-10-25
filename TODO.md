@@ -76,7 +76,33 @@
   - 行为说明：research / graph 角色改为经 ModelRouter 现取，改选模型、替换密钥无需重启；
     master.key 在有系统钥匙串时迁入钥匙串——换机用 R2 恢复后需要重新填写各连接的密钥。
   - 修正：P1 提交的 CHANGELOG 有一行写出了已删除组件名（守卫测试在其后才写入），本阶段已改正。
-- [ ] P3 · 外部能力：`NotionRestClient`、uv extras、`system_prompt`、旧数据导入器。
+- [x] P3 · 外部能力：`NotionRestClient`、uv extras、`system_prompt`、旧数据导入器。
+  - [x] P3.1 `kacore/adapters/notion_rest.py`：aiohttp 直连 Notion REST（`Notion-Version: 2026-03-11`），
+    token 每次请求从 `flow.notion.token` 现取；公开方法与 `NotionMCPError` 语义沿用旧 adapter；
+    3 req/s 频控，401 / 403 / 404 / 429（按 Retry-After 重试）/ 5xx 分类；组合根改用新客户端，
+    删除 `notion_mcp.py` 与客户端注册表依赖；重写 `docs/NOTION_SYNC.md`。
+  - [x] P3.2 `kacore/extras/`：可选组件经 `uv pip install --target <data>/extras/<pack>` 安装
+    （先装到临时目录，成功后原子换入，失败回滚）；启动时把已装组件加入 `sys.path`；
+    uv 位置可配置（`--uv` / `KA_UV`）。
+  - [x] P3.3 `api.ask` 读取 `flow.answer.system_prompt`（default / graph / fulltext 路径，非空时放在
+    RAG 约束之前；deep / enhanced 不变）。
+  - [x] P3.4 `kacore/legacy_import/`：复制旧插件数据 → 改写绝对路径 → 迁移 → 翻译旧配置与机密；
+    staging + 软重启时换入、失败回滚；`/api/legacy-import*` 接口。
+  - [x] P3.5 测试全绿 + CHANGELOG。
+  - 验证：全量 1282 passed / 4 skipped / 0 failed（前端 TS 纯函数用例在装好 node_modules 后不再 skip；
+    skip 仍为缺 torch / lightrag / boto3 的可选用例）；ruff、mypy 通过。新增 `test_notion_rest.py`（23）、
+    `test_extras.py`（17）、`test_answer_system_prompt.py`（6）、`test_legacy_import.py`（14）；
+    `test_notion_preflight.py` 按 REST 语义重写，`test_notion_adapter.py` 删除。手动冒烟：
+    `ka_server` 起服务 → `POST /api/components/r2/install` 真实调用 uv 装上 boto3 → 软重启后组件激活。
+  - 落点调整：
+    - 组件安装不用约束文件钉住运行时版本（实测 botocore 要求 `python-dateutil<3`，钉死会无解）；
+      改为「组件目录追加在 sys.path 末尾、运行时自带的包优先」。
+    - 本地 Embedding 组件显式带上 `torch` 并传 `--torch-backend auto`（uv 按显卡选 CPU / CUDA 构建）；
+      Milvus 属核心依赖（随安装包），不在组件页出现，但保留经同一接口补装的修复路径。
+    - 旧数据导入只允许导入空库；换入与 R2 恢复同一套 pending → applied → commit | rollback 协议，
+      组合根新增 `initialize_or_rollback()`（软重启与进程首启共用）。
+    - HTTP 新路由放在 `web/desktop_routes.py`（`web/server.py` 已超红线，不再往里加）。
+    - 服务重启的提示文案由「插件」改为「服务」（P4 的一部分，后端消息先改）。
 - [ ] P4 · 前端：`backend.ts` 与 token；`NodePanel` 与 4 个新节点；`PreferencesWindow`；
   删除 `LoginScreen` 与旧宿主配置弹窗。
 - [ ] P5 · 桌面壳：Tauri 工程、sidecar、单实例、原生对话框、托盘、Python 打包脚本；本地出包。

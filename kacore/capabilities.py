@@ -154,6 +154,10 @@ class OptionalDependency:
     required: bool = False
     # 必须与 pip_spec 一起装的附加规格：用于 extra 标记不可靠的依赖（见 milvus_runtime_status）。
     companion_specs: tuple[str, ...] = ()
+    # 交给安装器的附加参数（如 torch 按本机显卡选择 CPU / CUDA 构建）。
+    installer_args: tuple[str, ...] = ()
+    # 用户可见的「组件」（偏好设置 › 组件）；核心依赖随安装包提供，不在组件页出现。
+    component: bool = True
 
     @property
     def install_specs(self) -> tuple[str, ...]:
@@ -171,6 +175,9 @@ OPTIONAL_DEPENDENCIES: tuple[OptionalDependency, ...] = (
         pip_spec="sentence-transformers>=3,<6",
         feature="local_embedding",
         stages=("embedding", "ask"),
+        # 本地 Embedding 与 rerank 共用：torch 显式列出，由 uv 按本机显卡选 CPU / CUDA 构建。
+        companion_specs=("torch",),
+        installer_args=("--torch-backend", "auto"),
     ),
     OptionalDependency(
         key="milvus",
@@ -182,6 +189,7 @@ OPTIONAL_DEPENDENCIES: tuple[OptionalDependency, ...] = (
         required=True,
         # extra 的 win32 标记已失效，必须显式带上 milvus-lite，否则 Windows 装了等于没装。
         companion_specs=(MILVUS_LITE_PIP_SPEC,),
+        component=False,
     ),
     OptionalDependency(
         key="lightrag",
@@ -215,6 +223,15 @@ def resolve_install_spec(package: str) -> str:
         return _SPEC_BY_KEY[package]
     if package in ALLOWED_INSTALL_SPECS:
         return package
+    raise ValueError(f"package is not in the optional-dependency allowlist: {package!r}")
+
+
+def resolve_dependency(package: str) -> OptionalDependency:
+    """依赖 key 或主规格 → 白名单内的 OptionalDependency；不在白名单抛 ValueError。"""
+    spec = resolve_install_spec(package)
+    for dep in OPTIONAL_DEPENDENCIES:
+        if dep.pip_spec == spec:
+            return dep
     raise ValueError(f"package is not in the optional-dependency allowlist: {package!r}")
 
 
@@ -257,6 +274,7 @@ def dependency_statuses() -> list[dict[str, Any]]:
                 "feature": dep.feature,
                 "stages": list(dep.stages),
                 "required": dep.required,
+                "component": dep.component,
                 "installed": installed,
                 "runtime_ready": runtime_ready,
                 "runtime_hint": runtime_hint,
@@ -480,7 +498,7 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
         },
     }
 
-    # ⑦ 同步：R2 需 boto3 + 凭证（密钥走 env）；Notion 经 MCP。启用为非机密开关，需重启。
+    # ⑦ 同步：R2 需 boto3 + 凭证；Notion 经 REST API（token 在节点填写）。启用开关需重启。
     if not (r2_cfg.enabled or notion_cfg.enabled):
         sync_status = STATUS_OFF
     elif (r2_cfg.enabled and not has_boto3) or (
@@ -527,6 +545,7 @@ __all__ = [
     "OptionalDependency",
     "OPTIONAL_DEPENDENCIES",
     "ALLOWED_INSTALL_SPECS",
+    "resolve_dependency",
     "resolve_install_spec",
     "resolve_install_specs",
     "dependency_statuses",

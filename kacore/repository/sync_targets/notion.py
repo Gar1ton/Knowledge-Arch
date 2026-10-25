@@ -1,6 +1,6 @@
 """Notion 镜像同步目标实现（repository 层）。
 
-经 NotionMCPAdapter（真实 notion_ 前缀工具）把文章元数据与 QA 记录**单向推送**到
+经 NotionRestClient（Notion REST API）把文章元数据与 QA 记录**单向推送**到
 Notion 两表（Articles 单库 + QA 库）。核心语义：
 
 - 幂等 upsert：账本 page_id 命中 → update；miss → 按幂等键（DocID/NoteID）反查
@@ -21,7 +21,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from kacore.adapters.notion_mcp import NotionMCPAdapter, NotionMCPError
+from kacore.adapters.notion_rest import NotionMCPError, NotionRestClient
 from kacore.domain.models import QuotaUsage, SyncTargetKind
 from kacore.repository.sync_targets import notion_schema as schema
 from kacore.repository.sync_targets.base import SyncTarget
@@ -60,19 +60,21 @@ class NotionUpsertResult:
 
 
 class NotionSyncTarget(SyncTarget):
-    """基于 MCP 调用的 Notion 单向推送目标（Articles + QA 两表）。"""
+    """基于 Notion REST API 的单向推送目标（Articles + QA 两表）。"""
 
     def __init__(
         self,
         config: NotionSyncConfig,
         source_store: SourceDocumentStore,
-        context: Any = None,
         *,
-        adapter: NotionMCPAdapter | None = None,
+        adapter: NotionRestClient | None = None,
     ) -> None:
         self._config = config
         self._source_store = source_store
-        self._adapter = adapter or NotionMCPAdapter(context, rate_limit_rps=config.rate_limit_rps)
+        # 未注入客户端（测试 / 未装配）时用一个没有 token 的客户端：调用一律报「Notion 未连接」。
+        self._adapter = adapter or NotionRestClient(
+            lambda: "", rate_limit_rps=config.rate_limit_rps
+        )
         self._adapter.configure_data_sources(
             {
                 config.database_id: config.data_source_id,
@@ -82,7 +84,7 @@ class NotionSyncTarget(SyncTarget):
 
     @property
     def request_count(self) -> int:
-        """累计 MCP 工具调用尝试数（含失败，不含宿主内部重连请求）。"""
+        """累计 Notion API 请求尝试数（含失败与重试）。"""
         return self._adapter.request_count
 
     async def scan_notes(self) -> dict[str, int]:
@@ -115,7 +117,7 @@ class NotionSyncTarget(SyncTarget):
                         raise
                     raise NotionMCPError(
                         f"Notion {role} 库不可访问（notion_sync.{field}={database_id}）。"
-                        "请核对数据库容器 ID，并确认该库已向当前 MCP 使用的集成授权；"
+                        "请核对数据库容器 ID，并确认该库已分享给 Notion 节点 token 对应的集成；"
                         "404 不能区分 ID 失效与缺少访问权限。"
                         f"原始错误：{exc}",
                         code=exc.code,
@@ -146,7 +148,7 @@ class NotionSyncTarget(SyncTarget):
         return result.page_id
 
     async def delete(self, remote_ref: str) -> bool:
-        """归档远端页面；不存在返回 False，其他 MCP 错误按 SyncTarget 契约上抛。"""
+        """归档远端页面；不存在返回 False，其他 Notion 错误按 SyncTarget 契约上抛。"""
         if not self._config.enabled:
             return False
         try:
@@ -160,7 +162,7 @@ class NotionSyncTarget(SyncTarget):
         """归档 Articles 库中一个 DocID 的全部页面，返回实际归档数。
 
         账本 page_id 与 DocID 反查结果取并集，兼顾账本陈旧和历史重复页面；远端已归档/
-        不存在按幂等成功处理。真实 MCP 错误上抛，供管线保留重试账本。
+        不存在按幂等成功处理。真实 Notion 错误上抛，供管线保留重试账本。
         """
         pages = await self._adapter.query_database(
             self._config.database_id,

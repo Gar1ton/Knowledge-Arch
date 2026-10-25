@@ -7,8 +7,9 @@
 
 ```
 web/
-  server.py   # aiohttp 路由（build_app）：token 鉴权 + CORS + 路由 → kacore/api
-  frontend/   # Next.js 前端源码（静态导出到 frontend/out/，由桌面壳加载）
+  server.py          # aiohttp 路由（build_app）：token 鉴权 + CORS + 路由 → kacore/api
+  desktop_routes.py  # 桌面版新增路由：/api/components*（组件）、/api/legacy-import*（旧数据导入）
+  frontend/          # Next.js 前端源码（静态导出到 frontend/out/，由桌面壳加载）
 ```
 
 ## 安全边界

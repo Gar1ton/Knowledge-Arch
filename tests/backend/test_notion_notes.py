@@ -5,9 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from notion_tools import notion_tools
+from notion_tools import notion_client
 
-from kacore.adapters.notion_mcp import NotionMCPAdapter, NotionMCPError
+from kacore.adapters.notion_rest import NotionMCPError
 from kacore.config import NotionSyncConfig
 from kacore.domain.models import SourceDocument
 from kacore.pipelines.notion_sync_pipeline import NotionSyncPipeline
@@ -53,7 +53,7 @@ class NotesTools:
 
 def scanner(tools: NotesTools) -> tuple[NotionNotesScanner, InMemorySourceDocumentStore]:
     store = InMemorySourceDocumentStore()
-    adapter = NotionMCPAdapter(None, tool_caller=tools, tool_lister=notion_tools, rate_limit_rps=0)
+    adapter = notion_client(tools, rate_limit_rps=0)
     return NotionNotesScanner(store, adapter), store
 
 
@@ -91,7 +91,7 @@ async def test_nested_empty_container_reads_user_content() -> None:
         )
         return {"results": values, "has_more": False}
 
-    adapter = NotionMCPAdapter(None, tool_caller=call, tool_lister=notion_tools, rate_limit_rps=0)
+    adapter = notion_client(call, rate_limit_rps=0)
     assert await NotionNotesScanner(InMemorySourceDocumentStore(), adapter).has_notes("p1")
 
 
@@ -144,7 +144,7 @@ async def test_missing_checkbox_or_truncated_page_does_not_advance_checkpoint() 
 
     store = InMemorySourceDocumentStore()
     checker = NotionNotesScanner(
-        store, NotionMCPAdapter(None, tool_caller=call, rate_limit_rps=0)
+        store, notion_client(call, rate_limit_rps=0)
     )
     with pytest.raises(NotionMCPError, match="checkbox"):
         await checker.scan("db")
@@ -155,14 +155,15 @@ async def test_pipeline_reports_note_failure_and_actual_request_attempts() -> No
     tools = NotesTools([])
     tools.fail_read = True
     store = InMemorySourceDocumentStore()
-    adapter = NotionMCPAdapter(None, tool_caller=tools, tool_lister=notion_tools, rate_limit_rps=0)
+    adapter = notion_client(tools, rate_limit_rps=0)
     target = NotionSyncTarget(
         NotionSyncConfig(enabled=True, database_id="db"), store, adapter=adapter
     )
     result = await NotionSyncPipeline(store, target).push_all()
     assert result["status"] == "error"
     assert result["notes"]["failed"] == 1
-    assert result["request_count"] == len(tools.calls)
+    # +1：批次前的 token 校验（GET /users/me）也是一次真实请求。
+    assert result["request_count"] == len(tools.calls) + 1
     assert result["model_tokens"] == 0
 
 
@@ -183,9 +184,7 @@ async def test_new_article_sync_never_resets_notes_checkbox() -> None:
     target = NotionSyncTarget(
         NotionSyncConfig(enabled=True, database_id="db"),
         store,
-        adapter=NotionMCPAdapter(
-            None, tool_caller=call, tool_lister=notion_tools, rate_limit_rps=0
-        ),
+        adapter=notion_client(call, rate_limit_rps=0),
     )
     doc = SourceDocument("d1", "Title", "/d1.pdf", "application/pdf", 100, "hash", "")
     await target.upsert_document(doc, path="", collection_names=[])
@@ -203,7 +202,7 @@ async def test_body_pagination_reads_later_user_note_and_rejects_incomplete_page
         calls.append(args)
         return responses.pop(0)
 
-    adapter = NotionMCPAdapter(None, tool_caller=call, tool_lister=notion_tools, rate_limit_rps=0)
+    adapter = notion_client(call, rate_limit_rps=0)
     checker = NotionNotesScanner(InMemorySourceDocumentStore(), adapter)
     assert await checker.has_notes("page")
     assert calls[1]["start_cursor"] == "next"
@@ -223,7 +222,7 @@ async def test_checkbox_write_failure_does_not_advance_cursor() -> None:
         return await tools(tool, args)
 
     checker = NotionNotesScanner(
-        store, NotionMCPAdapter(None, tool_caller=call, rate_limit_rps=0)
+        store, notion_client(call, rate_limit_rps=0)
     )
     with pytest.raises(NotionMCPError, match="write failed"):
         await checker.scan("db")

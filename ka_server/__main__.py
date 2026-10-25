@@ -31,6 +31,7 @@ from ka_server.lifecycle import (
 from ka_server.paths import AppPaths
 
 if TYPE_CHECKING:
+    from kacore.extras.manager import ExtrasManager
     from kacore.settings.store import SettingsStore
 
 logger = logging.getLogger("ka_server")
@@ -52,6 +53,11 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", type=int, default=0, help="0 = let the OS pick a free port")
     serve.add_argument("--data-dir", default=None, help="override the platform data directory")
     serve.add_argument("--parent-pid", type=int, default=None, help="exit when this pid exits")
+    serve.add_argument(
+        "--uv",
+        default=None,
+        help="path to the uv executable used to install optional components (default: $KA_UV)",
+    )
     serve.add_argument(
         "--dev-origin",
         action="append",
@@ -121,6 +127,19 @@ def migrate_legacy_runtime_config(paths: AppPaths, settings: SettingsStore) -> b
     return True
 
 
+def open_extras(paths: AppPaths, uv_path: str | None) -> ExtrasManager:
+    """可选组件目录（`<data>/extras/`）：构造管理器并把已装组件加入 sys.path。
+
+    必须在组合根 initialize() 之前调用——各子系统按「模块是否可 import」决定是否启用。
+    """
+    from kacore.extras.manager import ExtrasManager
+    from kacore.extras.uv import UvInstaller, locate_uv
+
+    manager = ExtrasManager(paths.extras, UvInstaller(locate_uv(uv_path)))
+    manager.activate()
+    return manager
+
+
 def dev_origins(cli_values: Sequence[str]) -> list[str]:
     env_values = [v.strip() for v in os.environ.get(ENV_DEV_ORIGINS, "").split(",")]
     return [v for v in (*cli_values, *env_values) if v]
@@ -150,12 +169,13 @@ async def serve(args: argparse.Namespace, token: str) -> int:
         return EXIT_DATA_DIR_LOCKED
 
     migrate_legacy_runtime_config(paths, settings)
+    extras = open_extras(paths, args.uv)
     stop = asyncio.Event()
     install_signal_handlers(stop)
-    app_init = AppInitializer(settings, paths.data)
+    app_init = AppInitializer(settings, paths.data, extras=extras)
     runner: web.AppRunner | None = None
     try:
-        await app_init.initialize()
+        await app_init.initialize_or_rollback(raise_after_recovery=False)
         app = build_app(
             api_provider=lambda: app_init.api,
             upload_dir=paths.uploads,

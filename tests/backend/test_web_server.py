@@ -495,7 +495,7 @@ async def test_sync_status_routes_show_notion_ledger_failures(tmp_path: Path) ->
 
     api = await _make_api()
     await api._source_store.upsert_notion_entity(NotionEntityRecord(
-        "document", "d1", status="failed", message="MCP 接口不兼容",
+        "document", "d1", status="failed", message="Notion token 无效",
     ))
     client = TestClient(TestServer(build_app(
         api=api, upload_dir=tmp_path,
@@ -507,7 +507,7 @@ async def test_sync_status_routes_show_notion_ledger_failures(tmp_path: Path) ->
         assert records[0]["status"] == "failed"
         summary = await (await client.get("/api/sync/notion/status")).json()
         assert summary["documents"]["failed"] == 1
-        assert summary["errors"] == [{"message": "MCP 接口不兼容", "count": 1}]
+        assert summary["errors"] == [{"message": "Notion token 无效", "count": 1}]
     finally:
         await client.close()
 
@@ -515,7 +515,7 @@ async def test_sync_status_routes_show_notion_ledger_failures(tmp_path: Path) ->
 async def test_notion_initialization_route_preserves_preflight_error(tmp_path: Path) -> None:
     api = await _make_api()
     api.initialize_notion_database = AsyncMock(return_value={
-        "status": "error", "error_code": "mcp_incompatible", "message": "请使用 MCP 2.0.2",
+        "status": "error", "error_code": "unauthorized", "message": "请重新填写 Notion token",
     })
     client = TestClient(TestServer(build_app(
         api=api, upload_dir=tmp_path,
@@ -524,8 +524,8 @@ async def test_notion_initialization_route_preserves_preflight_error(tmp_path: P
     await client.start_server()
     try:
         body = await (await client.post("/api/notion/init", json={})).json()
-        assert body["error_code"] == "mcp_incompatible"
-        assert body["message"] == "请使用 MCP 2.0.2"
+        assert body["error_code"] == "unauthorized"
+        assert body["message"] == "请重新填写 Notion token"
     finally:
         await client.close()
 

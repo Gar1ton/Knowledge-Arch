@@ -1,12 +1,12 @@
 """能力与可选依赖管理 API 子门面。
 
-本 mixin 只暴露系统能力查询、依赖列表、安装与重检能力；运行时依赖由
-KnowledgeRepositoryApi 通过构造器注入。
+本 mixin 只暴露系统能力查询、依赖列表、组件安装 / 卸载与重检能力；运行时依赖由
+KnowledgeRepositoryApi 通过构造器注入。组件经 ExtrasManager 用 uv 装进数据目录的
+`extras/<pack>/`（安装包内的 Python 只读，不能再往运行时里 pip install）。
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -15,8 +15,8 @@ from kacore.capabilities import (
     detect_capabilities,
     milvus_lock_error_hint,
     milvus_runtime_status,
+    resolve_dependency,
     resolve_install_spec,
-    resolve_install_specs,
 )
 from kacore.milvus_build import (
     MILVUS_BUILD_RUNNING,
@@ -27,6 +27,7 @@ from kacore.milvus_build import (
 
 if TYPE_CHECKING:
     from kacore.config import Config
+    from kacore.extras.manager import ExtrasManager
     from kacore.index_compatibility import IndexCompatibilityStore
     from kacore.milvus_build import MilvusBuildJob
     from kacore.pipelines.zotero_sync_pipeline import ZoteroSyncPipeline
@@ -52,6 +53,7 @@ class CapabilitiesApiMixin:
     _embedding_fingerprint: str | None
     _zotero_pipeline: ZoteroSyncPipeline | None
     _milvus_build_job: MilvusBuildJob | None
+    _extras_manager: ExtrasManager | None
 
     async def get_capabilities(self) -> dict[str, Any]:
         """返回数据流各环节、依赖状态与运行态诊断。"""
@@ -66,6 +68,25 @@ class CapabilitiesApiMixin:
     def list_dependencies(self) -> list[dict[str, Any]]:
         """列出可选依赖及其安装版本状态。"""
         return dependency_statuses()
+
+    def list_components(self) -> dict[str, Any]:
+        """偏好设置 › 组件页：安装器是否可用 + 每个组件的安装状态。"""
+        if self._extras_manager is None:
+            return {
+                "installer_available": False,
+                "installer": "",
+                "extras_dir": "",
+                "components": [],
+            }
+        return self._extras_manager.status()
+
+    def uninstall_component(self, package: str) -> dict[str, Any]:
+        """删除一个已装组件（白名单校验同安装；重启服务后生效）。"""
+        if self._extras_manager is None:
+            raise RuntimeError("当前环境不支持应用内管理组件。")
+        result = self._extras_manager.uninstall(package)
+        logger.info("组件卸载：%s → %s", package, result.get("status"))
+        return result
 
     async def recheck_dependencies(self) -> dict[str, Any]:
         """清除 import 缓存后重新探测，并返回最新能力快照。"""
@@ -261,20 +282,21 @@ class CapabilitiesApiMixin:
         }
 
     async def install_dependency(self, package: str) -> dict[str, Any]:
-        """安装白名单内可选依赖，并把 pip 输出转发到 logger。
+        """安装白名单内的组件（经 ExtrasManager 用 uv 装进数据目录），输出转发到 logger。
 
         milvus 会同时装上 `milvus-lite`：pymilvus 的 `milvus_lite` extra 仍带着 2.x C++ wheel
-        时代的 `sys_platform != "win32"` 标记，Windows 上 pip 会静默跳过它（退出码仍是 0）。
-        Milvus Lite 3.0 起是纯 Python 包，全平台可装，显式列出即可绕开那条失效标记。
+        时代的 `sys_platform != "win32"` 标记，Windows 上会被静默跳过（退出码仍是 0）。
+        白名单外的包名抛 ValueError（HTTP 层转 400）。
         """
-        specs = resolve_install_specs(package)
+        dep = resolve_dependency(package)
+        specs = dep.install_specs
         operation_id = self._runtime_events.start(
             category="system",
             operation="dependency_install",
             msg="可选依赖安装开始",
-            metadata={"package": package, "spec_count": len(specs)},
+            metadata={"package": dep.key, "spec_count": len(specs)},
         )
-        result = await self._run_pip_install(*specs)
+        result = await self._run_extras_install(dep.key, specs)
         verified = self._verify_install_runtime(specs, result)
         if verified.get("status") == "ok":
             self._runtime_events.finish(
@@ -282,7 +304,7 @@ class CapabilitiesApiMixin:
                 category="system",
                 operation="dependency_install",
                 msg="可选依赖安装完成",
-                metadata={"package": package, "returncode": verified.get("returncode")},
+                metadata={"package": dep.key, "returncode": verified.get("returncode")},
             )
         else:
             self._runtime_events.fail(
@@ -291,14 +313,14 @@ class CapabilitiesApiMixin:
                 operation="dependency_install",
                 msg="可选依赖安装失败",
                 error=str(verified.get("message") or "unknown error"),
-                metadata={"package": package, "returncode": verified.get("returncode")},
+                metadata={"package": dep.key, "returncode": verified.get("returncode")},
             )
         return verified
 
     def _verify_install_runtime(
         self, specs: tuple[str, ...], result: dict[str, Any]
     ) -> dict[str, Any]:
-        """pip 退出码为 0 不等于功能可用：装完再验一次真实 import 名。
+        """安装器退出码为 0 不等于功能可用：装完再验一次真实 import 名。
 
         典型反例：`pip install pymilvus[milvus_lite]` 在 Windows 上跳过 milvus-lite 仍返回 0，
         依赖面板于是显示「已安装」，而任何本地向量库操作都会抛
@@ -312,56 +334,34 @@ class CapabilitiesApiMixin:
         runtime = milvus_runtime_status()
         if runtime["ready"]:
             return result
-        logger.error("pip install 已完成，但 Milvus 运行时仍不可用：%s", runtime["hint"])
+        logger.error("组件安装已完成，但 Milvus 运行时仍不可用：%s", runtime["hint"])
         return {
             **result,
             "status": "error",
             "restart_required": False,
-            "message": f"pip 安装已完成，但 Milvus 仍不可用：{runtime['hint']}",
+            "message": f"安装已完成，但 Milvus 仍不可用：{runtime['hint']}",
         }
 
-    async def _run_pip_install(self, *specs: str) -> dict[str, Any]:
-        """以当前解释器运行 pip install（可一次传多个规格）。"""
-        import sys
-
+    async def _run_extras_install(self, key: str, specs: tuple[str, ...]) -> dict[str, Any]:
+        """委派 ExtrasManager 安装（失败回滚由它保证）；uv 输出逐行写进日志页。"""
         spec = " ".join(specs)
-        logger.info("Installing optional dependency: %s", spec)
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                *specs,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-        except Exception as exc:
-            logger.error("Failed to launch pip for %s: %s", spec, exc)
-            return {"status": "error", "package": spec, "message": str(exc)}
-
-        assert proc.stdout is not None
-        async for raw in proc.stdout:
-            line = raw.decode(errors="replace").rstrip()
-            if line:
-                logger.info("[pip] %s", line)
-        returncode = await proc.wait()
-        ok = returncode == 0
-        if ok:
-            logger.info("pip install succeeded: %s (restart service to load)", spec)
+        if self._extras_manager is None:
+            return {
+                "status": "error",
+                "package": spec,
+                "returncode": None,
+                "restart_required": False,
+                "message": "当前环境不支持应用内安装组件。",
+            }
+        logger.info("Installing component %s: %s", key, spec)
+        result = await self._extras_manager.install(
+            key, on_line=lambda line: logger.info("[uv] %s", line)
+        )
+        if result.get("status") == "ok":
+            logger.info("component install succeeded: %s (restart service to load)", key)
         else:
-            logger.error("pip install failed (exit %s): %s", returncode, spec)
-        return {
-            "status": "ok" if ok else "error",
-            "package": spec,
-            "returncode": returncode,
-            "restart_required": ok,
-            "message": (
-                "已安装，需重启服务生效。"
-                if ok
-                else f"安装失败，退出码 {returncode}，详见终端日志。"
-            ),
-        }
+            logger.error("component install failed: %s — %s", key, result.get("message"))
+        return result
 
 
 __all__ = ["CapabilitiesApiMixin"]

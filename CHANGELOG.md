@@ -2,6 +2,53 @@
 
 > 插件时代（v0.x – v1.2.0）的变更记录完整保留在本仓库首个提交 `89b251a` 中（`git show 89b251a:CHANGELOG.md`），不再随 v2 维护。
 
+## [v2.0.0-dev.3] — 2026-10-25
+
+### 新增 (Added) — P3 外部能力
+
+- **`kacore/adapters/notion_rest.py`**：`NotionRestClient` 直连 Notion REST API（`Notion-Version: 2026-03-11`），
+  token 每次请求从 `flow.notion.token` 现取；3 req/s 全局频控；401 / 403 / 404 / 429 / 5xx 分类成带中文提示
+  的 `NotionMCPError`（错误码 `unauthorized` / `restricted_resource` / `object_not_found` / `rate_limited` /
+  `server_error` / `network_error` / `not_configured` / `incompatible_response`）；429 按 Retry-After、5xx 与
+  网络错误按指数退避有界重试；超过 100 个子块的追加自动分批；批次前用 `GET /users/me` 校验 token。
+  公开方法与错误语义沿用旧适配层，同步语义（preserve / strict、QA outbox）不变。
+- **`kacore/extras/`**：可选组件（本地 Embedding + rerank：sentence-transformers + torch；知识图谱：lightrag-hku；
+  R2 备份：boto3）经 `uv pip install --no-config --target <data>/extras/<pack> --python <当前解释器>` 安装；
+  先装进临时目录、成功后原子换入，失败或被占用时回滚、旧版本保留；标记文件记录 Python 版本，版本不符的组件
+  不激活。`ka_server` 新增 `--uv`（或环境变量 `KA_UV`），启动时在组合根之前把已装组件加入 `sys.path`。
+  HTTP：`GET /api/components`、`POST /api/components/{key}/install`、`DELETE /api/components/{key}`；
+  既有 `/api/dependencies/install` 改走同一安装器。
+- **回答系统提示**：`api.ask` 读取 `flow.answer.system_prompt`（每次调用现取），非空时放在 RAG 约束之前，
+  覆盖 default / graph_mixed / graph_only / fulltext；为空时与旧版「人格关闭」完全一致；deep / enhanced 不变
+  （`answer_synthesis.with_user_system_prompt`，门面 mixin `kacore/api_answer.py`）。
+- **`kacore/legacy_import/`**：旧版插件数据导入器。选择旧安装根目录（也接受 `data/` 或插件数据目录）→ 预览 →
+  复制（SQLite 用 backup API，旧目录只读）→ 改写 `documents.file_path` / `zotero_attachments.resolved_path`
+  的绝对路径前缀 → 在副本上跑迁移 → 翻译旧配置（叠加 `runtime_config.json`）并解密旧机密 → 软重启时在连接
+  数据库前换入，被替换的内容进 rollback 目录；初始化成功提交、失败回滚。只允许导入空库。返回 attention
+  （需要用户确认的事项）与 dropped（丢弃的旧键）。HTTP：`POST /api/legacy-import/inspect`、
+  `POST /api/legacy-import`、`GET /api/legacy-import`、`DELETE /api/legacy-import`（门面 `kacore/api_legacy_import.py`，
+  路由 `web/desktop_routes.py`）。
+
+### 改进 (Changed)
+
+- 组合根：Notion 目标注入 `NotionRestClient`；`AppInitializer(settings, data_dir, *, extras=None)`；初始化前应用
+  待换入的旧数据导入、结束时提交；新增 `initialize_or_rollback()`，失败时撤回本轮 R2 恢复 / 旧数据导入并重试
+  （软重启与进程首启共用，首启撤回后服务照常起来）。
+- `OptionalDependency` 增加 `installer_args` 与 `component`；依赖状态多出 `component` 字段。
+- 服务软重启的提示与运行事件文案由「插件」改为「服务」。
+- 文档：重写 `docs/NOTION_SYNC.md`（配置步骤、错误码对照、请求消耗）；`kacore/README.md`、`web/README.md`、
+  `docs/PROJECT_STRUCTURE.md` 补充新目录。
+
+### 移除 (Removed)
+
+- `kacore/adapters/notion_mcp.py`（MCP 客户端注册表依赖）与 `tests/backend/test_notion_adapter.py`。
+
+### 测试 (Tests)
+
+- 新增 `test_notion_rest.py`、`test_extras.py`、`test_answer_system_prompt.py`、`test_legacy_import.py`（含经组合根
+  软重启的端到端导入）；`tests/mocks/notion_tools.py` 改为把 REST 请求映射回操作名的 transport，同步层既有用例
+  场景不变；`test_notion_preflight.py` 按 REST 语义重写。全量 1282 passed / 4 skipped。
+
 ## [v2.0.0-dev.2] — 2026-10-25
 
 ### 新增 (Added) — P2 设置与模型

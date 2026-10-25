@@ -62,7 +62,7 @@ _PROJECT_PREFIXES = (
     "LocalEmbeddingProvider",
     "log_capture",
     "MilvusLiteVectorStore",
-    "NotionMCPAdapter",
+    "NotionRestClient",
     "NotionSyncTarget",
     "QuotaManager",
     "R2SyncTarget",

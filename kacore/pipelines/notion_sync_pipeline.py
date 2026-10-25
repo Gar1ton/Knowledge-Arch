@@ -17,7 +17,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from kacore.adapters.notion_mcp import NotionMCPError
+from kacore.adapters.notion_rest import NotionMCPError
 from kacore.config import NOTION_SYNC_STRICT
 from kacore.domain.models import (
     NOTION_ENTITY_DOCUMENT,

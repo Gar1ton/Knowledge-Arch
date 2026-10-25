@@ -1,7 +1,8 @@
 """Deep thinking 与 ask 共享的答案合成（pipelines 层）。
 
 把「证据 → 带 [n] 引用的答案」抽为可复用单元，供 orchestrator 的 verification 闭环
-与 api.ask 共用，避免重复合成逻辑。不含 persona / lightrag 包装（那是 api.ask 展示层）。
+与 api.ask 共用，避免重复合成逻辑。不含 lightrag 包装（那是 api.ask 展示层）；用户系统提示
+只经 `with_user_system_prompt` 叠加在 default / graph / fulltext 路径，deep / enhanced 不叠加。
 [n] 按 evidence 顺序编号，调用方据同序拼 sources，保证引用对齐。
 """
 from __future__ import annotations
@@ -126,6 +127,16 @@ def lang_instruction(answer_language: str) -> str:
     return "Answer in the same language as the question."
 
 
+def with_user_system_prompt(user_system_prompt: str, rag_rules: str) -> str:
+    """把用户在「回答」节点写的系统提示（`flow.answer.system_prompt`）放在 RAG 约束之前。
+
+    为空（或全空白）时原样返回 rag_rules——与旧版「人格关闭」时发送的 system 完全一致。
+    放在前面而不是后面：RAG 约束（只依据证据、按 [n] 引用）是最后说的话，优先级更高。
+    """
+    text = (user_system_prompt or "").strip()
+    return f"{text}\n\n{rag_rules}" if text else rag_rules
+
+
 def source_tag(doc_id: str, source_labels: dict[str, str] | None) -> str:
     """据 doc_id 取来源标签，拼成 `（来源：X）` 前缀；无映射时返回空串（向后兼容）。
 
@@ -173,6 +184,7 @@ async def synthesize_from_document(
     *,
     title: str,
     answer_language: str = "auto",
+    user_system_prompt: str = "",
 ) -> GenerationResult:
     """用**整篇文档**合成答案（全文检索模式）。
 
@@ -183,10 +195,13 @@ async def synthesize_from_document(
 
     正文为空返回 `GenerationResult(text="", status=STATUS_EMPTY)`；LLM 调用异常向上抛。
     引用恒为 [1]（只有一个来源），调用方据此拼单条 sources。
+    user_system_prompt 非空时放在全文约束之前（见 `with_user_system_prompt`）。
     """
     if not document_text.strip():
         return GenerationResult(text="", status=STATUS_EMPTY)
-    system = _SYNTH_SYSTEM_FULLTEXT + lang_instruction(answer_language)
+    system = with_user_system_prompt(
+        user_system_prompt, _SYNTH_SYSTEM_FULLTEXT + lang_instruction(answer_language)
+    )
     user = f"Document [1]: {title}\n\nFull text:\n\n{document_text}\n\nQuestion: {question}"
     return await llm.generate_result(user, system_prompt=system, allow_mock=False)
 
@@ -196,4 +211,5 @@ __all__ = [
     "source_tag",
     "synthesize_answer",
     "synthesize_from_document",
+    "with_user_system_prompt",
 ]

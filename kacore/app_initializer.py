@@ -36,6 +36,7 @@ from kacore.repository.source_store.sqlite import SQLiteSourceDocumentStore
 from kacore.repository.sync_targets.r2 import R2SyncTarget
 
 if TYPE_CHECKING:
+    from kacore.extras.manager import ExtrasManager
     from kacore.index_compatibility import IndexCompatibilityStore
     from kacore.pipelines.retrieval_orchestrator import RetrievalOrchestrator
     from kacore.repository.embedding.base import EmbeddingProvider
@@ -61,12 +62,20 @@ class AppInitializer:
     每次 initialize() / reload() 重新生成，保证读到最新的持久化值。
     """
 
-    def __init__(self, settings: SettingsStore, data_dir: Path) -> None:
+    def __init__(
+        self,
+        settings: SettingsStore,
+        data_dir: Path,
+        *,
+        extras: ExtrasManager | None = None,
+    ) -> None:
         from kacore.providers.registry import ProviderRegistry
         from kacore.providers.router import ModelRouter
 
         self._data_dir = data_dir
         self._settings = settings
+        # 可选组件管理器由进程薄壳构造（需在 initialize 之前激活 sys.path），这里只转交门面。
+        self.extras_manager = extras
         self._config = Config(settings.to_config_raw())
         self.provider_registry = ProviderRegistry(settings)
         self.model_router = ModelRouter(settings, self.provider_registry)
@@ -147,6 +156,13 @@ class AppInitializer:
             self._config = Config(self._settings.to_config_raw())
             logger.info("R2 pending restore 已应用，按恢复后的设置继续初始化")
 
+        # 旧版插件数据导入：staging 已在上一轮准备好，这里在连接数据库前换入。
+        from kacore.legacy_import.apply import apply_pending_legacy_import
+
+        if await asyncio.to_thread(apply_pending_legacy_import, self._data_dir, self._settings):
+            self._config = Config(self._settings.to_config_raw())
+            logger.info("旧版插件数据已换入，按导入后的设置继续初始化")
+
         self._exit_stack = AsyncExitStack()
 
         # 1) 解析各子系统专属 typed config（此处已可用，供后续构造使用）。
@@ -191,9 +207,18 @@ class AppInitializer:
         r2_target = R2SyncTarget(r2_cfg)
         sync_targets[SyncTargetKind.R2] = r2_target
 
+        from kacore.adapters.notion_rest import NotionRestClient
         from kacore.repository.sync_targets.notion import NotionSyncTarget
 
-        notion_target = NotionSyncTarget(config=notion_cfg, source_store=self.source_store)
+        # Notion 直连 REST API；token 每次请求从设置现取（节点里换 token 无需重启）。
+        settings = self._settings
+        notion_client = NotionRestClient(
+            lambda: str(settings.get("flow.notion.token") or ""),
+            rate_limit_rps=notion_cfg.rate_limit_rps,
+        )
+        notion_target = NotionSyncTarget(
+            config=notion_cfg, source_store=self.source_store, adapter=notion_client
+        )
         sync_targets[SyncTargetKind.NOTION] = notion_target
 
         # 4) 依赖前者的编排层 managers/pipelines
@@ -555,6 +580,8 @@ class AppInitializer:
             reload_callback=self.reload,
             r2_backup_manager=self.r2_backup_manager,
             runtime_event_sink=self._log_handler,
+            extras_manager=self.extras_manager,
+            data_dir=self._data_dir,
         )
         await self.api.restore_paused_build_job()
 
@@ -638,9 +665,11 @@ class AppInitializer:
                 else milvus_runtime["hint"],
             )
 
+        from kacore.legacy_import.apply import commit_applied_legacy_import
         from kacore.managers.r2_backup_manager import commit_applied_restore
 
         await asyncio.to_thread(commit_applied_restore, self._data_dir)
+        await asyncio.to_thread(commit_applied_legacy_import, self._data_dir)
         logger.info(
             "AppInitializer.initialize() 完成，总耗时 %.1fs", time.monotonic() - init_started
         )
@@ -910,6 +939,39 @@ class AppInitializer:
             "AppInitializer.teardown() 完成，耗时 %.1fs", time.monotonic() - teardown_started
         )
 
+    async def initialize_or_rollback(self, *, raise_after_recovery: bool = True) -> None:
+        """initialize()；失败时撤回本轮换入的 R2 恢复 / 旧版数据导入，再按原数据重试一次。
+
+        没有可撤回的内容时直接上抛。撤回后重试成功：raise_after_recovery=True（软重启）仍上抛
+        原异常，让调用方报告「导入 / 恢复失败」；进程薄壳首启传 False，服务照常起来，
+        失败原因已写进导入结果供界面展示。
+        """
+        try:
+            await self.initialize()
+        except Exception as exc:
+            from kacore.legacy_import.apply import rollback_applied_legacy_import
+            from kacore.managers.r2_backup_manager import rollback_applied_restore
+
+            rolled_back_restore = await asyncio.to_thread(
+                rollback_applied_restore, self._data_dir
+            )
+            rolled_back_import = await asyncio.to_thread(
+                rollback_applied_legacy_import, self._data_dir, error=str(exc)
+            )
+            if rolled_back_restore or rolled_back_import:
+                logger.error(
+                    "initialize() 失败，已撤回待确认的%s，按原数据重试",
+                    "旧版数据导入" if rolled_back_import else " R2 恢复",
+                    exc_info=True,
+                )
+                await self.teardown()
+                self._settings.reload()
+                self._config = Config(self._settings.to_config_raw())
+                await self.initialize()
+                if not raise_after_recovery:
+                    return
+            raise
+
     async def reload(self) -> None:
         """软重启：teardown 全部子系统后，重读持久化配置重建 Config 并重新 initialize。
 
@@ -922,19 +984,13 @@ class AppInitializer:
         self._settings.reload()
         self._config = Config(self._settings.to_config_raw())
         try:
-            await self.initialize()
+            await self.initialize_or_rollback()
         except Exception:
             logger.error(
-                "软重启的 initialize() 阶段失败（耗时 %.1fs），尝试回滚待应用的 R2 恢复",
+                "软重启的 initialize() 阶段失败（耗时 %.1fs）",
                 time.monotonic() - reload_started,
                 exc_info=True,
             )
-            from kacore.managers.r2_backup_manager import rollback_applied_restore
-
-            if await asyncio.to_thread(rollback_applied_restore, self._data_dir):
-                self._settings.reload()
-                self._config = Config(self._settings.to_config_raw())
-                await self.initialize()
             raise
         logger.info(
             "AppInitializer.reload() 软重启完成，总耗时 %.1fs",

@@ -1,6 +1,6 @@
 """单元与契约测试：NotionSyncTarget（幂等 upsert 版）。
 
-经 tool_caller fake 驱动（接口对换，不 mock 深层传输对象），重点回归：
+经操作名 fake + REST transport 驱动（接口对换，不 mock 深层传输对象），重点回归：
 防重复建页（幂等序列）、渐进降级（Name+DocID 最小集）、大文件 callout、
 正文块按 content_hash 重写、QA NoteID 防重、两表建库对账。
 """
@@ -11,9 +11,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
-from notion_tools import notion_tools
+from notion_tools import notion_client
 
-from kacore.adapters.notion_mcp import NotionMCPAdapter, NotionMCPError
+from kacore.adapters.notion_rest import NotionMCPError
 from kacore.config import NotionSyncConfig
 from kacore.domain.models import (
     Collection,
@@ -34,7 +34,7 @@ from kacore.repository.sync_targets.notion import (
 
 @dataclass
 class RoutedToolCaller:
-    """按工具名路由响应的 tool_caller fake；list 值按序弹出，callable 值动态计算。"""
+    """按操作名路由响应的 fake；list 值按序弹出，callable 值动态计算。"""
 
     handlers: dict[str, Any] = field(default_factory=dict)
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
@@ -79,9 +79,7 @@ def _target(
     store: InMemorySourceDocumentStore,
     config: NotionSyncConfig,
 ) -> NotionSyncTarget:
-    adapter = NotionMCPAdapter(
-        None, tool_caller=caller, tool_lister=notion_tools, rate_limit_rps=1000
-    )
+    adapter = notion_client(caller, rate_limit_rps=1000)
     return NotionSyncTarget(config, store, adapter=adapter)
 
 
@@ -203,7 +201,7 @@ async def test_upsert_map_miss_but_remote_hit_updates_not_creates(
 async def test_upsert_stale_prior_page_falls_back_to_reverse_query(
     notion_config: NotionSyncConfig, store: InMemorySourceDocumentStore
 ) -> None:
-    from kacore.adapters.notion_mcp import NotionMCPError
+    from kacore.adapters.notion_rest import NotionMCPError
 
     doc = _doc("d1")
     prior = NotionEntityRecord(
@@ -238,7 +236,7 @@ async def test_upsert_stale_prior_page_falls_back_to_reverse_query(
 async def test_upsert_create_degrades_to_minimal_with_docid(
     notion_config: NotionSyncConfig, store: InMemorySourceDocumentStore
 ) -> None:
-    from kacore.adapters.notion_mcp import NotionMCPError
+    from kacore.adapters.notion_rest import NotionMCPError
 
     caller = RoutedToolCaller(
         handlers={
@@ -324,7 +322,7 @@ async def test_delete_archives_via_delete_block(
 async def test_delete_treats_not_found_as_idempotent_but_raises_real_errors(
     notion_config: NotionSyncConfig, store: InMemorySourceDocumentStore
 ) -> None:
-    from kacore.adapters.notion_mcp import NotionMCPError
+    from kacore.adapters.notion_rest import NotionMCPError
 
     caller = RoutedToolCaller(
         handlers={
@@ -446,7 +444,7 @@ async def test_qa_entry_retry_reuses_page_and_rewrites_body(
 async def test_qa_entry_body_append_failure_reports_not_synced(
     notion_config: NotionSyncConfig, store: InMemorySourceDocumentStore
 ) -> None:
-    from kacore.adapters.notion_mcp import NotionMCPError
+    from kacore.adapters.notion_rest import NotionMCPError
 
     # 建页成功但正文追加失败 → content_synced=False（上层据此保留 outbox 正文）。
     caller = RoutedToolCaller(
@@ -474,7 +472,7 @@ async def test_qa_entry_body_append_failure_reports_not_synced(
 async def test_qa_entry_relation_failure_degrades(
     notion_config: NotionSyncConfig, store: InMemorySourceDocumentStore
 ) -> None:
-    from kacore.adapters.notion_mcp import NotionMCPError
+    from kacore.adapters.notion_rest import NotionMCPError
 
     caller = RoutedToolCaller(
         handlers={

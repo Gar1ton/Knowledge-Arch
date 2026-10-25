@@ -20,7 +20,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kacore.api_answer import AnswerPromptMixin
 from kacore.api_capabilities import CapabilitiesApiMixin
+from kacore.api_legacy_import import LegacyImportApiMixin
 from kacore.api_runtime_models import RuntimeModelsApiMixin
 from kacore.api_settings import SettingsApiMixin
 from kacore.config import (
@@ -74,6 +76,7 @@ from kacore.notion_sync_job import (
     NotionSyncJob,
 )
 from kacore.pipelines.agent_evidence import AGENT_EVIDENCE_MODES
+from kacore.pipelines.answer_synthesis import with_user_system_prompt
 from kacore.pipelines.citation_rendering import (
     annotate_sources,
     render_answer_with_references,
@@ -82,6 +85,8 @@ from kacore.pipelines.retrieval_orchestrator import ChunkSignal, RetrievalScope
 from kacore.providers.base import ModelRef
 from kacore.retrieval_modes import (
     FULLTEXT_CONFIRM_THRESHOLD_CHARS,
+    MODE_DEEP_THINKING,
+    MODE_ENHANCED,
     MODE_FULLTEXT,
     MODE_GRAPH_MIXED,
     MODE_GRAPH_ONLY,
@@ -462,6 +467,7 @@ if TYPE_CHECKING:
     from kacore.ask_progress import ProgressStore
     from kacore.config import Config
     from kacore.domain.models import DocumentChunk, QuotaUsage
+    from kacore.extras.manager import ExtrasManager
     from kacore.index_compatibility import IndexCompatibilityStore
     from kacore.lightrag_core import BuildJob, LightRAGCoreRegistry
     from kacore.log_capture import RuntimeEventSink
@@ -640,7 +646,13 @@ def _extract_raw_doc_text(doc: SourceDocument) -> str | None:
         return None
 
 
-class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin, SettingsApiMixin):
+class KnowledgeRepositoryApi(
+    AnswerPromptMixin,
+    CapabilitiesApiMixin,
+    LegacyImportApiMixin,
+    RuntimeModelsApiMixin,
+    SettingsApiMixin,
+):
     """知识库应用的业务门面。依赖经构造器注入，自身不创建依赖（装配在组合根）。
 
     公共方法面按职责拆分到 mixin（如 CapabilitiesApiMixin 承载能力/依赖管理），
@@ -680,6 +692,8 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin, Settin
         reload_callback: Callable[[], Any] | None = None,
         r2_backup_manager: Any | None = None,
         runtime_event_sink: RuntimeEventSink | None = None,
+        extras_manager: ExtrasManager | None = None,
+        data_dir: Path | None = None,
     ) -> None:
         self._processing_lock = (
             getattr(ingest_manager, "_processing_lock", None) or ProcessingLock()
@@ -723,6 +737,13 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin, Settin
         # 软重启回调（组合根注入 AppInitializer.reload；为空表示当前环境不支持程序化重启）。
         self._reload_callback = reload_callback
         self._r2_backup_manager = r2_backup_manager
+        # 可选组件（uv extras）管理器；为空表示当前环境不支持应用内安装组件。
+        self._extras_manager = extras_manager
+        # 数据目录（旧数据导入的 staging 落点）；为空表示不支持导入。
+        self._data_dir = data_dir
+        # 旧版插件数据导入：后台任务快照与句柄（软重启后由结果文件接续）。
+        self._legacy_import_job: dict[str, Any] | None = None
+        self._legacy_import_task: asyncio.Task[None] | None = None
         from kacore.runtime_events import RuntimeEventRecorder
 
         self._runtime_events = RuntimeEventRecorder(runtime_event_sink)
@@ -2490,6 +2511,7 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin, Settin
                     content,
                     title=title,
                     answer_language=answer_language,
+                    user_system_prompt=self._answer_system_prompt(),
                 )
             except Exception as exc:
                 raise FullTextGenerationFailedError(doc_id, len(content), str(exc)) from exc
@@ -2773,13 +2795,14 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin, Settin
                         lang_instr = "Answer in English."
                     else:
                         lang_instr = "Answer in the same language as the question."
-                    system_prompt = (
+                    system_prompt = with_user_system_prompt(
+                        self._answer_system_prompt(),
                         "You are a helpful academic assistant. "
                         "Answer the question based solely on the provided context. "
                         "If the context is insufficient, state the limitation clearly "
                         "and only answer what the context supports. "
                         "Do not fill gaps with outside knowledge. "
-                        f"{lang_instr}"
+                        f"{lang_instr}",
                     )
                     user_prompt = f"Context:\n\n{lightrag_context}\n\nQuestion: {question}"
                     answer = await self._llm_adapter.generate(
@@ -2998,7 +3021,7 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin, Settin
                     lang_instr = "Answer in English."
                 else:
                     lang_instr = "Answer in the same language as the question."
-                system_prompt = (
+                rag_rules = (
                     "You are a helpful academic assistant. "
                     "Answer the question based solely on the provided context. "
                     "If the context is insufficient, state the limitation clearly "
@@ -3006,6 +3029,12 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin, Settin
                     "Do not fill gaps with outside knowledge. "
                     f"Cite sources using [n] notation (e.g. [1], [2]). "
                     f"{lang_instr}"
+                )
+                # deep / enhanced 的兜底合成保持原样，只有普通检索路径叠加用户系统提示。
+                system_prompt = (
+                    rag_rules
+                    if retrieval_mode in {MODE_DEEP_THINKING, MODE_ENHANCED}
+                    else with_user_system_prompt(self._answer_system_prompt(), rag_rules)
                 )
 
                 graph_header = (
@@ -3804,7 +3833,7 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin, Settin
         operation_id = self._runtime_events.start(
             category="system",
             operation="plugin_restart",
-            msg="插件软重启已排队",
+            msg="服务软重启已排队",
         )
 
         async def _deferred_reload() -> None:
@@ -3815,7 +3844,7 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin, Settin
                     operation_id=operation_id,
                     category="system",
                     operation="plugin_restart",
-                    msg="插件软重启完成",
+                    msg="服务软重启完成",
                 )
             except Exception as exc:  # noqa: BLE001 - 后台任务需吞掉异常并记录
                 logger.error("plugin soft restart failed: %s", exc, exc_info=True)
@@ -3823,7 +3852,7 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin, Settin
                     operation_id=operation_id,
                     category="system",
                     operation="plugin_restart",
-                    msg="插件软重启失败",
+                    msg="服务软重启失败",
                     error=exc,
                 )
 
@@ -3833,7 +3862,7 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin, Settin
             lambda _t: setattr(self, "_deferred_reload_task", None)
         )
         logger.info("plugin soft restart scheduled")
-        return {"status": "restarting", "message": "插件正在重启，稍后将自动重连。"}
+        return {"status": "restarting", "message": "服务正在重启，稍后将自动重连。"}
 
     async def clear_milvus_lock(self) -> dict[str, Any]:
         """清除 Milvus 数据目录残留的 LOCK 标记（仅在已探测到锁定问题时可用）。

@@ -1,10 +1,35 @@
-# Notion 同步：正文笔记与消耗
+# Notion 同步：配置、正文笔记与消耗
 
-## 接入方式（过渡期说明）
+Knowledge Arch 把文章元数据（Articles 库）与问答记录（QA 库）**单向推送**到 Notion。
+桌面版直接调用 Notion 公开 REST API（`https://api.notion.com/v1`，`Notion-Version: 2026-03-11`），
+不需要 MCP server，也不需要 Node.js。实现见 `kacore/adapters/notion_rest.py`。
 
-Knowledge Arch 桌面版直接调用 Notion REST API：在数据流的 Notion 节点填写 integration
-token 与目标库 ID，不需要 MCP server，也不需要 Node.js（P3 落地，届时本节改写为配置步骤）。
-P1–P2 过渡期 Notion 同步不可用，其余同步语义不变。
+## 配置步骤
+
+1. 在 Notion 的 *Settings › Connections › Develop or manage integrations* 新建一个
+   **internal integration**，能力至少勾选 Read / Update / Insert content，复制它的 token。
+2. 在 Notion 里打开要放同步库的页面（或已有的 Articles / QA 数据库），右上角 **⋯ › Connections**，
+   把上一步的集成加进来。没有分享给集成的页面，API 一律返回 404（`object_not_found`）。
+3. 回到 Knowledge Arch 的「数据流 › Notion」节点：
+   - **token**：粘贴集成 token（存进本机加密库，界面只显示后 4 位；设置键 `flow.notion.token`）；
+   - 已有数据库：填 Articles 的 `database_id` 与 QA 的 `qa_database_id`；
+   - 让应用建库：只填 `parent_page_id`，再点「初始化数据库」，建好后 ID 自动回填；
+   - 多数据源的库需要在高级项里指定 `data_source_id` / `qa_data_source_id`。
+4. 打开 `enabled`，重启服务。token 每次请求现取，之后更换 token 不需要重启。
+
+### 出错时看什么
+
+| 现象（错误码） | 含义 | 处理 |
+|---|---|---|
+| `not_configured` | 节点里还没填 token | 填写 token |
+| `unauthorized`（401） | token 无效或已撤销 | 重新生成并填写 token |
+| `restricted_resource`（403） | 集成没有该页面的权限或能力 | 在 Notion 页面 Connections 里加入集成，检查能力勾选 |
+| `object_not_found`（404） | ID 错误，或页面没分享给集成（两者无法区分） | 核对 ID 并确认已分享 |
+| `rate_limited`（429） | 被 Notion 限流；已按 `Retry-After` 重试仍失败 | 稍后重试 |
+| `incompatible_response` | 目标 ID 不是数据库（例如填成了页面 ID） | 换成数据库 ID |
+
+客户端固定 3 次/秒的全局频控；429、5xx 与网络错误有界重试，其余 4xx 不重试。
+批次开始前先校验 token（`GET /users/me`）并解析目标库：任一失败整批停止，不逐篇记失败。
 
 ## 自动同步与正文保护
 
@@ -24,7 +49,7 @@ P1–P2 过渡期 Notion 同步不可用，其余同步语义不变。
 
 ## “已做笔记”的简单规则
 
-MCP 完整读取正文块，由 KA 的固定规则判断，不调用语言模型。
+经 REST API 完整读取正文块，由 KA 的固定规则判断，不调用语言模型。
 
 - 非空文字、图片、文件或子页面等正文内容会勾选 `已做笔记`。
 - 空白文字块和分隔线忽略；空容器继续读取嵌套内容。
@@ -48,9 +73,9 @@ MCP 完整读取正文块，由 KA 的固定规则判断，不调用语言模型
 
 ## 一轮同步的消耗
 
-任务结果与进度条记录 `request_count`（MCP 工具调用尝试，含失败）、`elapsed_seconds`
+任务结果与进度条记录 `request_count`（Notion API 请求尝试，含失败与重试）、`elapsed_seconds`
 （秒）和 `model_tokens=0`，以及本轮检查/勾选的文章数。
-请求数不含宿主重连，也不是精确计费账单；一个 MCP 工具可能发出额外内部请求。
+每轮另有一次 token 校验请求；超过 100 个正文块的追加会按 100 个一批拆成多次请求。
 
 - **模型：0 token**。同步不做 LLM、Embedding 或摘要；本轮没有模型调用费用。
 - **Notion 请求：** 元数据增量写入 + 数据源查询分页 + 候选正文块分页 + checkbox 更新。
@@ -65,4 +90,4 @@ MCP 完整读取正文块，由 KA 的固定规则判断，不调用语言模型
 - **页面块：** Articles 不再新增摘要块；笔记检查只读正文并更新 checkbox。
   用户自己新增的正文与 QA 写入仍使用 Notion 页面/块容量。
 
-耗时与费用以实际任务结果及宿主/Notion 配额为准；固定规则不会因文章长度产生模型 token。
+耗时与费用以实际任务结果及 Notion 配额为准；固定规则不会因文章长度产生模型 token。

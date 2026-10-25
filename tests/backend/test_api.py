@@ -393,7 +393,7 @@ async def test_notion_failed_ledger_is_visible_without_sync_records_and_takes_pr
     store = InMemorySourceDocumentStore()
     for i in range(106):
         await store.upsert_notion_entity(NotionEntityRecord(
-            "document", str(i), status="failed", message="MCP 接口不兼容",
+            "document", str(i), status="failed", message="Notion token 无效",
         ))
     api = KnowledgeRepositoryApi(
         source_store=store, config=Config({}),
@@ -407,7 +407,7 @@ async def test_notion_failed_ledger_is_visible_without_sync_records_and_takes_pr
     assert notion["status"] == "failed"
     summary = await api.get_notion_push_status()
     assert summary["documents"]["failed"] == 106
-    assert summary["errors"] == [{"message": "MCP 接口不兼容", "count": 106}]
+    assert summary["errors"] == [{"message": "Notion token 无效", "count": 106}]
 
 
 async def test_sync_all_fans_out_to_each_target() -> None:
@@ -2615,12 +2615,12 @@ async def test_install_dependency_installs_milvus_lite_explicitly(
     )
     seen: list[tuple[str, ...]] = []
 
-    async def _capture(*specs: str) -> dict:
+    async def _capture(key: str, specs: tuple[str, ...]) -> dict:
         seen.append(specs)
         return {"status": "ok", "package": " ".join(specs), "returncode": 0,
                 "restart_required": True, "message": "ok"}
 
-    monkeypatch.setattr(api, "_run_pip_install", _capture)
+    monkeypatch.setattr(api, "_run_extras_install", _capture)
     monkeypatch.setattr("kacore.capabilities.module_available", lambda name: True)
 
     result = await api.install_dependency("milvus")
@@ -2640,16 +2640,16 @@ async def test_install_dependency_flags_pip_success_that_left_milvus_unusable(
         source_store=InMemorySourceDocumentStore(),
     )
 
-    async def _ok_install(*specs: str) -> dict:
+    async def _ok_install(key: str, specs: tuple[str, ...]) -> dict:
         return {
             "status": "ok",
             "package": " ".join(specs),
             "returncode": 0,
             "restart_required": True,
-            "message": "已安装，需重启插件生效；Docker 部署请注意依赖持久化。",
+            "message": "已安装，重启服务后生效。",
         }
 
-    monkeypatch.setattr(api, "_run_pip_install", _ok_install)
+    monkeypatch.setattr(api, "_run_extras_install", _ok_install)
 
     result = await api.install_dependency("milvus")
     assert result["status"] == "error"

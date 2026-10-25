@@ -2011,6 +2011,10 @@ def build_app(
         "/api/chat/history/{conv_id}/messages/{msg_idx}/lock", handle_chat_message_lock
     )
 
+    from web.desktop_routes import register_desktop_routes
+
+    register_desktop_routes(app, _api)
+
     # 日志 handler 已在路由装配前注入；生产由组合根传入，独立测试/开发则幂等安装默认实例。
     return app
 

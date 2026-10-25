@@ -1,4 +1,4 @@
-"""NotionSyncPipeline 契约测试（接口对换：内存 store + fake tool_caller 驱动 target）。
+"""NotionSyncPipeline 契约测试（接口对换：内存 store + 操作名 fake 经 REST transport 驱动 target）。
 
 覆盖：首推全量、零变更 0 调用、改 tag 仅 1 update、集合改名联动子树文章、
 force 全推、outbox 补推与存根清空、citations 按需 upsert、孤儿清理、并发重入。
@@ -10,9 +10,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
-from notion_tools import notion_tools
+from notion_tools import notion_client
 
-from kacore.adapters.notion_mcp import NotionMCPAdapter, NotionMCPError
+from kacore.adapters.notion_rest import NotionMCPError
 from kacore.config import NotionSyncConfig
 from kacore.domain.models import (
     NOTION_ENTITY_DOCUMENT,
@@ -86,9 +86,7 @@ def _pipeline(
     caller: RoutedToolCaller,
     sync_mode: str = "preserve",
 ) -> NotionSyncPipeline:
-    adapter = NotionMCPAdapter(
-        None, tool_caller=caller, tool_lister=notion_tools, rate_limit_rps=1000
-    )
+    adapter = notion_client(caller, rate_limit_rps=1000)
     target = NotionSyncTarget(_config(sync_mode), store, adapter=adapter)
     return NotionSyncPipeline(source_store=store, notion_target=target)
 
@@ -360,9 +358,7 @@ async def test_runtime_sync_mode_provider_applies_on_next_push(
     doc.lifecycle_state = DocumentLifecycle.DETACHED
     await store.add_document(doc)
     caller = RoutedToolCaller()
-    adapter = NotionMCPAdapter(
-        None, tool_caller=caller, tool_lister=notion_tools, rate_limit_rps=1000
-    )
+    adapter = notion_client(caller, rate_limit_rps=1000)
     target = NotionSyncTarget(_config("preserve"), store, adapter=adapter)
     current = {"config": _config("preserve")}
     pipeline = NotionSyncPipeline(
@@ -601,9 +597,7 @@ async def test_push_all_disabled_returns_early(
     store: InMemorySourceDocumentStore,
 ) -> None:
     caller = RoutedToolCaller()
-    adapter = NotionMCPAdapter(
-        None, tool_caller=caller, tool_lister=notion_tools, rate_limit_rps=1000
-    )
+    adapter = notion_client(caller, rate_limit_rps=1000)
     config = NotionSyncConfig(enabled=False, database_id="db-a", qa_database_id="db-q")
     target = NotionSyncTarget(config, store, adapter=adapter)
     pipeline = NotionSyncPipeline(source_store=store, notion_target=target)
@@ -619,9 +613,7 @@ async def test_push_all_without_database_id_errors(
     store: InMemorySourceDocumentStore,
 ) -> None:
     caller = RoutedToolCaller()
-    adapter = NotionMCPAdapter(
-        None, tool_caller=caller, tool_lister=notion_tools, rate_limit_rps=1000
-    )
+    adapter = notion_client(caller, rate_limit_rps=1000)
     config = NotionSyncConfig(enabled=True, database_id="")
     target = NotionSyncTarget(config, store, adapter=adapter)
     pipeline = NotionSyncPipeline(source_store=store, notion_target=target)

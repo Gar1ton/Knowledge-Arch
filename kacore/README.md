@@ -24,6 +24,10 @@ ka_server(进程薄壳) → web(HTTP 路由) → api(业务门面) → managers/
 | `adapters/` | 适配翻译 | 外部服务（LLM / Notion / Zotero）↔ `domain` 对象。 |
 | `pipelines/` | 领域管线 | 多步骤业务流水线（检索/同步/深度思考等）。 |
 | `utils/` | 工具 | 无业务语义的横切工具。 |
+| `settings/` / `providers/` | 设置与模型连接 | SettingSpec 登记表、SettingsStore、连接与「模型分配」路由。 |
+| `extras/` | 可选组件 | 用 uv 把本地模型 / 知识图谱 / R2 依赖装进数据目录 `extras/<pack>/`，启动时加入 `sys.path`。 |
+| `legacy_import/` | 旧数据导入 | 复制旧版插件数据 → 改写路径 → 迁移 → 翻译配置；唯一允许出现旧宿主名的目录。 |
+| `api_*.py` | 门面 mixin | 按职责拆出的 `KnowledgeRepositoryApi` 子门面（设置、能力 / 组件、回答提示、旧数据导入…）。 |
 
 ## 在此新增代码？
 

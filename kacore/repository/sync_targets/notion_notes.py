@@ -9,11 +9,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
-from kacore.adapters.notion_mcp import NotionMCPError
+from kacore.adapters.notion_rest import NotionMCPError
 from kacore.repository.sync_targets.notion_schema import PROP_DOC_ID, PROP_HAS_NOTES
 
 if TYPE_CHECKING:
-    from kacore.adapters.notion_mcp import NotionMCPAdapter
+    from kacore.adapters.notion_rest import NotionRestClient
     from kacore.repository.source_store.base import SourceDocumentStore
 
 _LEGACY_PREVIEW = "本地切片摘要 (Chunks Preview)"
@@ -34,9 +34,9 @@ def _text(block: dict[str, Any]) -> str:
 
 
 class NotionNotesScanner:
-    """MCP 读取正文并设置 checkbox；无 LLM/Embedding，失败不修改已有标记。"""
+    """读取 Notion 正文并设置 checkbox；无 LLM/Embedding，失败不修改已有标记。"""
 
-    def __init__(self, store: SourceDocumentStore, adapter: NotionMCPAdapter) -> None:
+    def __init__(self, store: SourceDocumentStore, adapter: NotionRestClient) -> None:
         self._store = store
         self._adapter = adapter
 
