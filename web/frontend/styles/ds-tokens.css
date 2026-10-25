@@ -22,7 +22,7 @@
  */
 
 /* ─── 字体（Google Fonts 降级） ─────────────────────────────── */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=PT+Sans:ital,wght@0,400;0,700;1,400;1,700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 /* ═══════════════════════════════════════════════════════════════
    颜色 tokens
@@ -314,7 +314,9 @@
    ═══════════════════════════════════════════════════════════════ */
 :root {
   /* Font families */
-  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* 拉丁字符用 PT Sans；中文回落到各平台系统字体 */
+  --font-sans: var(--font-pt-sans), "PT Sans", -apple-system, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
   /* Alias so ported code using --font-geist-mono keeps working */
   --font-geist-mono: var(--font-mono);

@@ -32,6 +32,7 @@ import {
 } from "@/lib/backend";
 import { useI18n, type Lang } from "@/lib/i18n";
 import { useTheme } from "@/lib/theme";
+import { cachedScale, onUiScaleChange, setUiScale, UI_SCALES } from "@/lib/uiScale";
 import {
   installComponent,
   listComponents,
@@ -104,6 +105,24 @@ export function GeneralGroup() {
 
 // ─── 外观 ──────────────────────────────────────────────────────
 
+function UiScaleField() {
+  const { t } = useI18n();
+  const [scale, setScale] = useState(cachedScale);
+  useEffect(() => onUiScaleChange(setScale), []);
+  if (!inDesktopShell()) {
+    return <Field label={t("set_prefs_appearance_ui_scale")} hint={t("prefs_ui_scale_browser_hint")}>{null}</Field>;
+  }
+  return (
+    <Field label={t("set_prefs_appearance_ui_scale")} hint={t("prefs_ui_scale_hint")}>
+      <Select
+        value={String(scale)}
+        onChange={(v) => void setUiScale(Number(v))}
+        options={UI_SCALES.map((s) => ({ value: String(s), label: `${Math.round(s * 100)}%` }))}
+      />
+    </Field>
+  );
+}
+
 export function AppearanceGroup({ onSaveSetting }: { onSaveSetting: (key: string, value: unknown) => void }) {
   const { t } = useI18n();
   const { theme, setTheme } = useTheme();
@@ -121,6 +140,7 @@ export function AppearanceGroup({ onSaveSetting }: { onSaveSetting: (key: string
             ]}
           />
         </Field>
+        <UiScaleField />
       </Card>
       <Card title={t("settings_theme_gallery")} icon="sparkle" badge={<Badge tone="accent">{t("settings_theme_gallery_badge")}</Badge>}>
         <div style={{ fontSize: 12, color: "var(--fg-muted)", lineHeight: 1.55, marginTop: 4 }}>

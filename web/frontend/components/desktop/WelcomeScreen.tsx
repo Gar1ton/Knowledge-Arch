@@ -7,11 +7,9 @@
  * 服务重启期间轮询失败属正常，继续等即可。
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Button } from "@/components/ds/Button";
 import { formatBytes } from "@/components/flow/SyncActions";
 import { inDesktopShell, pickFolder } from "@/lib/backend";
 import { useI18n } from "@/lib/i18n";
-import { DS_INPUT_STYLE } from "@/components/settings/SettingInput";
 import {
   getLegacyImportState,
   inspectLegacyData,
@@ -20,6 +18,7 @@ import {
   type LegacyImportState,
   type LegacyPreview,
 } from "@/lib/settingsApi";
+import { landing, LandingShell } from "./LandingShell";
 
 const WELCOME_DONE_KEY = "ka-welcome-done";
 const RESULT_SEEN_KEY = "ka-import-result-seen";
@@ -49,6 +48,16 @@ export function useWelcomeNeeded(epoch: number): [boolean | null, () => void] {
   }, [epoch]);
   const dismiss = useCallback(() => setNeeded(false), []);
   return [needed, dismiss];
+}
+
+function Arrow() {
+  return (
+    <svg className={landing.optionArrow} width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <line x1="5" y1="12" x2="19" y2="12" />
+      <polyline points="12 5 19 12 12 19" />
+    </svg>
+  );
 }
 
 type Step =
@@ -135,98 +144,113 @@ export function WelcomeScreen({ onDone }: { onDone: () => void }) {
   };
 
   return (
-    <div className="ka-fullscreen-card">
-      <div className="ka-fullscreen-inner">
-        <h1 className="ka-fullscreen-title">{t("welcome_title")}</h1>
+    <LandingShell subtitle={t("landing_sub_welcome")}>
+      <section className={landing.card}>
+        <div className={landing.body}>
+          <h2 className={landing.heading}>{t("welcome_title")}</h2>
 
-        {step.kind === "choose" && (
-          <>
-            <p className="ka-fullscreen-text">{t("welcome_body")}</p>
-            <div className="ka-welcome-options">
-              <button type="button" className="ka-welcome-option"
-                onClick={() => (inDesktopShell() ? void choosePath() : setStep({ kind: "select", path: "", preview: null, error: "", busy: false }))}>
-                <strong>{t("welcome_import")}</strong>
-                <span>{t("welcome_import_desc")}</span>
-              </button>
-              <button type="button" className="ka-welcome-option" onClick={() => finish()}>
-                <strong>{t("welcome_empty")}</strong>
-                <span>{t("welcome_empty_desc")}</span>
-              </button>
-            </div>
-          </>
-        )}
+          {step.kind === "choose" && (
+            <>
+              <p className={landing.text}>{t("welcome_body")}</p>
+              <div className={landing.options}>
+                <button type="button" className={landing.option}
+                  onClick={() => (inDesktopShell() ? void choosePath() : setStep({ kind: "select", path: "", preview: null, error: "", busy: false }))}>
+                  <span className={landing.optionText}>
+                    <strong>{t("welcome_import")}</strong>
+                    <span>{t("welcome_import_desc")}</span>
+                  </span>
+                  <Arrow />
+                </button>
+                <button type="button" className={landing.option} onClick={() => finish()}>
+                  <span className={landing.optionText}>
+                    <strong>{t("welcome_empty")}</strong>
+                    <span>{t("welcome_empty_desc")}</span>
+                  </span>
+                  <Arrow />
+                </button>
+              </div>
+            </>
+          )}
 
-        {step.kind === "select" && (
-          <>
-            <p className="ka-fullscreen-text">{t("welcome_select_body")}</p>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <input
-                style={{ ...DS_INPUT_STYLE, flex: 1, width: "auto" }}
-                value={step.path}
-                placeholder={t("welcome_path_placeholder")}
-                onChange={(e) => setStep({ ...step, path: e.target.value, preview: null, error: "" })}
-                onKeyDown={(e) => { if (e.key === "Enter" && step.path) void inspect(step.path); }}
-              />
-              {inDesktopShell() && <Button variant="outline" onClick={() => void choosePath()}>{t("welcome_browse")}</Button>}
-              <Button variant="outline" disabled={!step.path || step.busy} loading={step.busy} onClick={() => void inspect(step.path)}>
-                {t("welcome_check")}
-              </Button>
-            </div>
-            {step.error && <div role="alert" className="ka-crash-reason">{step.error}</div>}
-            {step.preview && (
-              <ul className="ka-welcome-preview">
-                <li>{t("welcome_preview_docs", { n: step.preview.document_count })}</li>
-                <li>{t("welcome_preview_size", { size: formatBytes(step.preview.size_bytes), n: step.preview.file_count })}</li>
-                <li>{step.preview.config_found ? t("welcome_preview_config") : t("welcome_preview_no_config")}</li>
-                {step.preview.has_vector_store && <li>{t("welcome_preview_vectors")}</li>}
-                {step.preview.has_graph && <li>{t("welcome_preview_graph")}</li>}
-              </ul>
-            )}
-            <p className="ka-fullscreen-hint">{t("welcome_copy_note")}</p>
-            <div className="ka-fullscreen-actions">
-              <Button variant="primary" disabled={!step.preview} onClick={() => void start(step.path)}>{t("welcome_start")}</Button>
-              <Button variant="outline" onClick={() => setStep({ kind: "choose" })}>{t("btn_cancel")}</Button>
-            </div>
-          </>
-        )}
-
-        {step.kind === "importing" && (
-          <>
-            <p className="ka-fullscreen-text">{t(`welcome_stage_${step.stage}` as Parameters<typeof t>[0])}</p>
-            <div className="ka-progress">
-              <div className="ka-progress-bar" style={{ width: step.total ? `${Math.round((step.done / step.total) * 100)}%` : "35%" }} />
-            </div>
-            {step.total > 0 && <p className="ka-fullscreen-hint">{step.done} / {step.total}</p>}
-          </>
-        )}
-
-        {step.kind === "result" && (
-          <>
-            <p className="ka-fullscreen-text">
-              {step.result.status === "ok"
-                ? t("welcome_done", { n: step.result.summary.document_count ?? 0 })
-                : t("welcome_failed", { error: step.result.error ?? "" })}
-            </p>
-            {step.result.attention.length > 0 && (
-              <>
-                <div className="ka-fullscreen-label">{t("welcome_attention")}</div>
-                <ul className="ka-welcome-preview">
-                  {step.result.attention.map((note) => <li key={note}>{note}</li>)}
+          {step.kind === "select" && (
+            <>
+              <p className={landing.text}>{t("welcome_select_body")}</p>
+              <div className={landing.row}>
+                <input
+                  className={landing.input}
+                  value={step.path}
+                  placeholder={t("welcome_path_placeholder")}
+                  autoFocus
+                  onChange={(e) => setStep({ ...step, path: e.target.value, preview: null, error: "" })}
+                  onKeyDown={(e) => { if (e.key === "Enter" && step.path) void inspect(step.path); }}
+                />
+                {inDesktopShell() && (
+                  <button type="button" className={landing.ghost} onClick={() => void choosePath()}>{t("welcome_browse")}</button>
+                )}
+                <button type="button" className={landing.ghost} disabled={!step.path || step.busy} onClick={() => void inspect(step.path)}>
+                  {step.busy ? "…" : t("welcome_check")}
+                </button>
+              </div>
+              {step.error && <div role="alert" className={landing.error}>{step.error}</div>}
+              {step.preview && (
+                <ul className={landing.list}>
+                  <li>{t("welcome_preview_docs", { n: step.preview.document_count })}</li>
+                  <li>{t("welcome_preview_size", { size: formatBytes(step.preview.size_bytes), n: step.preview.file_count })}</li>
+                  <li>{step.preview.config_found ? t("welcome_preview_config") : t("welcome_preview_no_config")}</li>
+                  {step.preview.has_vector_store && <li>{t("welcome_preview_vectors")}</li>}
+                  {step.preview.has_graph && <li>{t("welcome_preview_graph")}</li>}
                 </ul>
-              </>
-            )}
-            {step.result.dropped.length > 0 && (
-              <details className="ka-fullscreen-hint">
-                <summary>{t("welcome_dropped", { n: step.result.dropped.length })}</summary>
-                <code style={{ overflowWrap: "anywhere" }}>{step.result.dropped.join(", ")}</code>
-              </details>
-            )}
-            <div className="ka-fullscreen-actions">
-              <Button variant="primary" onClick={() => finish(step.result)}>{t("welcome_enter")}</Button>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
+              )}
+              <p className={landing.hint}>{t("welcome_copy_note")}</p>
+              <div className={landing.divider} aria-hidden="true" />
+              <div className={landing.actions}>
+                <button type="button" className={landing.primary} disabled={!step.preview} onClick={() => void start(step.path)}>
+                  {t("welcome_start")}
+                </button>
+                <button type="button" className={landing.ghost} onClick={() => setStep({ kind: "choose" })}>{t("btn_cancel")}</button>
+              </div>
+            </>
+          )}
+
+          {step.kind === "importing" && (
+            <>
+              <p className={landing.text}>{t(`welcome_stage_${step.stage}` as Parameters<typeof t>[0])}</p>
+              <div className={landing.progress}>
+                <div className={landing.progressBar} style={{ width: step.total ? `${Math.round((step.done / step.total) * 100)}%` : "35%" }} />
+              </div>
+              {step.total > 0 && <p className={landing.hint}>{step.done} / {step.total}</p>}
+            </>
+          )}
+
+          {step.kind === "result" && (
+            <>
+              <p className={landing.text}>
+                {step.result.status === "ok"
+                  ? t("welcome_done", { n: step.result.summary.document_count ?? 0 })
+                  : t("welcome_failed", { error: step.result.error ?? "" })}
+              </p>
+              {step.result.attention.length > 0 && (
+                <>
+                  <div className={landing.fieldLabel}>{t("welcome_attention")}</div>
+                  <ul className={landing.list}>
+                    {step.result.attention.map((note) => <li key={note}>{note}</li>)}
+                  </ul>
+                </>
+              )}
+              {step.result.dropped.length > 0 && (
+                <details className={landing.details}>
+                  <summary>{t("welcome_dropped", { n: step.result.dropped.length })}</summary>
+                  <code>{step.result.dropped.join(", ")}</code>
+                </details>
+              )}
+              <div className={landing.divider} aria-hidden="true" />
+              <div className={landing.actions}>
+                <button type="button" className={landing.primary} onClick={() => finish(step.result)}>{t("welcome_enter")}</button>
+              </div>
+            </>
+          )}
+        </div>
+      </section>
+    </LandingShell>
   );
 }

@@ -8,8 +8,10 @@ import { ConsoleProvider, useConsole } from "@/lib/ConsoleContext";
 import { MENU_PREFERENCES_EVENT, onShellEvent } from "@/lib/backend";
 import { getSettingsSchema } from "@/lib/settingsApi";
 import { setColorTheme, THEMES, type ThemeName, useTheme } from "@/lib/theme";
+import { applyUiScale, UI_SCALE_KEY, useUiScaleShortcuts } from "@/lib/uiScale";
 import { BackendGate } from "@/components/desktop/BackendGate";
 import { WelcomeScreen, useWelcomeNeeded } from "@/components/desktop/WelcomeScreen";
+import { LandingSplash } from "@/components/desktop/LandingShell";
 import { PreferencesWindow } from "@/components/prefs/PreferencesWindow";
 import { UpdateBanner } from "@/components/desktop/UpdateBanner";
 import { FlowPageContent } from "@/components/panels/FlowPageContent";
@@ -24,20 +26,23 @@ import { NotePanel } from "@/components/panels/NotePanel";
 
 function I18nProvider({ children }: { children: React.ReactNode }) {
   const [lang, setLangState] = useState<Lang>(() => {
-    if (typeof localStorage === "undefined") return "zh";
+    if (typeof localStorage === "undefined") return "en";
     const saved = localStorage.getItem("kr-lang");
-    return saved === "en" ? "en" : "zh";
+    return saved === "zh" ? "zh" : "en";
   });
 
   const setLang = useCallback((l: Lang) => {
     setLangState(l);
     if (typeof localStorage !== "undefined") localStorage.setItem("kr-lang", l);
-    if (typeof document !== "undefined") document.documentElement.lang = l;
   }, []);
 
   useEffect(() => {
     initColorTheme();
   }, []);
+
+  useEffect(() => {
+    document.documentElement.lang = lang;
+  }, [lang]);
 
   return (
     <I18nContext.Provider value={{ lang, setLang, t: makeT(lang) }}>
@@ -252,6 +257,8 @@ function usePrefsFromBackend(epoch: number) {
             (THEMES as readonly string[]).includes(String(item.value))
           ) {
             setColorTheme(item.value as ThemeName);
+          } else if (item.key === UI_SCALE_KEY) {
+            void applyUiScale(item.value).catch(() => undefined);
           }
         }
       })
@@ -266,7 +273,7 @@ function ReadyShell({ epoch }: { epoch: number }) {
   usePrefsFromBackend(epoch);
 
   if (welcomeNeeded === null) {
-    return <div className="ka-splash">{t("panel_loading")}</div>;
+    return <LandingSplash subtitle={t("landing_sub_starting")} status={t("panel_loading")} />;
   }
   if (welcomeNeeded) {
     return <WelcomeScreen onDone={dismissWelcome} />;
@@ -280,6 +287,7 @@ function ReadyShell({ epoch }: { epoch: number }) {
 }
 
 function ConsoleShell() {
+  useUiScaleShortcuts();
   return <BackendGate>{(epoch) => <ReadyShell key={epoch} epoch={epoch} />}</BackendGate>;
 }
 

@@ -407,7 +407,7 @@ SPECS: tuple[SettingSpec, ...] = (
     ),
     # ── 偏好设置：通用 / 外观（桌面壳与界面消费）──────────────────────
     SettingSpec(
-        "prefs.general.language", "enum", "zh", "prefs.general", options=("zh", "en"),
+        "prefs.general.language", "enum", "en", "prefs.general", options=("zh", "en"),
         owner="frontend",
     ),
     SettingSpec("prefs.general.close_to_tray", "bool", True, "prefs.general", owner="shell"),
@@ -421,6 +421,10 @@ SPECS: tuple[SettingSpec, ...] = (
         options=("system", "light", "dark"), owner="frontend",
     ),
     SettingSpec("prefs.appearance.palette", "str", "", "prefs.appearance", owner="frontend"),
+    SettingSpec(
+        "prefs.appearance.ui_scale", "float", 1.0, "prefs.appearance", bounds=(0.8, 1.5),
+        owner="frontend",
+    ),
     # ── 偏好设置：存储 / 本地模型 / 诊断 ───────────────────────────────
     SettingSpec(
         "prefs.storage.data_dir", "path", "", "prefs.storage", consequence=_R, owner="shell",

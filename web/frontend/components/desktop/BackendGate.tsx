@@ -17,6 +17,7 @@ import {
 } from "@/lib/backend";
 import { useI18n } from "@/lib/i18n";
 import { CrashScreen } from "./CrashScreen";
+import { LandingSplash } from "./LandingShell";
 
 type GateState =
   | { phase: "connecting" }
@@ -70,7 +71,7 @@ export function BackendGate({ children }: { children: (epoch: number) => React.R
   }, [attach, t]);
 
   if (state.phase === "connecting") {
-    return <div className="ka-splash">{t("backend_connecting")}</div>;
+    return <LandingSplash subtitle={t("landing_sub_starting")} status={t("backend_connecting")} />;
   }
   if (state.phase === "crashed") {
     return (

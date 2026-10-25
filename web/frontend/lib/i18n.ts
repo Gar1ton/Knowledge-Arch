@@ -1801,9 +1801,9 @@ export interface I18nContextValue {
 }
 
 export const I18nContext = createContext<I18nContextValue>({
-  lang: "zh",
+  lang: "en",
   setLang: () => {},
-  t: (key) => zh[key] ?? key,
+  t: makeT("en"),
 });
 
 export function useI18n() {

@@ -2,6 +2,24 @@
 
 > 插件时代（v0.x – v1.2.0）的变更记录完整保留在本仓库首个提交 `89b251a` 中（`git show 89b251a:CHANGELOG.md`），不再随 v2 维护。
 
+## [Unreleased]
+
+### 改进 (Changed) — P7 界面打磨
+
+- **默认界面语言改为英语**：`web/frontend/app/(console)/layout.tsx`（`kr-lang` 缺省 `en`，`<html lang>` 随语言同步）、
+  `app/layout.tsx`、`lib/i18n.ts`（context 默认）、`kacore/settings/schema.py`（`prefs.general.language` 默认 `en`）。
+- **英文默认字体 PT Sans**：`app/layout.tsx` 用 next/font 自托管 PT Sans；`styles/ds-tokens.css` 的 `--font-sans`
+  中文回落到 PingFang / 微软雅黑 / Noto CJK。
+- **落地页沿用 v1 登录页视觉**：新增 `components/desktop/LandingShell.tsx` / `.module.css`（网点建筑背景、Bitcount
+  字标、流光卡片）；`WelcomeScreen`、`CrashScreen`、启动画面（`BackendGate`、`ReadyShell`）改用它；删去
+  `styles/desktop.css` 中的旧整窗卡片样式。
+
+### 新增 (Added)
+
+- **界面缩放**：设置项 `prefs.appearance.ui_scale`（0.8–1.5）；`lib/uiScale.ts` 在桌面壳内经 Tauri webview
+  `setZoom` 应用，并接管 Ctrl/⌘ + / − / 0；偏好设置 › 外观新增「界面缩放」；
+  `desktop/src-tauri/capabilities/default.json` 加 `core:webview:allow-set-webview-zoom`。
+
 ## [v2.0.0] — 2026-10-25
 
 ### 新增 (Added) — P6 发布

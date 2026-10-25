@@ -172,3 +172,17 @@
       Apple ID 三项齐全，否则只签名。
     - macOS x64 用 `macos-15-intel` runner（`macos-13` 已退役）。
     - 未启用 updater 的构建里，偏好设置 › 通用的「检查更新」显示「此版本未启用自动更新」。
+- [x] P7 · 界面打磨：默认英语、界面缩放、欢迎页沿用旧登录页视觉、英文字体 PT Sans。
+  - [x] P7.1 默认界面语言 `en`（前端 `kr-lang` 缺省值、`<html lang>` 随语言同步、i18n context 默认、
+    `prefs.general.language` 默认值）；已选中文的用户不受影响。
+  - [x] P7.2 界面缩放：`prefs.appearance.ui_scale`（0.8–1.5，档位 80/90/100/110/125/150%），`lib/uiScale.ts` 经
+    Tauri `setZoom` 应用（capability 加 `core:webview:allow-set-webview-zoom`）；Ctrl/⌘ + / − / 0；本机缓存首帧套用。
+  - [x] P7.3 `components/desktop/LandingShell.tsx`：v1 登录页的网点建筑背景 + Bitcount 字标 + 流光卡片；欢迎页、
+    启动画面、崩溃页共用；`styles/desktop.css` 删去旧整窗卡片样式。
+  - [x] P7.4 `--font-sans` 改为 PT Sans（next/font 自托管 400 / 700 + 斜体），中文回落 PingFang / 微软雅黑 / Noto CJK。
+  - 验证：`pytest` 1292 passed / 4 skipped；ruff / mypy；前端 lint / tsc / build；Playwright 截图确认欢迎页
+    （宽 / 窄屏）、`lang=en`、PT Sans 生效、无页面错误。
+  - 未验证（本机无 Rust 工具链）：壳内缩放与快捷键、`cargo test`；待 Windows 包实测。
+  - 落点调整：
+    - 不用 CSS `zoom`：会让 PDF.js 与数据流图的指针坐标错位；浏览器开发期交给浏览器自带缩放。
+    - PT Sans 只有 400 / 700，界面中的 500 / 600 字重由浏览器就近取档。
