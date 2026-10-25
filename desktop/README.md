@@ -9,10 +9,12 @@ desktop/
   scripts/bundle_python.py   # 打包后端：CPython 3.12 + 依赖 + 源码 + uv → src-tauri/resources/
   src-tauri/
     tauri.conf.json          # 窗口、CSP、打包资源（python/、ka/）
-    src/lib.rs               # 菜单、托盘、单实例、命令（backend_info / pick_folder / notify …）
+    src/lib.rs               # 菜单（仅 macOS）、托盘、单实例、命令（backend_info / pick_folder / notify …）
+    src/wipe.rs              # 「删除全部数据」与卸载器共用的删除规则
     src/sidecar.rs           # 后端进程：token、KA_READY、崩溃检测、有序停止
     src/prefs.rs             # 壳偏好 shell.json 与平台目录
     icons/                   # 由 assets/logo.svg 生成（npm run icons）
+    windows/hooks.nsh        # NSIS 卸载钩子：勾选「删除应用程序数据」时删除我们的数据目录
 ```
 
 ## 后端 sidecar

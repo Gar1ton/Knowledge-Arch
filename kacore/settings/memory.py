@@ -43,5 +43,8 @@ class MemorySecretStore:
     def has_secret(self, name: str) -> bool:
         return bool(self._values.get(name))
 
+    def forget_master_key(self) -> None:
+        self._values.clear()
+
 
 __all__ = ["MemorySecretStore", "MemorySettingsBackend"]

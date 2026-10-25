@@ -151,6 +151,17 @@ export async function getShellPrefs(): Promise<Record<string, unknown>> {
   return invokeShell<Record<string, unknown>>("get_shell_prefs");
 }
 
+/** 退出应用（Windows / Linux 的 Ctrl+Q；macOS 由系统菜单处理）。 */
+export async function quitApp(): Promise<void> {
+  if (!inDesktopShell()) return;
+  await invokeShell<void>("quit_app");
+}
+
+/** 删除全部数据并退出：壳停后端、删数据 / 日志 / 缓存 / 壳配置目录后退出（本调用通常不会返回）。 */
+export async function wipeDataAndQuit(): Promise<void> {
+  await invokeShell<void>("wipe_data_and_quit");
+}
+
 // ─── 自动更新（桌面壳 Cargo feature `updater`；未启用时 enabled=false）──────────
 
 export const UPDATE_AVAILABLE_EVENT = "update://available";

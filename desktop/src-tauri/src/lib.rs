@@ -5,11 +5,15 @@
 //!
 //! 前端可调用的命令（与 web/frontend/lib/backend.ts 一一对应）：
 //! backend_info / backend_state / restart_backend / pick_folder / open_log_dir / notify /
-//! set_shell_pref / get_shell_prefs / check_update / install_update。
+//! set_shell_pref / get_shell_prefs / quit_app / wipe_data_and_quit / check_update / install_update。
+//!
+//! 菜单栏只在 macOS 挂（系统顶栏的应用 / 编辑 / 窗口菜单）；Windows / Linux 不挂，
+//! Ctrl+, 与 Ctrl+Q 由前端处理，托盘菜单三平台都有。
 
 mod prefs;
 mod sidecar;
 mod updater;
+mod wipe;
 
 use prefs::ShellPrefs;
 use sidecar::{BackendInfo, BackendState, LaunchSpec, Sidecar};
@@ -17,12 +21,14 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 #[cfg(target_os = "macos")]
-use tauri::menu::PredefinedMenuItem;
-use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri::menu::{Menu, PredefinedMenuItem, SubmenuBuilder};
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent, Wry};
+#[cfg(target_os = "macos")]
+use tauri::Wry;
+use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartExt};
-use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 
@@ -41,6 +47,8 @@ const ENV_SIDECAR_PYTHON: &str = "KA_SIDECAR_PYTHON";
 struct ShellState {
     prefs: Mutex<ShellPrefs>,
     sidecar: Sidecar,
+    /// 后端本次实际使用的数据目录覆盖（改了数据目录但还没重启时，与 prefs 里的新值不同）。
+    launched_data_dir: Mutex<Option<PathBuf>>,
 }
 
 fn resources_dir(app: &AppHandle) -> PathBuf {
@@ -72,6 +80,32 @@ fn show_main(app: &AppHandle) {
     }
 }
 
+/// 把当前数据目录写给卸载器（失败只影响卸载时能否找到自选目录，不阻止启动）。
+fn publish_data_dir(prefs: &ShellPrefs) {
+    if let Some(dir) = prefs::config_dir() {
+        let _ = wipe::write_pointer(&dir, prefs.data_dir_override().as_deref());
+    }
+}
+
+/// 删除全部数据：自选目录（正在用的与下次启动要用的）按归属标记处理，平台默认的数据 / 日志 /
+/// 缓存 / 壳配置目录整个删除。返回失败说明（空 = 全部删除）。调用前后端必须已停止。
+fn wipe_all(custom_dirs: &[PathBuf]) -> Vec<String> {
+    let protected: Vec<PathBuf> = dirs::home_dir().into_iter().collect();
+    let mut targets = Vec::new();
+    for dir in custom_dirs {
+        targets.push((dir.clone(), wipe::is_owned(dir)));
+    }
+    targets.push((prefs::default_data_dir(), true));
+    targets.push((prefs::default_log_root(), true));
+    targets.push((prefs::default_cache_dir(), true));
+    targets.extend(prefs::config_dir().map(|dir| (dir, true)));
+    targets
+        .into_iter()
+        .filter_map(|(dir, owned)| wipe::remove_dir(&dir, owned, &protected).err())
+        .flatten()
+        .collect()
+}
+
 fn open_preferences(app: &AppHandle) {
     show_main(app);
     let _ = app.emit(MENU_PREFERENCES_EVENT, ());
@@ -98,6 +132,7 @@ async fn restart_backend(
     state: tauri::State<'_, ShellState>,
 ) -> Result<BackendInfo, String> {
     let spec = launch_spec(&app, &state.prefs.lock().unwrap());
+    *state.launched_data_dir.lock().unwrap() = spec.data_dir.clone();
     let sidecar = state.sidecar.clone();
     sidecar.set_spec(spec);
     tauri::async_runtime::spawn_blocking(move || sidecar.restart())
@@ -152,7 +187,14 @@ fn set_shell_pref(
 ) -> Result<(), String> {
     let mut prefs = state.prefs.lock().unwrap();
     prefs.apply(&key, &value)?;
+    if key == prefs::KEY_DATA_DIR {
+        // 选定时为空的目录整个归应用所有，删除数据时可整删；否则只删应用自己的条目。
+        if let Some(dir) = prefs.data_dir_override() {
+            wipe::claim_if_empty(&dir).map_err(|e| e.to_string())?;
+        }
+    }
     prefs.save()?;
+    publish_data_dir(&prefs);
     if key == prefs::KEY_LAUNCH_AT_LOGIN {
         let autostart = app.autolaunch();
         let result = if prefs.launch_at_login {
@@ -172,12 +214,72 @@ fn get_shell_prefs(state: tauri::State<'_, ShellState>) -> serde_json::Value {
     state.prefs.lock().unwrap().as_map()
 }
 
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
+}
+
+/// 「删除全部数据」：停后端 → 关闭开机自启 → 删目录 → 退出。主密钥已由前端先经后端删除。
+#[tauri::command]
+async fn wipe_data_and_quit(
+    app: AppHandle,
+    state: tauri::State<'_, ShellState>,
+) -> Result<(), String> {
+    let mut custom_dirs: Vec<PathBuf> = state
+        .prefs
+        .lock()
+        .unwrap()
+        .data_dir_override()
+        .into_iter()
+        .collect();
+    if let Some(dir) = state.launched_data_dir.lock().unwrap().clone() {
+        if !custom_dirs.contains(&dir) {
+            custom_dirs.push(dir);
+        }
+    }
+    let sidecar = state.sidecar.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        sidecar.stop();
+        let _ = app.autolaunch().disable();
+        let errors = wipe_all(&custom_dirs);
+        if !errors.is_empty() {
+            let _ = app
+                .dialog()
+                .message(format!(
+                    "Some files could not be deleted:\n\n{}",
+                    errors.join("\n")
+                ))
+                .title("Knowledge Arch")
+                .kind(MessageDialogKind::Error)
+                .blocking_show();
+        }
+        app.exit(0);
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 // ── 菜单与托盘 ─────────────────────────────────────────────────
 
+#[cfg(target_os = "macos")]
 fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let preferences = MenuItemBuilder::with_id(MENU_PREFERENCES, "Preferences…")
         .accelerator("CmdOrCtrl+,")
         .build(app)?;
+    let app_menu = SubmenuBuilder::new(app, "Knowledge Arch")
+        .about(None)
+        .separator()
+        .item(&preferences)
+        .separator()
+        .services()
+        .separator()
+        .hide()
+        .hide_others()
+        .show_all()
+        .separator()
+        .quit()
+        .build()?;
+    // macOS 上复制 / 粘贴等快捷键依赖「编辑」菜单
     let edit = SubmenuBuilder::new(app, "Edit")
         .undo()
         .redo()
@@ -187,42 +289,13 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .paste()
         .select_all()
         .build()?;
-
-    #[cfg(target_os = "macos")]
-    {
-        let app_menu = SubmenuBuilder::new(app, "Knowledge Arch")
-            .about(None)
-            .separator()
-            .item(&preferences)
-            .separator()
-            .services()
-            .separator()
-            .hide()
-            .hide_others()
-            .show_all()
-            .separator()
-            .quit()
-            .build()?;
-        let window = SubmenuBuilder::new(app, "Window")
-            .minimize()
-            .item(&PredefinedMenuItem::close_window(app, None)?)
-            .build()?;
-        MenuBuilder::new(app)
-            .items(&[&app_menu, &edit, &window])
-            .build()
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let quit = MenuItemBuilder::with_id(MENU_QUIT, "Quit")
-            .accelerator("CmdOrCtrl+Q")
-            .build(app)?;
-        let file = SubmenuBuilder::new(app, "File")
-            .item(&preferences)
-            .separator()
-            .item(&quit)
-            .build()?;
-        MenuBuilder::new(app).items(&[&file, &edit]).build()
-    }
+    let window = SubmenuBuilder::new(app, "Window")
+        .minimize()
+        .item(&PredefinedMenuItem::close_window(app, None)?)
+        .build()?;
+    MenuBuilder::new(app)
+        .items(&[&app_menu, &edit, &window])
+        .build()
 }
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
@@ -286,16 +359,19 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             let prefs = ShellPrefs::load();
+            publish_data_dir(&prefs);
             let sidecar = Sidecar::new(handle.clone(), launch_spec(&handle, &prefs));
             sidecar.start();
             if prefs.check_updates {
                 updater::spawn_startup_check(handle.clone());
             }
             app.manage(ShellState {
+                launched_data_dir: Mutex::new(prefs.data_dir_override()),
                 prefs: Mutex::new(prefs),
                 sidecar,
             });
 
+            #[cfg(target_os = "macos")]
             app.set_menu(build_menu(&handle)?)?;
             app.on_menu_event(|app, event| handle_menu_event(app, event.id().as_ref()));
             build_tray(&handle)?;
@@ -325,6 +401,8 @@ pub fn run() {
             notify,
             set_shell_pref,
             get_shell_prefs,
+            quit_app,
+            wipe_data_and_quit,
             updater::check_update,
             updater::install_update,
         ])

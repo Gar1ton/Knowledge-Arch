@@ -26,6 +26,8 @@ class SecretStore(Protocol):
 
     def has_secret(self, name: str) -> bool: ...
 
+    def forget_master_key(self) -> None: ...
+
 
 class SettingsBackend(ABC):
     """settings 文档的存取。

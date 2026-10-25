@@ -132,6 +132,15 @@ If an installation fails, Knowledge Arch classifies the error by cause (**insuff
 
 If you change the data directory in **Preferences › Storage**, logs are written to `<data_dir>/logs`. The data directory contains the SQLite database, original PDFs, Milvus Lite and LightRAG indexes, `settings.json`, encrypted secrets (master key stored in the OS keyring when available, with file fallback), and installed `extras/` components—copying the directory backs up or migrates your library. Desktop shell preferences (data directory override, tray, autostart, update check) are stored in `<OS config dir>/Knowledge Arch/shell.json`.
 
+## Uninstalling & Your Data
+
+Uninstalling never deletes your data unless you ask for it:
+
+- **Windows**: the uninstaller has a **Delete the application data** checkbox (off by default). When ticked, it removes `%LOCALAPPDATA%\Knowledge Arch`, `%APPDATA%\Knowledge Arch` and your own data folder if you chose one (same rule as below). Updates never delete data.
+- **macOS / Linux**: removing the app (dragging it to the Trash, `apt remove`, deleting the AppImage) keeps your data. To remove it, use **Preferences › Storage › Delete all data…** before uninstalling.
+
+**Delete all data…** removes the data, log and cache folders, the shell preferences and the master key in the OS keyring, then quits. If you chose your own data folder, only Knowledge Arch's files are removed from it; anything else stays (a folder that was empty when you picked it is removed entirely). Neither path touches the HuggingFace model cache (`~/.cache/huggingface`), skills installed into Codex / Claude Code, or backups on R2.
+
 ## Development
 
 ```bash

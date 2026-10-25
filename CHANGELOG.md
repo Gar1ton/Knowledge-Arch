@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+### 新增 (Added) — P17 卸载与数据
+
+- **Windows 卸载器真正删除数据**：`desktop/src-tauri/windows/hooks.nsh`（`tauri.conf.json` 的 `installerHooks`）在勾选
+  「删除应用程序数据」且不是更新时删除 `%LOCALAPPDATA%\Knowledge Arch`、`%APPDATA%\Knowledge Arch` 与自选数据目录；
+  Tauri 自带的勾选框只删以应用标识命名的 WebView 目录。
+- **应用内「删除全部数据」**：偏好设置 › 存储（`components/prefs/WipeDataField.tsx`），输入确认词后经
+  `/api/secrets/forget-master-key` 删除钥匙串主密钥，壳命令 `wipe_data_and_quit` 停后端、关闭开机自启、删除数据 / 日志 /
+  缓存 / 壳配置目录并退出；macOS / Linux 卸载前用它清除数据。
+- **删除规则**：`desktop/src-tauri/src/wipe.rs`。平台默认目录整删；自选数据目录选定时为空才写 `.knowledge-arch-owned`
+  并可整删，否则只删 `KNOWN_ENTRIES`；壳把当前数据目录写进 `data-dir.txt`（UTF-16LE）供卸载器读取，测试核对两边清单一致。
+
+### 改进 (Changed)
+
+- **Windows / Linux 不再显示 File / Edit 菜单栏**：菜单只在 macOS 挂；Ctrl+Q 由前端调用 `quit_app`，Ctrl+, 照旧。
+
 ### 移除 (Removed) — 死代码清理
 
 - **无调用方的后端接口**：`web/server.py` 删去 `/api/quota`、`/api/milvus/clear-lock`、`/api/files/list`、`/api/metrics`、

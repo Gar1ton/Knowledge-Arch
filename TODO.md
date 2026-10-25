@@ -316,3 +316,14 @@
   保留：source_store 的读方法（store 契约测试用它核对写入）、`MemoryLogHandler.get_lines`（测试读日志）、
   Zotero 账号合并（报错指路到它但没有 HTTP 入口，待定）。验证：pytest 1383 passed / 4 skipped；ruff；mypy；
   tsc；eslint；`next build`；knip 无未用文件 / 依赖。
+- [ ] P17 · 卸载与数据（🚧）。决策：卸载 / 应用内删除时，自选数据目录只删应用自己的条目（选定时为空才整删）；
+  应用内「删除全部数据」三平台都做。
+  - [ ] P17.1（代码已落地，待 CI 验证）Windows / Linux 不挂菜单栏（顶部 File / Edit），macOS 保留；Ctrl+Q 由前端调用 `quit_app`。
+  - [ ] P17.2（代码已落地，待 CI 出包与 Windows 实测）Windows 卸载器：`installerHooks` 的 `NSIS_HOOK_POSTUNINSTALL` 在勾选「删除应用程序数据」且非更新时
+    删除 `Knowledge Arch` 数据 / 配置目录与自选数据目录（`desktop/src-tauri/windows/hooks.nsh`）。
+  - [ ] P17.3（代码已落地，待 CI 验证）应用内「删除全部数据」：偏好设置 › 存储，二次确认 → 删钥匙串主密钥 → 停后端 → 删目录 → 退出
+    （`desktop/src-tauri/src/wipe.rs`、`/api/secrets/forget-master-key`）。
+  - [x] P17.4 README 两份加「卸载与数据」；测试。
+  - 验证：pytest 1385 passed / 4 skipped（新增主密钥清除 2 项）；ruff；mypy；tsc；eslint；`next build`；
+    `wipe.rs` 单独 `rustc --test` 10 项通过（含与 `hooks.nsh` 清单一致）、clippy -D warnings、rustfmt。
+    未验证：`lib.rs` 整体编译（本机无 webkit 依赖，等 Developer CI 的 clippy / cargo test）、NSIS 钩子编译与 Windows 卸载实测。

@@ -43,6 +43,7 @@ import {
 } from "@/lib/settingsApi";
 import { AgentPrefsField, TourReplayField } from "./AgentPrefsField";
 import { PrefsSchemaFields, useSettingsHome } from "./PrefsSchemaFields";
+import { WipeDataField } from "./WipeDataField";
 
 // ─── 通用 ──────────────────────────────────────────────────────
 
@@ -209,6 +210,7 @@ export function StorageGroup() {
         </div>
       </Field>
       <PrefsSchemaFields items={items} exclude={["prefs.storage.data_dir"]} onSaved={() => void reload()} />
+      {inDesktopShell() && <WipeDataField />}
     </Card>
   );
 }

@@ -305,3 +305,10 @@ export async function getLegacyImportState(): Promise<LegacyImportState> {
   return apiFetch<LegacyImportState>("/api/legacy-import", { timeoutMs: 5_000 });
 }
 
+
+// ─── 删除全部数据 ──────────────────────────────────────────────
+
+/** 删除钥匙串里本数据目录的主密钥（「删除全部数据」第一步；目录随后由桌面壳删除）。 */
+export async function forgetMasterKey(): Promise<void> {
+  await apiFetch("/api/secrets/forget-master-key", { method: "POST" });
+}

@@ -267,3 +267,25 @@ def test_ka_server_activates_installed_packs_before_initialize(
     manager = open_extras(paths, str(tmp_path / "no-such-uv"))
     assert str(pack) in sys.path
     assert manager.status()["installer_available"] is False
+
+
+async def test_forget_master_key_route(tmp_path: Path) -> None:
+    from kacore.settings.memory import MemorySecretStore
+    from kacore.settings.store import SettingsStore
+
+    secrets = MemorySecretStore({"provider.x.api_key": "k"})
+    api = KnowledgeRepositoryApi(
+        source_store=InMemorySourceDocumentStore(),
+        settings_store=SettingsStore.in_memory(secrets=secrets),
+    )
+    bare = KnowledgeRepositoryApi(source_store=InMemorySourceDocumentStore())
+    for target, expected in ((api, 200), (bare, 501)):
+        app = build_app(api=target, upload_dir=tmp_path / "u", token="t")
+        client = TestClient(TestServer(app), headers={"Authorization": "Bearer t"})
+        await client.start_server()
+        try:
+            resp = await client.post("/api/secrets/forget-master-key")
+            assert resp.status == expected
+        finally:
+            await client.close()
+    assert not secrets.has_secret("provider.x.api_key")
