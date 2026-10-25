@@ -60,7 +60,7 @@ export default function RootLayout({
           search={{ enabled: false }}
           theme={{
             attribute: "class",
-            defaultTheme: "light",
+            defaultTheme: "dark",
             enableSystem: true,
             disableTransitionOnChange: true,
           }}

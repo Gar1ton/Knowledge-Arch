@@ -300,3 +300,5 @@
   - [x] P16.3 锚点 `data-tour`：顶栏两个视图按钮、数据流节点、上传按钮、Ask 输入框；`lib/zLayers.ts` 新增 `tour: 950`。
   - 验证：前端 lint / tsc / build；Playwright 走完六步与完成卡（遮罩下点上传按钮无效、节点自动居中、关键词召回回答带
     「Lexical retrieval」标记、完成后本机标记清除）。
+- [x] 默认深色界面：next-themes `defaultTheme` 与 `prefs.appearance.theme_mode` 默认值改为 `dark`。验证：设置测试；
+  Playwright 在系统浅色下打开新实例，`<html>` 为 `dark`。

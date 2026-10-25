@@ -425,7 +425,7 @@ SPECS: tuple[SettingSpec, ...] = (
     # 允许 Codex / Claude Code 等本机 AI 助手经连接文件接入（ka_server/agent_access.py）；即时生效。
     SettingSpec("prefs.general.agent_access", "bool", False, "prefs.general", portable=False),
     SettingSpec(
-        "prefs.appearance.theme_mode", "enum", "system", "prefs.appearance",
+        "prefs.appearance.theme_mode", "enum", "dark", "prefs.appearance",
         options=("system", "light", "dark"), owner="frontend",
     ),
     SettingSpec("prefs.appearance.palette", "str", "", "prefs.appearance", owner="frontend"),

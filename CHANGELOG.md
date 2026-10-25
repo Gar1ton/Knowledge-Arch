@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### 改进 (Changed)
+
+- **默认深色界面**：`web/frontend/app/layout.tsx` 的 `defaultTheme` 改为 `dark`，`kacore/settings/schema.py` 的
+  `prefs.appearance.theme_mode` 默认值改为 `dark`；仍可在偏好设置 › 外观切换跟随系统或浅色。已选过明暗模式的用户不受影响。
+
 ### 新增 (Added) — P16 首次使用引导
 
 - **`web/frontend/components/desktop/FirstRunTour.tsx`**：不用 AI 助手时的游戏式引导（遮罩锁定其它区域、高亮目标、提示卡与进度点），
