@@ -1,0 +1,24 @@
+# 生成 main 时删除的路径（gitignore 语法），由 .github/scripts/build_main.py 读取；
+# .gitattributes 的 export-ignore 与本清单保持一致（tag 源码包同样干净）。
+# 贡献与 issue 走 developer 分支，main 只放调试好的发布版本。
+
+/.release-exclude
+
+# Agent 规范与内部路线图
+/CLAUDE.md
+/AGENTS.md
+/CONVENTIONS.md
+/TODO.md
+/ARCHITECTURE.md
+
+# 内部设计文档（发布与 Notion 说明保留）
+/docs/*
+!/docs/RELEASE.md
+!/docs/NOTION_SYNC.md
+
+# 开发脚本与只在 developer 上跑的 CI
+/dev/
+/tools/
+/.github/workflows/tests.yml
+/.github/scripts/
+/tests/backend/test_build_main.py

@@ -14,7 +14,7 @@ Notion 设置包含本地变更自动同步开关和周期补偿间隔（默认 
 
 界面通过 `lib/backend.ts` 取后端地址与 token：桌面壳里由 `invoke("backend_info")` 提供；
 `next dev` 下走同源 `/api/*` 代理，token 取 `NEXT_PUBLIC_KA_TOKEN`。完整步骤见
-[`dev/README.md`](../../dev/README.md)。
+[`dev/README.md`](https://github.com/Gar1ton/Knowledge-Arch/blob/developer/dev/README.md)。
 
 ```bash
 NEXT_PUBLIC_KA_TOKEN=dev-token npm run dev -- -p 26619

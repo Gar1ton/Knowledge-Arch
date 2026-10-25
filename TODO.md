@@ -243,3 +243,30 @@
   - 验证：`pytest` 1330 passed / 4 skipped（约 70 处断言随文案更新，中文回答相关断言保持中文）；ruff / mypy；
     前端 lint / tsc；重启后端日志零中文；顶栏截图。
   - 未验证（本机无 Rust）：壳的 `cargo fmt --check` / `clippy` / `cargo test`，待 CI。
+- [ ] P13 · 三平台安装包体积与 Linux AppImage（🚧）。rc.2 实测：Windows 81 MB（NSIS LZMA），macOS DMG 139/146 MB
+  （zlib；同一 .app 用 xz 只有 83 MB），Linux AppImage 失败（linuxdeploy 解析不了 auditwheel 改名的 `.so`）。
+  - [x] P13.1 `bundle_python.py`：POSIX 只留一个实体 `bin/python3`（Tauri 复制资源会把符号链接展开成三份）、
+    删去未用的 `libpython` 共享库、tkinter / tcl / tk、idlelib、ensurepip、lib2to3、turtledemo、`*-config` 与
+    idle / pydoc / 2to3 脚本；Linux 再 strip site-packages 的 `.so`（解释器本身不能 strip）。
+  - [ ] P13.2（代码已落地，待 CI 验证）macOS：出包后 `hdiutil convert -format ULMO` 把 DMG 改为 LZMA 压缩并替换 Release 资产。
+  - [ ] P13.3（代码已落地，待 CI 验证）Linux AppImage 后注入：tauri 出 AppImage 时不带 python，之后解包注入、appimagetool 重打包、
+    按需重签 updater `.sig`。
+  - 验证：本机 Linux 完整打包，运行时（展开符号链接后）约 605→461 MB、xz 120→103 MB；冒烟（含 Milvus 往返）通过；
+    瘦身后的解释器经 uv 安装 boto3 正常；`test_bundle_python.py` 新增 2 项。linuxdeploy 失败在本机用模拟 AppDir
+    复现（`Could not find dependency: libquadmath-2284e583.so.0.0.0`）；不带 python 的 AppImage 可出包，
+    注入脚本重打包后（zstd 19 级）解包导入后端成功。
+  - 未验证（需 CI）：DMG 的 ULMO 实际体积与替换上传、tauri `--config` 去掉 python 资源、真实 AppImage 启动；
+    启用 updater 时 `latest.json` 缺 Linux 条目（已在 docs/RELEASE.md 记为已知限制）。
+- [ ] P14 · 由 developer 的 `v*` 标签自动生成干净的 `main`（🚧）。
+  - [x] P14.1 `.release-exclude` 清单 + `tools/release/build_main.py`：按清单删除文件、生成精简 CHANGELOG、
+    检查 README 死链、`git commit-tree` 接在现有 main 之后（不 force）。
+  - [x] P14.2 `.gitattributes` 的 `export-ignore` 与清单同步（源码 zip 同样干净）。
+  - [ ] P14.3（代码已落地，待 CI 验证）`desktop-release.yml`：`publish-main` → `build`，安装包从 main 提交构建。
+  - [x] P14.4 README 拆为 `README.md`（中文）/ `README_EN.md`（英文），注明来源为旧插件 v1.2.0；
+    贡献与 issue 走 developer。
+  - [x] P14.5 `CLAUDE.md` §1.1、`docs/GIT_WORKFLOW.md`、`docs/RELEASE.md`：批准推 `v*` 标签即批准自动更新 main。
+  - 保留：`.agents/skills/operate-knowledge-arch` 与 `requirements-codex-skill.txt` 是 Codex Skill 功能（有测试），
+    不属于 agent 规范，留在 main。子 README 指向 ARCHITECTURE / dev 的链接改为 developer 分支的绝对链接；
+    `test_no_legacy_host_references.py` 放行两份 README 的来源说明。
+  - 验证：`pytest` 1339 passed / 4 skipped（新增 `test_build_main.py` 7 项）；ruff / mypy；actionlint；
+    本地预演 main（447 个文件、无死链、父提交为旧 main `1640a57`）。

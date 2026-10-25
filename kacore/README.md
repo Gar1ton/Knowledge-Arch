@@ -9,7 +9,7 @@ ka_server(进程薄壳) → web(HTTP 路由) → api(业务门面) → managers/
                                                         └──── 横切：adapters · utils · config ────┘
 ```
 
-**依赖只能指向内层（向下），永不反向。** 详见根目录 [`../ARCHITECTURE.md`](../ARCHITECTURE.md)。
+**依赖只能指向内层（向下），永不反向。** 详见 developer 分支的 [`ARCHITECTURE.md`](https://github.com/Gar1ton/Knowledge-Arch/blob/developer/ARCHITECTURE.md)。
 
 ## 本目录成员
 
@@ -31,4 +31,4 @@ ka_server(进程薄壳) → web(HTTP 路由) → api(业务门面) → managers/
 
 ## 在此新增代码？
 
-照 [`../ARCHITECTURE.md` §8 新增子系统清单](../ARCHITECTURE.md) 执行：定层级 → 先定接口 → 写实现 → 加配置 → 组合根注入 → 接路由 → 写测试 → 更新治理三件套。
+照 [`ARCHITECTURE.md` §8 新增子系统清单](https://github.com/Gar1ton/Knowledge-Arch/blob/developer/ARCHITECTURE.md) 执行：定层级 → 先定接口 → 写实现 → 加配置 → 组合根注入 → 接路由 → 写测试 → 更新治理三件套。

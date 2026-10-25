@@ -11,10 +11,21 @@
 | `macos-15` | `aarch64-apple-darwin` | `.app`、`.dmg` |
 | `macos-15-intel` | `x86_64-apple-darwin` | `.app`、`.dmg` |
 | `windows-latest` | `x86_64-pc-windows-msvc` | NSIS `setup.exe`（当前用户安装） |
-| `ubuntu-22.04` | `x86_64-unknown-linux-gnu` | `.deb`、`.AppImage` |
+| `ubuntu-22.04` | `x86_64-unknown-linux-gnu` | `.deb`、`.AppImage`（后注入 Python） |
 
 每个平台都在本机 runner 上执行：前端静态导出 → `desktop/scripts/bundle_python.py`（内置 CPython 3.12
-与依赖，平台专属）→（macOS）逐个签名内置 Mach-O → `tauri build`。
+与依赖，平台专属）→（macOS）逐个签名内置 Mach-O → `tauri build`。推送标签时，先由 publish-main 作业生成干净的
+`main` 提交（见 `docs/GIT_WORKFLOW.md` §1），四个平台都从该提交出包。
+
+出包后的平台专属处理：
+
+- **macOS**：tauri 的 DMG 是 zlib 压缩，`hdiutil convert -format ULMO` 改为 LZMA 后替换 Release 上的 DMG
+  （rc.2 的 aarch64 DMG 为 139 MB；同一 `.app` 用 xz 估算约 80 MB，以 CI 实测为准）。updater 用的 `.app.tar.gz` 格式固定为 gzip。
+- **Linux**：linuxdeploy 解析不了 wheel 里 auditwheel 改名的 `.so`，内置 Python 在 AppDir 里时必然失败。
+  AppImage 那一遍用 `desktop/src-tauri/tauri.appimage.conf.json` 去掉 python 资源，之后由
+  `desktop/scripts/appimage_inject_python.sh` 解包、注入、冒烟、用 appimagetool（zstd 19 级）重打包；
+  启用 updater 时重签 `.AppImage.sig`。已知限制：tauri-action 生成的 `latest.json` 不含 Linux 条目
+  （它那一遍只出 `.deb`），启用 updater 前需要补上。
 
 触发方式：
 
@@ -72,9 +83,10 @@ tauri 自动提交公证并钉上票据。内置 Python 的每个 Mach-O 由 `de
 1. 同步版本号：`ka_server/__init__.py` 的 `APP_VERSION`、
    `desktop/src-tauri/tauri.conf.json`、`desktop/src-tauri/Cargo.toml`、`desktop/package.json`、
    `web/frontend/package.json`。`tests/backend/test_release_config.py` 会检查它们一致。
-2. 在 `CHANGELOG.md` 顶部写好该版本条目；合并到发布分支，确认 Developer CI 全绿。
+2. 在 `CHANGELOG.md` 顶部写好该版本条目（`## [vX.Y.Z] — 日期`；没写时 main 的精简版把 `[Unreleased]` 记为该标签），
+   确认 developer 的 Developer CI 全绿，并按 `docs/GIT_WORKFLOW.md` §3 预演 main。
 3. 先手动触发一次 Desktop build，下载四个平台的产物做冒烟（安装、首次启动、欢迎页、退出后无残留进程）。
-4. **经维护者批准后**推送标签（如 `v2.0.0`）。流水线创建草稿 Release。
+4. **经维护者批准后**在 developer 的提交上推送标签（如 `v2.0.0`）。流水线先更新 `main`，再创建草稿 Release。
 5. 检查草稿里的安装包与 `latest.json`（启用 updater 时），补写发布说明后点 Publish。
 
 > 推送标签、发布 Release 都是远端操作，按 `CLAUDE.md` §1.1 须事先单独取得批准。

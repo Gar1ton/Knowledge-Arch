@@ -4,6 +4,33 @@
 
 ## [Unreleased]
 
+### 新增 (Added) — P14 发布分支 main 自动生成
+
+- **`.github/scripts/build_main.py`**：由 developer 的发布提交生成干净的 main 提交（临时 index，不碰工作区）：
+  按 `.release-exclude` 删去治理文档、内部设计稿、`dev/`、`tools/` 与仅 developer 使用的 CI，CHANGELOG 换成
+  精简版（只留正式版本与每条首句），相对链接指向被删文件即失败，`git commit-tree` 线性接在现有 main 之后；`--list` 预演。
+- **`.github/workflows/desktop-release.yml`**：新增 publish-main 作业（只接受 developer 上的标签，重跑同一标签不重复追加），
+  build 作业从该 main 提交出包。
+- **`.gitattributes`**：与 `.release-exclude` 同步的 `export-ignore`，tag 源码包同样干净（测试核对两者一致）。
+- **README 拆为 `README.md`（中文）/ `README_EN.md`（英文）**：徽章互相跳转，注明项目承接自旧插件 v1.2.0，
+  新增「参与贡献」（issue / PR 走 developer）；`kacore/README.md`、`web/frontend/README.md` 的内部文档链接改指 developer 分支。
+- `CLAUDE.md` §1.1、`docs/GIT_WORKFLOW.md`、`docs/RELEASE.md`：批准推送 `v*` 标签即批准自动更新 main，不再手动 push main。
+
+### 改进 (Changed) — P13 安装包体积与 Linux AppImage
+
+- **`desktop/scripts/bundle_python.py`**：新增 `slim_interpreter`（POSIX 只留一个实体 `bin/python3`，Tauri 复制资源会把
+  符号链接展开成三份解释器；删去未引用的 `libpython`、Tk、idlelib、ensurepip、lib2to3、turtledemo、`config-3.*`）与
+  `strip_extensions`（Linux strip site-packages 的 `.so`）。本机 Linux 运行时约 605→461 MB。
+- **macOS DMG 改为 LZMA（ULMO）**：出包后 `hdiutil convert` 并替换 Release 资产，有签名身份时重签。
+- **Linux AppImage 后注入 Python**：`desktop/src-tauri/tauri.appimage.conf.json` 让 AppImage 那一遍不带 python，
+  `desktop/scripts/appimage_inject_python.sh` 解包注入、冒烟、appimagetool（zstd 19 级）重打包，updater 签名重签；
+  tauri-action 只出 `.deb`。Linux 依赖加 `desktop-file-utils`。
+
+### 测试 (Tests)
+
+- `tests/backend/test_build_main.py`：CHANGELOG 精简、清单删除与父提交、死链检查、export-ignore 与清单一致。
+- `tests/backend/test_bundle_python.py`：`slim_interpreter` 保留唯一实体解释器、按是否引用决定删 libpython。
+
 ### 改进 (Changed) — P12 全英文输出
 
 - **后端日志与界面消息改英文**：`kacore/`、`ka_server/`、`web/server.py` 约 490 条日志、报错、提示与诊断文案；

@@ -1,6 +1,7 @@
 name: Desktop build
 
-# 三平台出包。手动触发（workflow_dispatch）只构建并上传产物；推送 v* 标签时额外创建草稿 Release
+# 三平台出包。手动触发（workflow_dispatch）只构建并上传产物；推送 v* 标签（打在 developer 的提交上）时：
+# 先由 publish-main 按 .release-exclude 生成干净的 main 提交并推送，再从该提交出包、创建草稿 Release
 # （含 updater 的 latest.json）。签名、公证与 updater 都由仓库 secret / variable 驱动：
 # 缺哪一项就跳过哪一步，产出未签名的包（见 docs/RELEASE.md）。本流水线不生成任何证书或密钥。
 
@@ -17,8 +18,52 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  publish-main:
+    name: Publish main
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.main.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # main 只由本作业写入：线性接在现有 main 之后（不 force）。用 GITHUB_TOKEN 推送不会再触发别的
+      # workflow，所以出包放在同一个 workflow 的 build 作业里。
+      - name: Build and push the release commit
+        id: main
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898333+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898333+github-actions[bot]@users.noreply.github.com
+        run: |
+          git fetch --no-tags origin main developer
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/developer; then
+            echo "::error::$GITHUB_REF_NAME is not on developer; main is only generated from developer commits"
+            exit 1
+          fi
+          # 重跑同一标签时沿用已发布的提交，不重复追加。
+          if git log -1 --format=%B origin/main | grep -q "Generated from developer $GITHUB_SHA"; then
+            sha=$(git rev-parse origin/main)
+          else
+            sha=$(python .github/scripts/build_main.py --source "$GITHUB_SHA" --parent origin/main \
+              --tag "$GITHUB_REF_NAME")
+            git push origin "$sha:refs/heads/main"
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "main -> $sha (from developer $GITHUB_SHA)"
+
   build:
     name: ${{ matrix.name }}
+    needs: publish-main
+    # 手动触发时 publish-main 被跳过，直接从所选提交出包。
+    if: ${{ !cancelled() && (needs.publish-main.result == 'success' || needs.publish-main.result == 'skipped') }}
     strategy:
       fail-fast: false
       matrix:
@@ -38,7 +83,8 @@ jobs:
           - name: Linux
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            bundles: deb,appimage
+            # AppImage 单独出（见下方「AppImage」两步），linuxdeploy 处理不了内置 Python。
+            bundles: deb
     runs-on: ${{ matrix.os }}
     env:
       # 有这几个值才启用对应能力（configure_release.py / macos_sign_resources.sh 据此判断）。
@@ -48,6 +94,8 @@ jobs:
       HAS_WINDOWS_CERT: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.publish-main.outputs.sha || github.sha }}
 
       - uses: actions/setup-python@v5
         with:
@@ -76,7 +124,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
-            librsvg2-dev libxdo-dev patchelf file
+            librsvg2-dev libxdo-dev patchelf file desktop-file-utils
 
       - name: Build frontend
         working-directory: web/frontend
@@ -172,7 +220,7 @@ jobs:
         env:
           # 签名 / 公证 / updater 私钥由上一步按需写入 GITHUB_ENV。
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # AppImage：linuxdeploy 自带的 strip 处理不了内置 Python 依赖里的部分 .so，跳过 strip。
+          # Linux 打包不 strip（linuxdeploy 自带的 strip 会弄坏内置 Python 的部分 .so）。
           NO_STRIP: "true"
         with:
           projectPath: desktop
@@ -184,6 +232,64 @@ jobs:
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: ${{ steps.release.outputs.updater == 'true' }}
+
+      # tauri 出的 DMG 是 zlib（UDZO）；改为 LZMA（ULMO，macOS 10.15+）后体积接近 Windows 的 NSIS 包。
+      # .app 本身的签名与公证票据不受影响；DMG 有签名身份时重新签名。
+      - name: Recompress DMG with LZMA (macOS)
+        if: runner.os == 'macOS'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          shopt -s nullglob
+          for dmg in desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg; do
+            hdiutil convert "$dmg" -format ULMO -o "$RUNNER_TEMP/lzma.dmg"
+            mv -f "$RUNNER_TEMP/lzma.dmg" "$dmg"
+            if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+              codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
+            fi
+            ls -lh "$dmg"
+            if [[ "$IS_TAG" == "true" ]]; then
+              # GitHub 把资产名里的空格换成点；按同名上传才能覆盖 tauri-action 传的旧 DMG。
+              name=$(basename "$dmg")
+              cp "$dmg" "$RUNNER_TEMP/${name// /.}"
+              gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/${name// /.}" --clobber -R "$GITHUB_REPOSITORY"
+            fi
+          done
+
+      - name: AppImage without bundled Python (Linux)
+        if: runner.os == 'Linux'
+        working-directory: desktop
+        env:
+          # linuxdeploy 自带的 strip 处理不了内置依赖；python 不在这一遍里，仍保持 NO_STRIP 与 deb 一致。
+          NO_STRIP: "true"
+        run: >-
+          npx tauri build --target ${{ matrix.target }} --bundles appimage
+          --config "$GITHUB_WORKSPACE/desktop/src-tauri/tauri.appimage.conf.json"
+          ${{ steps.release.outputs.features }}
+
+      - name: AppImage — inject Python, re-sign, upload (Linux)
+        if: runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          dir=desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage
+          appimage=$(ls "$dir"/*.AppImage)
+          bash desktop/scripts/appimage_inject_python.sh "$appimage" desktop/src-tauri/resources/python
+          # updater 的签名针对注入前的文件，必须重签。
+          rm -f "$appimage.sig"
+          if [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+            (cd desktop && npx tauri signer sign "$GITHUB_WORKSPACE/$appimage")
+          fi
+          if [[ "$IS_TAG" == "true" ]]; then
+            for f in "$appimage" "$appimage.sig"; do
+              [[ -e "$f" ]] || continue
+              name=$(basename "$f")
+              cp "$f" "$RUNNER_TEMP/${name// /.}"
+              gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/${name// /.}" --clobber -R "$GITHUB_REPOSITORY"
+            done
+          fi
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
