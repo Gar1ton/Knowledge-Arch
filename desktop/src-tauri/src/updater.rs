@@ -81,7 +81,9 @@ mod imp {
                         .notification()
                         .builder()
                         .title("Knowledge Arch")
-                        .body(format!("Version {version} is available; install it from the app."))
+                        .body(format!(
+                            "Version {version} is available; install it from the app."
+                        ))
                         .show();
                 }
             }

@@ -205,7 +205,10 @@ impl Sidecar {
             Ok(child) => child,
             Err(err) => {
                 inner.phase = Phase::Crashed {
-                    error: format!("Cannot start the backend ({}): {err}", spec.python.display()),
+                    error: format!(
+                        "Cannot start the backend ({}): {err}",
+                        spec.python.display()
+                    ),
                     exit_code: None,
                 };
                 cvar.notify_all();
