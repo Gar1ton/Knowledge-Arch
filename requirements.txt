@@ -8,6 +8,8 @@ pymupdf4llm>=0.0.17,<0.1.0 # PDF → 干净 Markdown 清洗内核（pinned）
 aiohttp                    # 本地 HTTP 服务、外部 Embedding / LLM HTTP 客户端
 cryptography>=42           # 加密机密库（EncryptedSecretStore）
 platformdirs>=4,<5         # 三平台标准数据/日志目录
+keyring>=25,<26            # 主密钥放系统钥匙串（不可用时回退文件）
+anthropic>=2.3,<3          # Anthropic 连接（官方 SDK）
 pymilvus[milvus_lite]>=2.6,<3.0  # Milvus Lite 向量库，默认且必装
 # 必须显式列出 milvus-lite：pymilvus 的 milvus_lite extra 至今带着 2.x C++ wheel 时代的
 # `sys_platform != "win32"` 标记，Windows 上 pip 会静默跳过它（退出码仍为 0），装完即缺运行时。

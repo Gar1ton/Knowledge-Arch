@@ -26,10 +26,13 @@ class CachedEmbeddingProvider(EmbeddingProvider):
         inner: EmbeddingProvider,
         db_path: str = "./data/embedding_cache.db",
         namespace: str = "default",
+        max_bytes: int = 0,
     ) -> None:
         self._inner = inner
         self._db_path = db_path
         self._namespace = namespace
+        # 缓存内容上限（向量 JSON 的字节数近似），0 = 不限。
+        self._max_bytes = max(0, int(max_bytes))
         self._initialized = False
         self._batch_lock = asyncio.Lock()
 
@@ -171,6 +174,34 @@ class CachedEmbeddingProvider(EmbeddingProvider):
                 [(key, json.dumps(vector, allow_nan=False)) for key, vector in vectors.items()],
             )
             await db.commit()
+            if self._max_bytes:
+                await self._prune(db)
+
+    async def _prune(self, db: aiosqlite.Connection) -> None:
+        """超出上限时按 rowid（写入顺序，重写会刷新）淘汰最旧条目，降到上限的 90%。
+
+        只删记录不 VACUUM：文件空间由 SQLite 复用，避免每批写入都整库重写。
+        """
+        async with db.execute(
+            "SELECT COALESCE(SUM(LENGTH(vector) + LENGTH(content_hash)), 0), COUNT(*) "
+            "FROM embedding_cache"
+        ) as cursor:
+            row = await cursor.fetchone()
+        total, count = (int(row[0]), int(row[1])) if row else (0, 0)
+        if total <= self._max_bytes or count == 0:
+            return
+        target = int(self._max_bytes * 0.9)
+        average = max(1, total // count)
+        evict = min(count, (total - target) // average + 1)
+        await db.execute(
+            "DELETE FROM embedding_cache WHERE rowid IN "
+            "(SELECT rowid FROM embedding_cache ORDER BY rowid ASC LIMIT ?)",
+            (evict,),
+        )
+        await db.commit()
+        logger.info(
+            "Embedding cache pruned %d oldest entries (cap %d bytes)", evict, self._max_bytes
+        )
 
     def unload(self) -> None:
         """透传卸载给被包装的 provider。

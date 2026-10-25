@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from settings_helpers import legacy_settings
 
 from kacore.api import KnowledgeRepositoryApi
 from kacore.app_initializer import AppInitializer
@@ -203,9 +204,9 @@ async def test_initializer_closes_store_after_generic_validation_failure(tmp_pat
         patch("kacore.repository.vector_store.milvus_lite.MilvusLiteVectorStore",
               return_value=client),
     ):
-        initializer = AppInitializer({
+        initializer = AppInitializer(legacy_settings({
             "vector_db": {"backend": "milvus"}, "graph": {"enabled": False},
-        }, tmp_path)
+        }), tmp_path)
         try:
             await initializer.initialize()
             assert initializer.vector_store is None
@@ -243,7 +244,7 @@ async def test_teardown_stops_scheduler_then_milvus_build_before_store_close(
             await build_started.wait()
             events.append("scheduler_stopped")
 
-    initializer = AppInitializer({}, tmp_path)
+    initializer = AppInitializer(legacy_settings({}), tmp_path)
     initializer.api = api
     initializer.vector_store = SimpleNamespace(close=AsyncMock(
         side_effect=lambda: events.append("store_closed"),
@@ -268,8 +269,8 @@ async def test_real_initializer_reload_and_reinstallation_keep_vectors(tmp_path:
         "graph": {"enabled": False},
     }
     provider = SimpleNamespace(embed_query=AsyncMock(return_value=[0.1] * 4))
-    first = AppInitializer(config, tmp_path)
-    second = AppInitializer(config, tmp_path)
+    first = AppInitializer(legacy_settings(config), tmp_path)
+    second = AppInitializer(legacy_settings(config), tmp_path)
     vector = [1.0, 0.0, 0.0, 0.0]
     with (
         patch("kacore.app_initializer._module_available", return_value=True),

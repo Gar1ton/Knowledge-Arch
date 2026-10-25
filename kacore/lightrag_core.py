@@ -257,9 +257,8 @@ class LightRAGCoreRegistry:
     async def probe_llm_ready(self) -> None:
         """构建前 LLM 就绪度探针：直接调用图谱构建实际会用的 LLM adapter。
 
-        为何不能让调用方直接探测 api._llm_adapter：graph.lightrag_llm_provider=local/api
-        时，图谱构建 LLM 与主答疑 LLM 是完全独立的两个 endpoint（见组合根
-        plugin_initializer.py 的 lightrag_llm_adapter 选择逻辑），只有 registry 自己知道
+        为何不能让调用方直接探测 api._llm_adapter：「模型分配」里 graph 角色可以落在与
+        chat 完全不同的连接与模型上（见组合根 app_initializer.py），只有 registry 自己知道
         当前真正会被调用的是哪一个。探测失败（含超时/网络异常/空响应）直接向上抛异常。
         """
         await self._llm_adapter.generate("ping", allow_mock=False)

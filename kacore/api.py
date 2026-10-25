@@ -22,16 +22,12 @@ from typing import TYPE_CHECKING, Any
 
 from kacore.api_capabilities import CapabilitiesApiMixin
 from kacore.api_runtime_models import RuntimeModelsApiMixin
+from kacore.api_settings import SettingsApiMixin
 from kacore.config import (
-    CONSEQUENCE_REBUILD,
-    CONSEQUENCE_RESTART,
     EMBEDDING_PROVIDERS,
     VECTOR_BACKEND_LEXICAL,
     VECTOR_BACKEND_MILVUS,
     AskAgentConfig,
-    api_writable_keys,
-    change_consequence,
-    structural_keys,
 )
 from kacore.domain.llm_generation import (
     STATUS_CONTENT_FILTER,
@@ -83,6 +79,7 @@ from kacore.pipelines.citation_rendering import (
     render_answer_with_references,
 )
 from kacore.pipelines.retrieval_orchestrator import ChunkSignal, RetrievalScope
+from kacore.providers.base import ModelRef
 from kacore.retrieval_modes import (
     FULLTEXT_CONFIRM_THRESHOLD_CHARS,
     MODE_FULLTEXT,
@@ -91,6 +88,13 @@ from kacore.retrieval_modes import (
     VALID_RETRIEVAL_MODES,
     normalize_retrieval_mode,
 )
+from kacore.settings.schema import (
+    CONSEQUENCE_REBUILD,
+    CONSEQUENCE_RESTART,
+    EMBEDDING_SOURCE_LOCAL,
+    SPECS_BY_TARGET,
+)
+from kacore.settings.store import normalize_value
 from kacore.utils.processing_lock import ProcessingLock, serialized_processing
 from kacore.utils.text_chunks import clip_at_sentence
 from kacore.utils.usage_ledger import current_usage, usage_request
@@ -472,12 +476,32 @@ if TYPE_CHECKING:
     from kacore.pipelines.enhanced_recall_orchestrator import EnhancedRecallOrchestrator
     from kacore.pipelines.retrieval_orchestrator import RetrievalOrchestrator
     from kacore.pipelines.sync_pipeline import SyncPipeline
+    from kacore.providers.registry import ProviderRegistry
     from kacore.repository.embedding.base import EmbeddingProvider
     from kacore.repository.reranker.base import Reranker
     from kacore.repository.source_store.base import SourceDocumentStore
     from kacore.repository.sync_targets.base import SyncTarget
     from kacore.repository.vector_store.base import VectorStore
-    from kacore.secret_store import EncryptedSecretStore
+    from kacore.settings.base import SecretStore
+    from kacore.settings.store import SettingsStore
+
+
+_LEGACY_EMBEDDING_KEYS = frozenset({"provider", "model", "base_url"})
+
+
+def _config_update_response(restart_required: bool, rebuild_required: bool) -> dict[str, Any]:
+    return {
+        "status": "success",
+        "restart_required": restart_required,
+        "rebuild_required": rebuild_required,
+        "message": (
+            "Configuration saved. Restart and rebuild indexes."
+            if rebuild_required
+            else "Configuration saved. Restart required."
+            if restart_required
+            else "Configuration saved."
+        ),
+    }
 
 
 class LightRAGNotReadyError(RuntimeError):
@@ -616,7 +640,7 @@ def _extract_raw_doc_text(doc: SourceDocument) -> str | None:
         return None
 
 
-class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
+class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin, SettingsApiMixin):
     """知识库应用的业务门面。依赖经构造器注入，自身不创建依赖（装配在组合根）。
 
     公共方法面按职责拆分到 mixin（如 CapabilitiesApiMixin 承载能力/依赖管理），
@@ -635,6 +659,8 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
         lightrag_registry: LightRAGCoreRegistry | None = None,
         config: Config | None = None,
         config_persist: Callable[[str, str, object], None] | None = None,
+        settings_store: SettingsStore | None = None,
+        provider_registry: ProviderRegistry | None = None,
         llm_adapter: LLMAdapter | None = None,
         managed_documents_dir: Path | None = None,
         vector_store: VectorStore | None = None,
@@ -650,7 +676,7 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
         progress_store: ProgressStore | None = None,
         index_compatibility: IndexCompatibilityStore | None = None,
         embedding_fingerprint: str | None = None,
-        secret_store: EncryptedSecretStore | None = None,
+        secret_store: SecretStore | None = None,
         reload_callback: Callable[[], Any] | None = None,
         r2_backup_manager: Any | None = None,
         runtime_event_sink: RuntimeEventSink | None = None,
@@ -685,6 +711,8 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
         self._deferred_reload_task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._config = config
         self._config_persist = config_persist
+        self._settings_store = settings_store
+        self._provider_registry = provider_registry
         self._llm_adapter = llm_adapter
         self._managed_documents_dir = managed_documents_dir
         self._metrics = metrics
@@ -3621,7 +3649,7 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
             return {}
         vdb = self._config.get_vector_db_config()
         rerank = self._config.get_rerank_config()
-        deep = self._config.get_deep_thinking_config()
+        models = self._config.get_model_assignments()
         graph = self._config.get_graph_config()
         r2 = self._config.get_r2_sync_config()
         notion = self._config.get_notion_sync_config()
@@ -3633,11 +3661,10 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
                 "rerank": (
                     "noop" if rerank.provider == "noop" else f"{rerank.provider}:{rerank.model}"
                 ),
-                "deep_thinking_llm": deep.llm_model or "主 LLM",
+                "chat_llm": models.chat or "未分配",
+                "deep_thinking_llm": models.research or models.chat or "未分配",
                 "lightrag_llm": (
-                    (graph.lightrag_llm_model or graph.lightrag_llm_provider)
-                    if graph.enabled
-                    else "未启用"
+                    (models.graph or models.chat or "未分配") if graph.enabled else "未启用"
                 ),
             },
             "services": {
@@ -3648,19 +3675,6 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
                 "zotero_auto_sync": zotero.auto_sync_enabled,
             },
         }
-
-    _SECRET_KEYS: frozenset[str] = frozenset(
-        {
-            "api_key",
-            "secret_access_key",
-            "access_key_id",
-            "password",
-        }
-    )
-
-    # 可写键与结构键从 config.py 的单一登记表派生（不再手抄，重启/重建后果亦由登记表决定）。
-    _CONFIG_UPDATE_KEYS: dict[str, frozenset[str]] = api_writable_keys()
-    _STRUCTURAL_KEYS: dict[str, frozenset[str]] = structural_keys()
 
     async def _check_zotero_access_mode_switch(self, new_mode: str) -> None:
         """access_mode 切换前的守卫：已知未解决的跨命名空间重复时拦截切换。
@@ -3695,20 +3709,39 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
             "避免重复继续累积。"
         )
 
-    async def update_config_value(self, section: str, key: str, value: Any) -> dict[str, Any]:
-        """Persist a safe config value without hot-swapping embedding-backed runtime state."""
-        logger.info("update_config: %s.%s", section, key)
-        if section not in self._CONFIG_UPDATE_KEYS:
-            raise ValueError(f"Section '{section}' is write-protected or read-only.")
-        if key not in self._CONFIG_UPDATE_KEYS.get(section, frozenset()):
-            raise ValueError(f"runtime config key is not allowed: {section}.{key}")
-        if key in self._SECRET_KEYS and value:
-            raise ValueError(f"'{key}' 为机密字段，必须通过环境变量注入，不可经此接口写入。")
-        if key in self._STRUCTURAL_KEYS.get(section, frozenset()):
+    def _legacy_embedding_setting(self, key: str, value: Any) -> tuple[str, Any]:
+        """旧 embedding.provider / model 写入 → 新的 flow.embedding.* 键（P4 前的过渡）。"""
+        settings = self._require_settings()
+        source = settings.get("flow.embedding.source")
+        ref = ModelRef.parse(source)
+        if key == "provider":
+            if value == "local":
+                return "flow.embedding.source", EMBEDDING_SOURCE_LOCAL
+            if ref is not None:
+                return "flow.embedding.source", ref.to_dict()
             raise ValueError(
-                f"'{section}.{key}' 为结构性参数，修改后需手动重建索引。"
-                "请直接修改配置文件并重启服务，而非通过此接口写入。"
+                "请先在「模型供应商」添加连接，再在 Embedding 节点选择该连接上的模型。"
             )
+        if key == "model":
+            if ref is None:
+                return "flow.embedding.local_model", value
+            return "flow.embedding.source", {"provider_id": ref.provider_id, "model": value}
+        raise ValueError("Embedding 的地址属于连接：请在「模型供应商」节点修改。")
+
+    async def update_config_value(self, section: str, key: str, value: Any) -> dict[str, Any]:
+        """旧 (section, key) 写入口（当前前端仍在用）：映射到 SettingSpec 后写入。
+
+        可写性、校验与后果都来自设置登记表；机密只能在对应节点的密钥框里填写。
+        """
+        logger.info("update_config: %s.%s", section, key)
+        spec = SPECS_BY_TARGET.get((section, key))
+        legacy_embedding = section == "embedding" and key in _LEGACY_EMBEDDING_KEYS
+        if spec is None and not legacy_embedding:
+            if not any(target_section == section for target_section, _ in SPECS_BY_TARGET):
+                raise ValueError(f"Section '{section}' is write-protected or read-only.")
+            raise ValueError(f"runtime config key is not allowed: {section}.{key}")
+        if spec is not None and spec.kind == "secret":
+            raise ValueError(f"'{key}' 为机密字段，请在对应节点的密钥框中填写，不可经此接口写入。")
         if section == "embedding" and key == "provider" and value not in EMBEDDING_PROVIDERS:
             raise ValueError("embedding.provider must be 'local' or 'external'.")
         if section == "vector_db" and key == "backend" and value not in {
@@ -3723,12 +3756,24 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
             "strict",
         }:
             raise ValueError("notion_sync.sync_mode must be 'preserve' or 'strict'.")
+        if self._settings_store is not None:
+            if legacy_embedding:
+                spec_key, new_value = self._legacy_embedding_setting(key, value)
+            else:
+                assert spec is not None
+                spec_key, new_value = spec.key, value
+            result = await self.update_setting(spec_key, new_value)
+            return _config_update_response(result["restart_required"], result["rebuild_required"])
+
+        # 没有 SettingsStore（极简装配 / 测试）：只更新内存 Config，并经回调落盘。
+        if spec is not None:
+            value = normalize_value(spec, value)
         if section == "zotero_sync" and key == "access_mode":
             await self._check_zotero_access_mode_switch(str(value))
 
         changed = self._current_config_value(section, key) != value
         self._persist_config_value(section, key, value)
-        consequence = change_consequence(section, key)
+        consequence = spec.consequence if spec is not None else CONSEQUENCE_REBUILD
         rebuild_required = changed and consequence == CONSEQUENCE_REBUILD
         restart_required = changed and consequence in (CONSEQUENCE_RESTART, CONSEQUENCE_REBUILD)
         if rebuild_required:
@@ -3742,20 +3787,7 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
             self._notify_auto_reindex()
 
         logger.info("update_config ok: %s.%s persisted", section, key)
-        return {
-            "status": "success",
-            "restart_required": restart_required,
-            "rebuild_required": rebuild_required,
-            "message": (
-                "Configuration saved. Restart and rebuild indexes."
-                if rebuild_required
-                else (
-                    "Configuration saved. Restart required."
-                    if restart_required
-                    else "Configuration saved."
-                )
-            ),
-        }
+        return _config_update_response(restart_required, rebuild_required)
 
     async def restart_plugin(self) -> dict[str, Any]:
         """软重启服务运行时：teardown 后重新 initialize（重读持久化配置）。
@@ -3910,7 +3942,7 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
             chunks_by_doc,
             max_doc_chars=max_chars,
             is_local_lightrag_llm=bool(
-                graph_cfg and graph_cfg.lightrag_llm_provider == "local"
+                self._config and self._config.get_model_assignments().graph_is_local
             ),
             seconds_per_chunk_local=(
                 graph_cfg.lightrag_seconds_per_chunk_local if graph_cfg else 90.0
@@ -3947,8 +3979,8 @@ class KnowledgeRepositoryApi(CapabilitiesApiMixin, RuntimeModelsApiMixin):
             return
         try:
             # 注意：探测的是 registry 实际持有的图谱构建 LLM adapter，而非
-            # self._llm_adapter（主答疑 LLM）——两者在 graph.lightrag_llm_provider=
-            # local/api 时可以是完全不同的 endpoint（见 plugin_initializer.py）。
+            # self._llm_adapter（主答疑 LLM）——「模型分配」里 graph 与 chat 可以是
+            # 完全不同的连接与模型（见 app_initializer.py）。
             await asyncio.wait_for(
                 self._lightrag_registry.probe_llm_ready(),
                 timeout=LIGHTRAG_PREFLIGHT_PROBE_TIMEOUT_SECONDS,

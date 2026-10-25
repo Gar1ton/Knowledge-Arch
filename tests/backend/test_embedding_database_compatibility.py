@@ -6,6 +6,7 @@ import sqlite3
 
 import aiosqlite
 import pytest
+from settings_helpers import legacy_settings
 
 from kacore.app_initializer import AppInitializer
 from kacore.config import EmbeddingConfig
@@ -80,7 +81,7 @@ async def test_existing_source_and_index_survive_external_provider_upgrade(
         "graph": {"enabled": False},
         "notion_sync": {"enabled": False}, "r2_sync": {"enabled": False},
     }
-    initializer = AppInitializer(raw, tmp_path)
+    initializer = AppInitializer(legacy_settings(raw), tmp_path)
     try:
         await initializer.initialize()
         assert initializer.embedding_dimension == 2048 and constructed == [2048]

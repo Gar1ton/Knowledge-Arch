@@ -13,6 +13,7 @@ import fitz  # type: ignore[import-untyped]
 import pytest
 from aiohttp import FormData
 from aiohttp.test_utils import TestClient, TestServer
+from settings_helpers import legacy_settings
 from static_retriever import StaticRetriever
 
 from kacore.api import KnowledgeRepositoryApi
@@ -258,7 +259,7 @@ async def test_upload_empty_file_rejected(tmp_path: Path) -> None:
 
 async def test_upload_moves_staging_file_into_managed_pdf_repository(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
-    initializer = AppInitializer({"vector_db": {"backend": "lexical"}}, data_dir)
+    initializer = AppInitializer(legacy_settings({"vector_db": {"backend": "lexical"}}), data_dir)
     await initializer.initialize()
     assert initializer.api is not None
 
@@ -1548,7 +1549,7 @@ async def test_config_update_route(tmp_path: Path) -> None:
         assert resp_secret.status == 400
         secret_data = await resp_secret.json()
         assert secret_data["status"] == "error"
-        assert "not allowed" in secret_data["message"]
+        assert "机密字段" in secret_data["message"]
 
         resp_deep_secret = await client.post(
             "/api/config/update",

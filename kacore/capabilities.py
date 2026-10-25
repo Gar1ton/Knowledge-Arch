@@ -282,16 +282,11 @@ CONSEQUENCE_REBUILD = "rebuild"
 ENV_EMBEDDING_API_KEY = "KR_EMBEDDING_API_KEY"
 
 
-def _lightrag_llm_label(provider: str, model: str) -> str:
-    """返回数据流 UI 的只读 LLM 摘要，不暴露 endpoint。"""
-    display_model = (model or "").strip()
-    if provider == "main":
-        display_model = display_model or "main LLM"
-    elif provider == "local":
-        display_model = display_model or "local model"
-    else:
-        display_model = display_model or "configured model"
-    return f"<{provider} - {display_model}>"
+def _graph_llm_label(graph_model: str, chat_model: str) -> str:
+    """返回数据流 UI 的只读图谱 LLM 摘要（连接:模型），不暴露 endpoint。"""
+    if graph_model:
+        return graph_model
+    return chat_model or "未分配模型"
 
 
 def detect_pipeline(config: Config) -> list[dict[str, Any]]:
@@ -305,6 +300,7 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
     embedding_cfg = config.get_embedding_config()
     vdb_cfg = config.get_vector_db_config()
     graph_cfg = config.get_graph_config()
+    models = config.get_model_assignments()
     rerank_cfg = config.get_rerank_config()
     r2_cfg = config.get_r2_sync_config()
     notion_cfg = config.get_notion_sync_config()
@@ -316,7 +312,7 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
     has_lightrag = module_available("lightrag")
     has_boto3 = module_available("boto3")
     has_pdf = module_available("pymupdf4llm")
-    has_api_key = bool(os.environ.get(ENV_EMBEDDING_API_KEY))
+    has_api_key = bool(embedding_cfg.api_key or os.environ.get(ENV_EMBEDDING_API_KEY))
     dim = config.runtime_embedding_dimension
     embedding_runtime_ready = dim is not None and dim > 0
 
@@ -367,7 +363,8 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
         embed_configured = has_local
         embed_deps = ["local_embedding"]
     elif embedding_cfg.provider == "external":
-        embed_configured = has_api_key
+        # 本机服务（Ollama / LM Studio）可以没有密钥：有可用连接地址即视为已配置。
+        embed_configured = bool(embedding_cfg.base_url)
         embed_deps = []
     else:  # 未知取值：不支持，禁用 Milvus/LightRAG
         embed_configured = False
@@ -451,12 +448,9 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
         "configured": graph_cfg.enabled,
         "detail": {
             "query_mode": graph_cfg.query_mode,
-            "llm_provider": graph_cfg.lightrag_llm_provider,
-            "llm_model": graph_cfg.lightrag_llm_model,
-            "llm_label": _lightrag_llm_label(
-                graph_cfg.lightrag_llm_provider,
-                graph_cfg.lightrag_llm_model,
-            ),
+            "llm_model": models.graph or models.chat,
+            "llm_follows_chat": not models.graph,
+            "llm_label": _graph_llm_label(models.graph, models.chat),
         },
     }
 

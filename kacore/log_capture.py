@@ -68,7 +68,7 @@ _PROJECT_PREFIXES = (
     "R2SyncTarget",
     "Reranker",
     "RetrievalOrchestrator",
-    "RuntimeConfigStore",
+    "SettingsStore",
     "SyncPipeline",
     "ZoteroSync",
     "ka_server",
@@ -102,7 +102,7 @@ _CATEGORY_BY_PREFIX: tuple[tuple[tuple[str, ...], str], ...] = (
         (
             "AppInitializer",
             "ka_server",
-            "RuntimeConfigStore",
+            "SettingsStore",
             "QuotaManager",
             "IndexCompatibilityStore",
             "MigrationRunner",

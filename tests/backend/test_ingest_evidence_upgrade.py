@@ -230,7 +230,7 @@ async def test_usage_records_internal_fallback_and_unknown_failure():
     from aiohttp import web
     from aiohttp.test_utils import TestServer
 
-    from kacore.adapters.llm import LMStudioLLMAdapter
+    from kacore.providers.openai_compat import OpenAICompatChat
 
     calls = 0
 
@@ -257,7 +257,7 @@ async def test_usage_records_internal_fallback_and_unknown_failure():
 
     @usage_request
     async def run():
-        client = LMStudioLLMAdapter(str(server.make_url("/v1")), "m", max_retries=0)
+        client = OpenAICompatChat(str(server.make_url("/v1")), "m", max_retries=0)
         adapter = LLMAdapter(client)
         await adapter.generate_result("question", allow_mock=False)
         with pytest.raises(RuntimeError):

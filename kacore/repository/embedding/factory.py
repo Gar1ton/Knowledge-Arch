@@ -48,6 +48,7 @@ class EmbeddingProviderFactory:
             inner_provider = ExternalEmbeddingProvider(
                 base_url=embedding.base_url,
                 model_name=embedding.model,
+                api_key=embedding.api_key,
             )
         else:
             raise ValueError(
@@ -62,6 +63,7 @@ class EmbeddingProviderFactory:
             inner=inner_provider,
             db_path=cache_db_path,
             namespace=cache_namespace,
+            max_bytes=embedding.cache_mb * 1024 * 1024,
         )
 
 

@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from settings_helpers import legacy_settings
 
 from kacore.api import KnowledgeRepositoryApi
 from kacore.app_initializer import AppInitializer
@@ -206,7 +207,7 @@ async def test_startup_probes_dimension_and_builds_fingerprint(
         "kacore.repository.embedding.factory.EmbeddingProviderFactory.create_provider",
         return_value=Provider(),
     ):
-        initializer = AppInitializer(raw, tmp_path)
+        initializer = AppInitializer(legacy_settings(raw), tmp_path)
         await initializer.initialize()
         try:
             assert initializer.embedding_dimension == 7
@@ -240,7 +241,7 @@ async def test_legacy_embedding_source_flags_existing_index_for_rebuild(
         "kacore.repository.embedding.factory.EmbeddingProviderFactory.create_provider",
         return_value=Provider(),
     ):
-        initializer = AppInitializer(raw, tmp_path)
+        initializer = AppInitializer(legacy_settings(raw), tmp_path)
         await initializer.initialize()
         try:
             assert initializer.config.get_embedding_config().provider == "local"

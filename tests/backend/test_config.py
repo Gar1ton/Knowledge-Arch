@@ -1,20 +1,16 @@
 """Config 解析契约测试：默认值、字段覆盖、机密环境变量优先、派生量。"""
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pytest
 
 from kacore.config import (
-    ENV_DEEP_THINKING_LLM_API_KEY,
     ENV_EMBEDDING_API_KEY,
     ENV_R2_SECRET_ACCESS_KEY,
     NOTION_SYNC_PRESERVE,
     NOTION_SYNC_STRICT,
     Config,
 )
-from kacore.runtime_config import RuntimeConfigStore
+from kacore.settings.schema import CONSEQUENCE_NONE, CONSEQUENCE_REBUILD, SPECS_BY_TARGET
 
 
 def test_defaults_when_empty() -> None:
@@ -23,7 +19,6 @@ def test_defaults_when_empty() -> None:
     assert cfg.get_r2_sync_config().free_tier_gb == 10
     assert cfg.get_notion_sync_config().sync_mode == NOTION_SYNC_PRESERVE
     assert cfg.get_graph_config().query_mode == "mix"
-    assert cfg.get_graph_config().lightrag_llm_provider == "main"
     assert cfg.get_vector_db_config().backend == "milvus"
     assert cfg.get_embedding_config().model == "intfloat/multilingual-e5-small"
     assert cfg.get_embedding_config().max_token_size == 512
@@ -51,13 +46,10 @@ def test_zotero_invalid_storage_mode_falls_back_to_default() -> None:
     assert z.storage_mode == "managed_copy"
 
 
-def test_zotero_zotmoov_root_key_policy_registered() -> None:
-    from kacore.config import CONFIG_KEY_POLICY, CONSEQUENCE_REBUILD
-
-    policy = CONFIG_KEY_POLICY["zotero_sync"]["zotmoov_root"]
-    assert policy.api_writable is True
-    assert policy.runtime_persistable is True
-    assert policy.consequence == CONSEQUENCE_REBUILD
+def test_zotero_zotmoov_root_setting_registered() -> None:
+    spec = SPECS_BY_TARGET[("zotero_sync", "zotmoov_root")]
+    assert spec.key == "flow.zotero.zotmoov_root"
+    assert spec.kind == "path" and spec.consequence == CONSEQUENCE_REBUILD
 
 
 def test_vector_db_auto_rebuild_defaults() -> None:
@@ -95,14 +87,9 @@ def test_vector_db_auto_rebuild_delay_is_floored() -> None:
 
 
 def test_vector_db_auto_rebuild_keys_are_hot_runtime_writable() -> None:
-    """调度器每轮重读配置，故这两个键改完即生效——policy 必须是 NONE 而非 RESTART。"""
-    from kacore.config import CONFIG_KEY_POLICY, CONSEQUENCE_NONE
-
+    """调度器每轮重读配置，故这两个键改完即生效——后果必须是 none 而非 restart。"""
     for key in ("auto_rebuild_enabled", "auto_rebuild_delay_seconds"):
-        policy = CONFIG_KEY_POLICY["vector_db"][key]
-        assert policy.api_writable is True
-        assert policy.runtime_persistable is True
-        assert policy.consequence == CONSEQUENCE_NONE
+        assert SPECS_BY_TARGET[("vector_db", key)].consequence == CONSEQUENCE_NONE
 
 
 def test_r2_endpoint_and_free_tier_bytes() -> None:
@@ -135,12 +122,8 @@ def test_notion_sync_mode_parsing_and_invalid_fallback() -> None:
 
 
 def test_notion_sync_mode_is_hot_runtime_writable() -> None:
-    from kacore.config import CONFIG_KEY_POLICY, CONSEQUENCE_NONE
-
-    policy = CONFIG_KEY_POLICY["notion_sync"]["sync_mode"]
-    assert policy.api_writable is True
-    assert policy.runtime_persistable is True
-    assert policy.consequence == CONSEQUENCE_NONE
+    spec = SPECS_BY_TARGET[("notion_sync", "sync_mode")]
+    assert spec.kind == "enum" and spec.consequence == CONSEQUENCE_NONE
 
 
 def test_secret_env_takes_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -160,33 +143,6 @@ def test_malformed_section_falls_back_to_defaults() -> None:
     cfg = Config({"graph": "not-a-dict"})
     assert cfg.get_graph_config().query_mode == "mix"
 
-def test_graph_lightrag_llm_provider_modes_and_legacy_endpoint() -> None:
-    explicit = Config(
-        {
-            "graph": {
-                "lightrag_llm_provider": "api",
-                "lightrag_llm_base_url": "https://llm.example/v1",
-                "lightrag_llm_model": "model-a",
-            }
-        }
-    ).get_graph_config()
-    assert explicit.lightrag_llm_provider == "api"
-
-    legacy = Config(
-        {
-            "graph": {
-                "lightrag_llm_base_url": "http://localhost:1234/v1",
-                "lightrag_llm_model": "phi4",
-            }
-        }
-    ).get_graph_config()
-    assert legacy.lightrag_llm_provider == "local"
-
-    invalid = Config({"graph": {"lightrag_llm_provider": "bad"}}).get_graph_config()
-    assert invalid.lightrag_llm_provider == "main"
-
-
-
 def test_public_config_masks_secrets() -> None:
     cfg = Config({
         "r2_sync": {"access_key_id": "abcdef", "secret_access_key": "secret123"},
@@ -199,19 +155,11 @@ def test_public_config_masks_secrets() -> None:
     assert public["notion_sync"]["database_id"] == "db1"
 
 
-def test_public_config_exposes_webui_migrated_advanced_fields(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(ENV_DEEP_THINKING_LLM_API_KEY, "deep-secret")
+def test_public_config_exposes_advanced_fields_and_model_assignments() -> None:
     cfg = Config(
         {
             "source_store": {"default_collection": "papers"},
-            "graph": {
-                "working_dir": "graphs",
-                "lightrag_llm_provider": "api",
-                "lightrag_llm_base_url": "https://llm.example/v1",
-                "lightrag_llm_model": "model-a",
-            },
+            "graph": {"working_dir": "graphs"},
             "deep_thinking": {
                 "max_rounds": 5,
                 "max_sub_queries": 6,
@@ -219,18 +167,15 @@ def test_public_config_exposes_webui_migrated_advanced_fields(
                 "rerank_weight": 0.4,
                 "verify_enabled": False,
                 "max_verify_rounds": 2,
-                "llm_base_url": "https://deep.example/v1",
-                "llm_model": "deep-model",
             },
+            "models": {"chat": "deepseek:deepseek-chat", "research": "", "graph": ""},
         }
     )
 
     public = cfg.to_public_dict()
     assert public["source_store"]["default_collection"] == "papers"
     assert public["graph"]["working_dir"] == "graphs"
-    assert public["graph"]["lightrag_llm_provider"] == "api"
-    assert public["graph"]["lightrag_llm_base_url"] == "https://llm.example/v1"
-    assert public["graph"]["lightrag_llm_model"] == "model-a"
+    assert "lightrag_llm_base_url" not in public["graph"]
     assert public["deep_thinking"] == {
         "max_rounds": 5,
         "max_sub_queries": 6,
@@ -238,10 +183,8 @@ def test_public_config_exposes_webui_migrated_advanced_fields(
         "rerank_weight": 0.4,
         "verify_enabled": False,
         "max_verify_rounds": 2,
-        "llm_base_url": "https://deep.example/v1",
-        "llm_model": "deep-model",
-        "llm_api_key": "de****et",
     }
+    assert public["models"] == {"chat": "deepseek:deepseek-chat", "research": "", "graph": ""}
 
 
 def test_embedding_config_new_values_override_legacy_and_api_key_is_env_only(
@@ -287,14 +230,15 @@ def test_embedding_diagnostics_report_unsupported_or_unconfigured_provider(
     # 已移除的旧来源归一为 local：不要求 KR_EMBEDDING_API_KEY。
     legacy_diagnostics = Config({"embedding": {"provider": "astr"}}).get_diagnostics()
     assert not any("KR_EMBEDDING_API_KEY" in item for item in legacy_diagnostics)
-    assert (
-        "KR_EMBEDDING_API_KEY is required when embedding.provider=external."
-        in Config({"embedding": {"provider": "external"}}).get_diagnostics()
+    # 本机服务可以没有密钥：external 只在连接地址丢失时才诊断。
+    assert not Config({"embedding": {"provider": "external"}}).get_diagnostics() or not any(
+        "provider connection" in item
+        for item in Config({"embedding": {"provider": "external"}}).get_diagnostics()
     )
     assert any(
-        "graph.lightrag_llm_base_url and graph.lightrag_llm_model are required" in item
+        "provider connection that no longer exists" in item
         for item in Config(
-            {"graph": {"enabled": True, "lightrag_llm_provider": "api"}}
+            {"embedding": {"provider": "external", "base_url": ""}}
         ).get_diagnostics()
     )
 
@@ -316,60 +260,6 @@ def test_diagnostics_report_missing_optional_feature_dependencies(
 
     assert sum("requirements-additional.txt" in item for item in diagnostics) == 3
     assert any("Milvus Lite is a required dependency" in item for item in diagnostics)
-
-
-def test_runtime_config_store_only_persists_generated_notion_values(tmp_path: Path) -> None:
-    path = tmp_path / "runtime_config.json"
-    persisted = []
-    store = RuntimeConfigStore(path, framework_persist_cb=persisted.append)
-
-    store.save({
-        "notion_sync": {"database_id": "db1", "secret": "drop-me"},
-        "r2_sync": {"secret_access_key": "drop-me"},
-    })
-
-    assert json.loads(path.read_text()) == {"notion_sync": {"database_id": "db1"}}
-    assert persisted == [{"notion_sync": {"database_id": "db1"}}]
-    with pytest.raises(ValueError, match="runtime config key is not allowed"):
-        store.set_value("r2_sync", "secret_access_key", "forbidden")
-
-
-def test_runtime_config_store_permits_vector_db_and_ask_keys(tmp_path: Path) -> None:
-    path = tmp_path / "runtime_config.json"
-    store = RuntimeConfigStore(path)
-
-    # These should pass successfully without raising ValueError
-    store.set_value("vector_db", "backend", "milvus")
-    store.set_value("embedding", "provider", "local")
-    store.set_value("embedding", "model", "BAAI/bge-m3")
-    store.set_value("ask", "answer_language", "zh")
-    store.set_value("source_store", "default_collection", "papers")
-    store.set_value("deep_thinking", "verify_enabled", False)
-    store.set_value("deep_thinking", "max_verify_rounds", 2)
-
-    data = store.load()
-    assert data["vector_db"]["backend"] == "milvus"
-    assert data["embedding"]["provider"] == "local"
-    assert data["embedding"]["model"] == "BAAI/bge-m3"
-    assert data["ask"]["answer_language"] == "zh"
-    assert data["source_store"]["default_collection"] == "papers"
-    assert data["deep_thinking"]["verify_enabled"] is False
-    assert data["deep_thinking"]["max_verify_rounds"] == 2
-
-
-def test_runtime_config_store_rejects_removed_chat_toggles(tmp_path: Path) -> None:
-    """宿主对话期的 agent/research/persona 开关与 Web 控制台开关已删除，不再允许持久化。"""
-    store = RuntimeConfigStore(tmp_path / "runtime_config.json")
-    for section, key in (
-        ("ask", "agent_enabled"),
-        ("ask", "research_enabled"),
-        ("ask", "persona_enabled"),
-        ("web_console", "enabled"),
-    ):
-        with pytest.raises(ValueError, match="runtime config key is not allowed"):
-            store.set_value(section, key, True)
-    ask_cfg = Config({"ask": {"persona_enabled": True}}).get_ask_agent_config()
-    assert not hasattr(ask_cfg, "persona_enabled")
 
 
 # ── Deep Thinking / Rerank config ───────────────────────────

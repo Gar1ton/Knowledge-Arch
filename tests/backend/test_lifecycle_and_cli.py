@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import fitz  # type: ignore[import-untyped]
 import pytest
+from settings_helpers import legacy_settings
 
 from kacore.app_initializer import AppInitializer
 from kacore.migration_runner import MIGRATIONS_DIR, run_migrations
@@ -51,7 +52,7 @@ async def test_app_initializer_lifecycle(
     temp_dir: Path, raw_config: dict[str, Any]
 ) -> None:
     # 1) 实例化 AppInitializer
-    initializer = AppInitializer(raw_config, temp_dir)
+    initializer = AppInitializer(legacy_settings(raw_config), temp_dir)
     assert initializer.source_store is None
     assert initializer._backup_task is None
 
@@ -86,7 +87,7 @@ async def test_app_initializer_lifecycle_periodic_disabled(
     config_disabled["r2_sync"] = dict(raw_config["r2_sync"])
     config_disabled["r2_sync"]["enabled"] = False
 
-    initializer = AppInitializer(config_disabled, temp_dir)
+    initializer = AppInitializer(legacy_settings(config_disabled), temp_dir)
     await initializer.initialize()
     assert initializer._backup_task is None
     await initializer.teardown()
@@ -98,7 +99,7 @@ async def test_initializer_creates_default_collection_without_overwriting_it(
     from kacore.domain.models import Collection
 
     config = {"vector_db": {"backend": "lexical"}}
-    first = AppInitializer(config, temp_dir)
+    first = AppInitializer(legacy_settings(config), temp_dir)
     await first.initialize()
     assert first.source_store is not None
     await first.source_store.upsert_collection(
@@ -106,7 +107,7 @@ async def test_initializer_creates_default_collection_without_overwriting_it(
     )
     await first.teardown()
 
-    second = AppInitializer(config, temp_dir)
+    second = AppInitializer(legacy_settings(config), temp_dir)
     await second.initialize()
     assert second.source_store is not None
     collections = await second.source_store.list_collections()
@@ -162,7 +163,7 @@ async def test_initializer_passes_probed_dimension_to_milvus_and_lightrag(
         patch("kacore.lightrag_core.LightRAGCoreRegistry", Registry),
         patch("kacore.app_initializer._module_available", return_value=True),
     ):
-        initializer = AppInitializer(config, temp_dir)
+        initializer = AppInitializer(legacy_settings(config), temp_dir)
         await initializer.initialize()
         assert initializer.embedding_dimension == 7
         assert initializer.config.runtime_embedding_dimension == 7
@@ -182,7 +183,7 @@ async def test_default_initializer_starts_without_optional_feature_packages(
         "sentence_transformers": None,
     }
     with patch.dict(sys.modules, blocked_modules):
-        initializer = AppInitializer({}, temp_dir)
+        initializer = AppInitializer(legacy_settings({}), temp_dir)
         await initializer.initialize()
 
         assert initializer.api is not None
@@ -219,7 +220,7 @@ async def test_initializer_probe_failure_disables_embedding_indexes(
         ),
         patch("kacore.app_initializer._module_available", return_value=True),
     ):
-        initializer = AppInitializer(config, temp_dir)
+        initializer = AppInitializer(legacy_settings(config), temp_dir)
         await initializer.initialize()
         assert initializer.embedding_provider is None
         assert initializer.vector_store is None
@@ -261,7 +262,7 @@ async def test_initializer_probe_timeout_keeps_startup_moving(
         # 生产下限 30s 是防用户把正常加载误判为卡死；测试只关心「超时后还能走完」。
         patch("kacore.config._LOAD_TIMEOUT_MIN_SECONDS", 1),
     ):
-        initializer = AppInitializer(config, temp_dir)
+        initializer = AppInitializer(legacy_settings(config), temp_dir)
         await initializer.initialize()
 
         # 走完了：embedding 降级、后续装配（含 Web 控制台阶段）未被阻断。
@@ -300,7 +301,7 @@ async def test_fresh_install_uploads_and_lexically_retrieves_when_embedding_prob
         ),
         patch("kacore.app_initializer._module_available", return_value=True),
     ):
-        initializer = AppInitializer({}, temp_dir)
+        initializer = AppInitializer(legacy_settings({}), temp_dir)
         await initializer.initialize()
 
         assert initializer.source_store is not None
@@ -364,7 +365,7 @@ async def test_initializer_keeps_mismatched_milvus_available_for_manual_rebuild(
         patch("kacore.repository.vector_store.milvus_lite.MilvusLiteVectorStore", Milvus),
         patch("kacore.app_initializer._module_available", return_value=True),
     ):
-        initializer = AppInitializer(config, temp_dir)
+        initializer = AppInitializer(legacy_settings(config), temp_dir)
         await initializer.initialize()
 
         assert isinstance(initializer.vector_store, Milvus)
@@ -409,7 +410,7 @@ async def test_initializer_records_milvus_init_error_for_generic_failure(
         patch("kacore.repository.vector_store.milvus_lite.MilvusLiteVectorStore", Milvus),
         patch("kacore.app_initializer._module_available", return_value=True),
     ):
-        initializer = AppInitializer(config, temp_dir)
+        initializer = AppInitializer(legacy_settings(config), temp_dir)
         await initializer.initialize()
 
         assert initializer.vector_store is None
@@ -426,7 +427,7 @@ async def test_clear_stale_milvus_lock_rejects_when_not_lock_issue(
 ) -> None:
     """向导护栏：没有检测到锁定问题时拒绝清除（不同的失败原因不该被这个按钮处理）。"""
     config = {**raw_config, "vector_db": {"backend": "milvus"}, "graph": {"enabled": False}}
-    initializer = AppInitializer(config, temp_dir)
+    initializer = AppInitializer(legacy_settings(config), temp_dir)
     initializer.vector_store = None
     initializer._vector_store_init_error = "some unrelated schema error"
 
@@ -441,7 +442,7 @@ async def test_clear_stale_milvus_lock_rejects_when_vector_store_ready(
 ) -> None:
     """守卫：vector_store 已经装配成功时不该允许清锁（那把锁此时是正当持有）。"""
     config = {**raw_config, "vector_db": {"backend": "milvus"}, "graph": {"enabled": False}}
-    initializer = AppInitializer(config, temp_dir)
+    initializer = AppInitializer(legacy_settings(config), temp_dir)
     initializer.vector_store = object()  # 假装已装配成功
     initializer._vector_store_init_error = None
 
@@ -456,7 +457,7 @@ async def test_clear_stale_milvus_lock_refuses_to_delete_os_lock_file(
 ) -> None:
     """空 LOCK 仍可能被当前宿主持有；不能靠删除文件绕过 OS 锁。"""
     config = {**raw_config, "vector_db": {"backend": "milvus"}, "graph": {"enabled": False}}
-    initializer = AppInitializer(config, temp_dir)
+    initializer = AppInitializer(legacy_settings(config), temp_dir)
     initializer.vector_store = None
     initializer._vector_store_init_error = (
         "DataDirLockedError: another process holds the lock on "
@@ -489,7 +490,7 @@ async def test_initializer_marks_recreated_empty_milvus_incompatible_when_docs_e
         "vector_db": {"backend": "lexical"},
         "graph": {"enabled": False},
     }
-    seed = AppInitializer(seed_config, temp_dir)
+    seed = AppInitializer(legacy_settings(seed_config), temp_dir)
     await seed.initialize()
     assert seed.source_store is not None
     await seed.source_store.upsert_collection(Collection(name="papers"))
@@ -527,7 +528,7 @@ async def test_initializer_marks_recreated_empty_milvus_incompatible_when_docs_e
         patch("kacore.repository.vector_store.milvus_lite.MilvusLiteVectorStore", Milvus),
         patch("kacore.app_initializer._module_available", return_value=True),
     ):
-        initializer = AppInitializer(config, temp_dir)
+        initializer = AppInitializer(legacy_settings(config), temp_dir)
         await initializer.initialize()
 
         assert initializer.embedding_fingerprint is not None
@@ -553,7 +554,7 @@ async def test_notion_auto_push_waits_for_local_processing_and_inflight_push(
 
     from kacore.utils.processing_lock import ProcessingLock
 
-    initializer = AppInitializer({}, tmp_path)
+    initializer = AppInitializer(legacy_settings({}), tmp_path)
     lock = ProcessingLock()
     push = AsyncMock()
     initializer.api = SimpleNamespace(
@@ -579,7 +580,7 @@ async def test_notion_teardown_cancels_scheduler_and_pending_push_before_store_c
 ) -> None:
     import asyncio
 
-    initializer = AppInitializer({"vector_db": {"backend": "lexical"}}, tmp_path)
+    initializer = AppInitializer(legacy_settings({"vector_db": {"backend": "lexical"}}), tmp_path)
     await initializer.initialize()
     scheduler = initializer._notion_sync_task
     assert scheduler is not None

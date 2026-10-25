@@ -2,6 +2,54 @@
 
 > 插件时代（v0.x – v1.2.0）的变更记录完整保留在本仓库首个提交 `89b251a` 中（`git show 89b251a:CHANGELOG.md`），不再随 v2 维护。
 
+## [v2.0.0-dev.2] — 2026-10-25
+
+### 新增 (Added) — P2 设置与模型
+
+- **`kacore/settings/`**：`SettingSpec` 登记表（80 项，`flow.*` 节点项 + `prefs.*` 偏好项，替代
+  `_conf_schema.json` 与 `ConfigKeyPolicy` 表）；`SettingsStore`（`settings.json` 原子写、逐项校验、
+  secret 只存 `{"ref"}` 引用、明文进加密库、批量写先校验后落盘、可携文档导出 / 合并）；`bridge.py`
+  按 target 桥接回既有 `Config`（local/external embedding 指纹逐字节不变）；`legacy_keys.py`
+  把旧插件配置 / `runtime_config.json` 翻译为新键、连接与密钥，并报告丢弃项与需确认项。
+- **`kacore/providers/`**：`ProviderProfile` / `ModelRef`；`OpenAICompatChat`（并入原
+  `LMStudioLLMAdapter`，新增列模型 / ping / 错误分类，4xx 不重试）；`AnthropicChat`（官方 `anthropic`
+  SDK，不发 sampling 参数，`refusal` → content_filter，官方地址上的当前代模型默认开启服务端拒答回退）；
+  `ProviderRegistry`（预设 10 个、增删改、密钥只显示后 4 位、被引用时拒删、测试连接先列模型再 ping）；
+  `ModelRouter` / `RoleClient`（chat / research / graph，后两者跟随 chat，按调用现取分配与密钥）。
+- **HTTP**：`GET /api/settings/schema?home=`、`PATCH /api/settings`、`GET|POST /api/providers`、
+  `PATCH|DELETE /api/providers/{id}`、`POST /api/providers/{id}/test`、`POST /api/providers/{id}/models`
+  （业务门面在新 mixin `kacore/api_settings.py`）。
+- **主密钥**：`EncryptedSecretStore` 优先把 master.key 存进系统钥匙串（keyring），已有文件在回读校验
+  成功后迁入；无钥匙串（如 WSL / 无桌面会话）回退文件。
+- **`ka_server`**：启动时打开 SettingsStore；数据目录只有旧 `runtime_config.json` 时首启自动翻译
+  （旧文件保留）；日志级别与保留天数读 `prefs.diagnostics.*`（按天滚动）。
+- **向量缓存上限**：`prefs.storage.embedding_cache_mb`（0 = 不限），超出按写入顺序淘汰。
+
+### 改进 (Changed)
+
+- 组合根 `AppInitializer(settings, data_dir)`；三个 LLM 角色都经 ModelRouter；外部 Embedding 来源改为
+  连接上的模型、密钥从连接读取（本机服务可无密钥，不再发送空 Bearer 头）。
+- 旧 `/api/config/update` 改为映射到 SettingSpec 写入（P4 前前端过渡用）。
+- R2 快照的可携配置改为 `config/portable_settings.json`（新键，不含机密、本机路径与 R2 凭据）；
+  恢复时与当前 `settings.json` 合并并随其它恢复项一起可回滚；插件版快照的 `portable_config.json`
+  经旧键翻译后恢复。
+- `requirements.txt` 新增 `keyring`、`anthropic`。
+
+### 移除 (Removed)
+
+- `kacore/runtime_config.py`（`RuntimeConfigStore`）、`ConfigKeyPolicy` 表及派生函数、
+  `GraphConfig.lightrag_llm_*` 与 `DeepThinkingConfig.llm_*`（由「模型分配」接替）、
+  `LMStudioLLMAdapter`。
+
+### 修正 (Fixed)
+
+- P1 CHANGELOG 中一行写出了已删除组件的文件名，已改为不含旧宿主名的描述。
+
+### 测试 (Tests)
+
+- 新增 `test_settings.py`、`test_providers.py`、`test_settings_api.py`；`tests/mocks/settings_helpers.py`
+  让组合根测试沿用旧式配置 dict（经真实翻译器生成 SettingsStore）。全量 1246 passed / 4 skipped。
+
 ## [v2.0.0-dev.1] — 2026-10-25
 
 ### ⚠️ 破坏性变更 (Breaking) — P1 后端脱钩
@@ -32,7 +80,7 @@
 
 ### 前端 (Frontend)
 
-- 删除宿主配置弹窗 `AstrBotModal.tsx` 及其入口、i18n 键（原属 P4，因其后端接口在本阶段删除而提前）；
+- 删除宿主配置弹窗组件及其入口、i18n 键（原属 P4，因其后端接口在本阶段删除而提前）；
   向量库候选改为 `milvus | lexical`（lexical 可选）；修既有 ESLint 报错（`ModelRuntimePanel` effect 内
   同步 setState、未用常量）。
 

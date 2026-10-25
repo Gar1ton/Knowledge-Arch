@@ -19,7 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from kacore.config import CONFIG_KEY_POLICY
+from kacore.settings.schema import SPECS_BY_TARGET
 
 ROOT = Path(__file__).resolve().parents[2]
 CLIENT_PATH = (
@@ -798,15 +798,12 @@ def test_read_document_requires_explicit_intent() -> None:
 
 
 def test_distribution_policy_snapshot_matches_config_truth_source() -> None:
-    expected = {
-        section: {
-            key: policy.consequence
-            for key, policy in policies.items()
-            if policy.api_writable and not policy.structural
-        }
-        for section, policies in CONFIG_KEY_POLICY.items()
-        if any(policy.api_writable and not policy.structural for policy in policies.values())
-    }
+    expected: dict[str, dict[str, str]] = {}
+    for (section, key), spec in SPECS_BY_TARGET.items():
+        if spec.kind != "secret":
+            expected.setdefault(section, {})[key] = spec.consequence
+    # 旧 embedding.provider / model 写入经 api 的过渡映射仍可用（后果为重建）。
+    expected.setdefault("embedding", {}).update({"provider": "rebuild", "model": "rebuild"})
     assert CLIENT.CONFIG_POLICIES == expected
 
 

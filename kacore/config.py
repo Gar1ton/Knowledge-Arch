@@ -175,12 +175,7 @@ class GraphConfig:
     # LightRAG 以内部 ~2000 chars/chunk 分块并为每块调用 LLM，限制此值可直接控制 LLM 调用次数。
     # 默认 30000 chars ≈ 15 次 LLM 调用/文档；设为 0 表示不限制。
     max_doc_chars: int = 30000
-    # 图谱构建专用 LLM（可选）。main 复用主 LLM；local/api 使用下方 endpoint，
-    # 与答案生成所用的主 LLM 完全独立。
-    # 支持任意 OpenAI-compatible endpoint，例如 LM Studio: http://localhost:1234/v1
-    lightrag_llm_provider: str = "main"
-    lightrag_llm_base_url: str = ""
-    lightrag_llm_model: str = ""
+    # 图谱构建所用模型由「模型分配」的 graph 角色决定（空则跟随 chat）。
     # 本地 phi4/LM Studio 推理慢，图谱构建必须给足时间并允许有限重试。
     lightrag_llm_timeout_seconds: int = 900
     # 内部参数（固定值，不从配置读取）。
@@ -229,6 +224,10 @@ class EmbeddingConfig:
     # provider 首次调用触发的模型下载/加载。超时不会中止后台下载线程（to_thread 不可取消），
     # 只放弃等待让启动流程走完——否则 HuggingFace 卡住会让 Web 控制台永远起不来。
     load_timeout_seconds: int = 180
+    # 磁盘向量缓存上限（MiB），0 = 不限；超出时按写入顺序淘汰最旧条目。
+    cache_mb: int = 0
+    # 仅 external：来自「模型供应商」连接的密钥（由设置桥从加密库注入，不写进任何文件）。
+    api_key: str = ""
 
 
 @dataclass
@@ -247,6 +246,8 @@ class AskAgentConfig:
     # 回答语言（与前端 askAI 的 answer_language 同一参数）：auto=跟随提问语言 / zh / en。
     # 召回恒英文，本项只决定回答语言。
     answer_language: str = "auto"
+    # 「回答」节点的系统提示词；空 = 不加人格，只用 RAG 约束。
+    system_prompt: str = ""
 
 
 @dataclass
@@ -286,12 +287,7 @@ class DeepThinkingConfig:
     # 开放式发现护栏：每轮新增 aspect 上限与累计上限，防止 checklist 无限膨胀、循环不收敛。
     max_discovered_per_round: int = 3
     max_discovered_total: int = 8
-    # 独立 LLM 配置（OpenAI-compatible endpoint）。
-    # 若 llm_base_url 与 llm_model 均非空，深度思考使用此 endpoint 而非主 LLM。
-    # API key 优先读取环境变量 KR_DEEP_THINKING_LLM_API_KEY，其次读此字段。
-    llm_base_url: str = ""
-    llm_model: str = ""
-    llm_api_key: str = ""
+    # 深度思考 / 增强召回所用模型由「模型分配」的 research 角色决定（空则跟随 chat）。
 
 
 @dataclass
@@ -301,8 +297,8 @@ class EnhancedRecallConfig:
     介于 default 与 deep_thinking 之间的中间档：PLAN-lite 一次规划（改写+拆解）→
     并行混合检索 + 本地 cross-encoder 重排（0 次 LLM）→ 一次综合内嵌 CRAG 式充分性
     自检 → 不足才补一轮纠正检索 + 重合成。典型 2 次 LLM 调用、最坏 3–4 次。
-    LLM 端点复用 deep_thinking 的独立 endpoint 决策（同为研究型内部 agent，
-    对 JSON 纪律与模型档位需求一致，不重复膨胀配置面），故不设 llm_* 键。
+    与 deep_thinking 共用「模型分配」的 research 角色（同为研究型内部 agent，
+    对 JSON 纪律与模型档位需求一致，不重复膨胀配置面）。
     """
 
     max_sub_queries: int = 3  # PLAN-lite 拆解上限（不含改写后的主查询）。
@@ -359,6 +355,17 @@ class ZoteroSyncConfig:
     cloud_api_key: str = ""  # 预留：云端 api key（env 注入）
 
 
+@dataclass
+class ModelAssignments:
+    """「模型分配」的只读摘要（标签形如 `连接:模型`；空串 = 未分配）。只用于展示与估算。"""
+
+    chat: str = ""
+    research: str = ""
+    graph: str = ""
+    # graph 角色落在本机端点（localhost / 127.0.0.1）上：图谱构建耗时按本地推理估算。
+    graph_is_local: bool = False
+
+
 # ── 解析门面 ────────────────────────────────────────────────────
 
 
@@ -407,12 +414,14 @@ class Config:
         enhanced = self.get_enhanced_recall_config()
         zotero = self.get_zotero_sync_config()
         ask = self.get_ask_agent_config()
+        models = self.get_model_assignments()
         return {
             "ask": {
                 # 与前端 askAI 的 answer_language 同一参数；召回恒英文，仅决定回答语言。
                 "answer_language": ask.answer_language,
                 "llm_timeout_seconds": ask.llm_timeout_seconds,
                 "task_timeout_seconds": ask.task_timeout_seconds,
+                "system_prompt": ask.system_prompt,
             },
             "source_store": {
                 "db_filename": source.db_filename,
@@ -448,9 +457,6 @@ class Config:
                 "embedding_max_async": graph.embedding_max_async,
                 "working_dir": graph.working_dir,
                 "max_doc_chars": graph.max_doc_chars,
-                "lightrag_llm_provider": graph.lightrag_llm_provider,
-                "lightrag_llm_base_url": graph.lightrag_llm_base_url,
-                "lightrag_llm_model": graph.lightrag_llm_model,
                 "lightrag_llm_timeout_seconds": graph.lightrag_llm_timeout_seconds,
             },
             "vector_db": {
@@ -468,7 +474,7 @@ class Config:
                 "load_timeout_seconds": embedding.load_timeout_seconds,
                 "device": embedding.device,
                 "actual_dimension": self.runtime_embedding_dimension,
-                "api_key": _mask(_secret("", ENV_EMBEDDING_API_KEY)),
+                "api_key": _mask(embedding.api_key or _secret("", ENV_EMBEDDING_API_KEY)),
             },
             "rerank": {
                 "provider": rerank.provider,
@@ -485,11 +491,6 @@ class Config:
                 "rerank_weight": deep_thinking.rerank_weight,
                 "verify_enabled": deep_thinking.verify_enabled,
                 "max_verify_rounds": deep_thinking.max_verify_rounds,
-                "llm_base_url": deep_thinking.llm_base_url,
-                "llm_model": deep_thinking.llm_model,
-                "llm_api_key": _mask(
-                    _secret(deep_thinking.llm_api_key, ENV_DEEP_THINKING_LLM_API_KEY)
-                ),
             },
             "enhanced_recall": {
                 "max_sub_queries": enhanced.max_sub_queries,
@@ -509,6 +510,11 @@ class Config:
                 "sync_mode": zotero.sync_mode,
                 "auto_sync_enabled": zotero.auto_sync_enabled,
                 "auto_sync_interval_sec": zotero.auto_sync_interval_sec,
+            },
+            "models": {
+                "chat": models.chat,
+                "research": models.research,
+                "graph": models.graph,
             },
             "diagnostics": self.get_diagnostics(),
         }
@@ -560,9 +566,9 @@ class Config:
                 "Local embedding requires optional dependencies from "
                 "requirements-additional.txt."
             )
-        elif embedding.provider == "external" and not _secret("", ENV_EMBEDDING_API_KEY):
+        elif embedding.provider == "external" and not embedding.base_url:
             diagnostics.append(
-                "KR_EMBEDDING_API_KEY is required when embedding.provider=external."
+                "The embedding source refers to a provider connection that no longer exists."
             )
         if self.get_vector_db_config().backend == "milvus":
             # 就绪 = pymilvus ∧ milvus_lite。缺哪个、怎么修由 capabilities 统一给文案，
@@ -578,13 +584,6 @@ class Config:
         if graph.enabled and not _module_available("lightrag"):
             diagnostics.append(
                 "LightRAG requires optional dependencies from requirements-additional.txt."
-            )
-        if graph.enabled and graph.lightrag_llm_provider in {"local", "api"} and not (
-            graph.lightrag_llm_base_url and graph.lightrag_llm_model
-        ):
-            diagnostics.append(
-                "graph.lightrag_llm_base_url and graph.lightrag_llm_model are required "
-                f"when graph.lightrag_llm_provider={graph.lightrag_llm_provider}."
             )
         return diagnostics + list(self.runtime_diagnostics)
 
@@ -635,13 +634,6 @@ class Config:
         query_mode = str(s.get("query_mode", GraphConfig.query_mode))
         if query_mode not in {"local", "global", "hybrid", "naive", "mix", "bypass"}:
             query_mode = GraphConfig.query_mode
-        raw_llm_provider = str(s.get("lightrag_llm_provider", "")).strip().lower()
-        if raw_llm_provider not in {"main", "local", "api"}:
-            has_legacy_endpoint = bool(
-                str(s.get("lightrag_llm_base_url", "")).strip()
-                and str(s.get("lightrag_llm_model", "")).strip()
-            )
-            raw_llm_provider = "local" if has_legacy_endpoint else GraphConfig.lightrag_llm_provider
         return GraphConfig(
             enabled=bool(s.get("enabled", GraphConfig.enabled)),
             query_mode=query_mode,
@@ -649,13 +641,6 @@ class Config:
             embedding_max_async=int(s.get("embedding_max_async", GraphConfig.embedding_max_async)),
             working_dir=str(s.get("working_dir", GraphConfig.working_dir)),
             max_doc_chars=max(0, int(s.get("max_doc_chars", GraphConfig.max_doc_chars))),
-            lightrag_llm_provider=raw_llm_provider,
-            lightrag_llm_base_url=str(
-                s.get("lightrag_llm_base_url", GraphConfig.lightrag_llm_base_url)
-            ),
-            lightrag_llm_model=str(
-                s.get("lightrag_llm_model", GraphConfig.lightrag_llm_model)
-            ),
             lightrag_llm_timeout_seconds=max(
                 1,
                 int(
@@ -769,6 +754,8 @@ class Config:
                 current.get("load_timeout_seconds", EmbeddingConfig.load_timeout_seconds)
             ),
             device=str(current.get("device", EmbeddingConfig.device)).strip() or "auto",
+            cache_mb=max(0, _int_or_default(current.get("cache_mb"), EmbeddingConfig.cache_mb)),
+            api_key=str(current.get("api_key") or ""),
         )
 
     def get_ask_agent_config(self) -> AskAgentConfig:
@@ -784,6 +771,7 @@ class Config:
                 0, int(s.get("task_timeout_seconds", AskAgentConfig.task_timeout_seconds))
             ),
             answer_language=answer_language,
+            system_prompt=str(s.get("system_prompt") or ""),
         )
 
     def get_rerank_config(self) -> RerankConfig:
@@ -854,9 +842,15 @@ class Config:
             max_discovered_total=max(
                 0, int(s.get("max_discovered_total", DeepThinkingConfig.max_discovered_total))
             ),
-            llm_base_url=str(s.get("llm_base_url", "")),
-            llm_model=str(s.get("llm_model", "")),
-            llm_api_key=str(s.get("llm_api_key", "")),
+        )
+
+    def get_model_assignments(self) -> ModelAssignments:
+        s = _section(self.raw, "models")
+        return ModelAssignments(
+            chat=str(s.get("chat") or ""),
+            research=str(s.get("research") or ""),
+            graph=str(s.get("graph") or ""),
+            graph_is_local=bool(s.get("graph_is_local", False)),
         )
 
     def get_enhanced_recall_config(self) -> EnhancedRecallConfig:
@@ -889,167 +883,6 @@ class Config:
                 0, int(s.get("json_max_retries", EnhancedRecallConfig.json_max_retries))
             ),
         )
-
-
-# ── 可写配置键登记（API 写入 / 运行时持久化的唯一真相源）────────────
-#
-# 此前「允许写入的键」散落三处：api 的 _CONFIG_UPDATE_KEYS、_STRUCTURAL_KEYS 与
-# runtime_config 的 _ALLOWED_RUNTIME_KEYS。在此收口为单一登记表，两个消费者各自派生其
-# 子集（见 api.py / runtime_config.py）。
-
-# 切换某键后的后果标识：none 即时生效 / restart 需重启服务 / rebuild 需重建索引（且隐含重启）。
-CONSEQUENCE_NONE = "none"
-CONSEQUENCE_RESTART = "restart"
-CONSEQUENCE_REBUILD = "rebuild"
-
-
-@dataclass(frozen=True)
-class ConfigKeyPolicy:
-    """单个配置键的写入策略。
-
-    api_writable        可经 /api/config/update 写入（机密与结构键不可）。
-    runtime_persistable 可写入 data_dir/runtime_config.json 持久化。
-    structural          结构性参数：禁止运行时 API 写，改后须重建/重启（防静默破坏数据）。
-    consequence         改动后果，用于计算 restart_required / rebuild_required 与前端提示。
-    """
-
-    api_writable: bool = False
-    runtime_persistable: bool = False
-    structural: bool = False
-    consequence: str = CONSEQUENCE_NONE
-
-
-# 注：r2_sync.enabled / notion_sync.enabled / source_store.ocr_enabled 为新纳入的非机密开关，
-# 让数据流向导可「按需切换」更多环节；机密（secret_access_key/password/api_key）始终不可写。
-CONFIG_KEY_POLICY: dict[str, dict[str, ConfigKeyPolicy]] = {
-    "vector_db": {
-        "backend": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "auto_index_enabled": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        # 自动重建调度器每轮循环重读这两个键，改完即生效，故 consequence 为 NONE：
-        # 若标 RESTART，用户想关掉自动重建还得重启服务，与「省心」的诉求相悖。
-        "auto_rebuild_enabled": ConfigKeyPolicy(True, True),
-        "auto_rebuild_delay_seconds": ConfigKeyPolicy(True, True),
-    },
-    "embedding": {
-        "provider": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_REBUILD),
-        "model": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_REBUILD),
-        "base_url": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_REBUILD),
-        # 只影响「等多久」，不影响向量本身，故为 RESTART 而非 REBUILD。
-        "load_timeout_seconds": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        # 只影响本地模型跑在 CPU 还是 GPU，向量数值本身不变，故为 RESTART 而非 REBUILD
-        # （provider 实例在启动时构造一次，运行期切换设备需要重启才能生效）。
-        "device": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-    },
-    "ask": {
-        # 召回语言（回答语言）：开放 API 写，使前端 askAI 与配置项共享同一参数。
-        "answer_language": ConfigKeyPolicy(True, True),
-        # 主 LLM 单次调用上限：LLMAdapter 在组合根构造，改后需重启生效。
-        "llm_timeout_seconds": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        # 整条 ask() 任务总上限：api.ask() 每次调用时从 Config 现读，无需重启生效。
-        "task_timeout_seconds": ConfigKeyPolicy(True, True),
-    },
-    "graph": {
-        "enabled": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "query_mode": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "llm_max_async": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "embedding_max_async": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "working_dir": ConfigKeyPolicy(
-            False, False, structural=True, consequence=CONSEQUENCE_RESTART
-        ),
-        "max_doc_chars": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_REBUILD),
-        "lightrag_llm_provider": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "lightrag_llm_base_url": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "lightrag_llm_model": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "lightrag_llm_timeout_seconds": ConfigKeyPolicy(
-            True, True, consequence=CONSEQUENCE_RESTART
-        ),
-    },
-    "notion_sync": {
-        "enabled": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "database_id": ConfigKeyPolicy(False, True),
-        "qa_database_id": ConfigKeyPolicy(False, True),
-        "data_source_id": ConfigKeyPolicy(False, True),
-        "qa_data_source_id": ConfigKeyPolicy(False, True),
-        "auto_sync_enabled": ConfigKeyPolicy(True, True),
-        "parent_page_id": ConfigKeyPolicy(False, True),
-        "database_title": ConfigKeyPolicy(False, True),
-        "auto_sync_interval_sec": ConfigKeyPolicy(True, True),
-        "sync_mode": ConfigKeyPolicy(True, True),
-    },
-    "r2_sync": {
-        "enabled": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-    },
-    "source_store": {
-        "default_collection": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "ocr_enabled": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-    },
-    "zotero_sync": {
-        "enabled": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "access_mode": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "zotero_data_dir": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "api_port": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "storage_mode": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_REBUILD),
-        "linked_root": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_REBUILD),
-        "zotmoov_root": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_REBUILD),
-        "sync_mode": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_REBUILD),
-        "auto_sync_enabled": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "auto_sync_interval_sec": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-    },
-    "deep_thinking": {
-        "max_rounds": ConfigKeyPolicy(True, True),
-        "max_sub_queries": ConfigKeyPolicy(True, True),
-        "wide_top_k": ConfigKeyPolicy(True, True),
-        "rerank_weight": ConfigKeyPolicy(True, True),
-        "verify_enabled": ConfigKeyPolicy(True, True),
-        "max_verify_rounds": ConfigKeyPolicy(True, True),
-        "llm_base_url": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-        "llm_model": ConfigKeyPolicy(True, True, consequence=CONSEQUENCE_RESTART),
-    },
-    "rerank": {
-        "provider": ConfigKeyPolicy(True, True),
-        "model": ConfigKeyPolicy(True, True),
-    },
-    "enhanced_recall": {
-        "max_sub_queries": ConfigKeyPolicy(True, True),
-        "wide_top_k": ConfigKeyPolicy(True, True),
-        "max_final_evidence": ConfigKeyPolicy(True, True),
-        "rerank_weight": ConfigKeyPolicy(True, True),
-        "corrective_enabled": ConfigKeyPolicy(True, True),
-    },
-}
-
-
-def api_writable_keys() -> dict[str, frozenset[str]]:
-    """可经 API 写入的键（排除机密与结构键）。供 api._CONFIG_UPDATE_KEYS 派生。"""
-    return {
-        section: frozenset(k for k, p in keys.items() if p.api_writable and not p.structural)
-        for section, keys in CONFIG_KEY_POLICY.items()
-        if any(p.api_writable and not p.structural for p in keys.values())
-    }
-
-
-def structural_keys() -> dict[str, frozenset[str]]:
-    """结构性键：禁止运行时 API 写。供 api._STRUCTURAL_KEYS 派生。"""
-    return {
-        section: frozenset(k for k, p in keys.items() if p.structural)
-        for section, keys in CONFIG_KEY_POLICY.items()
-        if any(p.structural for p in keys.values())
-    }
-
-
-def runtime_persistable_keys() -> dict[str, frozenset[str]]:
-    """可写入 runtime_config.json 的键。供 runtime_config._ALLOWED_RUNTIME_KEYS 派生。"""
-    return {
-        section: frozenset(k for k, p in keys.items() if p.runtime_persistable)
-        for section, keys in CONFIG_KEY_POLICY.items()
-        if any(p.runtime_persistable for p in keys.values())
-    }
-
-
-def change_consequence(section: str, key: str) -> str:
-    """返回改动该键的后果标识（none/restart/rebuild）；未登记键按 none 处理。"""
-    policy = CONFIG_KEY_POLICY.get(section, {}).get(key)
-    return policy.consequence if policy else CONSEQUENCE_NONE
 
 
 def merge_config_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -1089,15 +922,6 @@ __all__ = [
     "VECTOR_BACKEND_MILVUS",
     "VECTOR_BACKEND_LEXICAL",
     "EMBEDDING_PROVIDERS",
-    "CONSEQUENCE_NONE",
-    "CONSEQUENCE_RESTART",
-    "CONSEQUENCE_REBUILD",
-    "ConfigKeyPolicy",
-    "CONFIG_KEY_POLICY",
-    "api_writable_keys",
-    "structural_keys",
-    "runtime_persistable_keys",
-    "change_consequence",
     "merge_config_dicts",
     "SourceStoreConfig",
     "R2SyncConfig",
@@ -1106,6 +930,7 @@ __all__ = [
     "VectorDbConfig",
     "EmbeddingConfig",
     "AskAgentConfig",
+    "ModelAssignments",
     "ZoteroSyncConfig",
     "Config",
 ]

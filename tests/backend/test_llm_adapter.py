@@ -24,8 +24,8 @@ async def test_independent_endpoint_supports_json_contract_and_counts_http_retri
     from aiohttp import web
     from aiohttp.test_utils import TestServer
 
-    from kacore.adapters.llm import LMStudioLLMAdapter
     from kacore.pipelines.llm_json import llm_json_call
+    from kacore.providers.openai_compat import OpenAICompatChat
     from kacore.utils.usage_ledger import current_usage, usage_request
 
     attempts = 0
@@ -48,7 +48,7 @@ async def test_independent_endpoint_supports_json_contract_and_counts_http_retri
 
     @usage_request
     async def run():
-        adapter = LMStudioLLMAdapter(str(server.make_url("/v1")), "test-model",
+        adapter = OpenAICompatChat(str(server.make_url("/v1")), "test-model",
                                      retry_backoff_seconds=0, max_retries=1)
         parsed, calls, tokens = await llm_json_call(adapter, "q", "sys", json.loads, 0)
         return parsed, calls, tokens, current_usage.get().summary()

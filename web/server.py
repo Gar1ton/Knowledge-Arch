@@ -838,6 +838,99 @@ async def handle_update_config(request: web.Request) -> web.Response:
         return web.json_response({"status": "error", "message": str(exc)}, status=400)
 
 
+# ── 设置 / 模型供应商 ───────────────────────────────────────────
+
+
+async def _json_body(request: web.Request) -> dict[str, Any] | None:
+    try:
+        body = await request.json() if request.can_read_body else {}
+    except Exception:
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def _settings_error(exc: Exception) -> web.Response:
+    """ValueError（含校验失败）→ 400；KeyError（连接不存在）→ 404；未装配 → 501。"""
+    if isinstance(exc, KeyError):
+        return web.json_response({"status": "error", "message": str(exc.args[0])}, status=404)
+    if isinstance(exc, ValueError):
+        return web.json_response({"status": "error", "message": str(exc)}, status=400)
+    return web.json_response({"status": "error", "message": str(exc)}, status=501)
+
+
+async def handle_settings_schema(request: web.Request) -> web.Response:
+    try:
+        return web.json_response(_api(request).get_settings_schema(request.query.get("home")))
+    except RuntimeError as exc:
+        return _settings_error(exc)
+
+
+async def handle_settings_patch(request: web.Request) -> web.Response:
+    body = await _json_body(request)
+    if body is None or not isinstance(body.get("key"), str):
+        return web.json_response({"status": "error", "message": "key required"}, status=400)
+    try:
+        return web.json_response(await _api(request).update_setting(body["key"], body.get("value")))
+    except (ValueError, RuntimeError) as exc:
+        return _settings_error(exc)
+
+
+async def handle_providers_list(request: web.Request) -> web.Response:
+    try:
+        return web.json_response(_api(request).list_providers())
+    except RuntimeError as exc:
+        return _settings_error(exc)
+
+
+async def handle_providers_create(request: web.Request) -> web.Response:
+    body = await _json_body(request)
+    if body is None:
+        return web.json_response({"status": "error", "message": "invalid JSON body"}, status=400)
+    try:
+        return web.json_response(_api(request).create_provider(body), status=201)
+    except (ValueError, TypeError, RuntimeError) as exc:
+        return _settings_error(ValueError(str(exc)) if isinstance(exc, TypeError) else exc)
+
+
+async def handle_providers_patch(request: web.Request) -> web.Response:
+    body = await _json_body(request)
+    if body is None:
+        return web.json_response({"status": "error", "message": "invalid JSON body"}, status=400)
+    try:
+        return web.json_response(
+            await _api(request).update_provider(request.match_info["provider_id"], body)
+        )
+    except (KeyError, ValueError, RuntimeError) as exc:
+        return _settings_error(exc)
+
+
+async def handle_providers_delete(request: web.Request) -> web.Response:
+    try:
+        return web.json_response(
+            _api(request).delete_provider(request.match_info["provider_id"])
+        )
+    except (KeyError, ValueError, RuntimeError) as exc:
+        return _settings_error(exc)
+
+
+async def handle_providers_test(request: web.Request) -> web.Response:
+    try:
+        return web.json_response(
+            await _api(request).test_provider(request.match_info["provider_id"])
+        )
+    except (KeyError, RuntimeError) as exc:
+        return _settings_error(exc)
+
+
+async def handle_providers_models(request: web.Request) -> web.Response:
+    try:
+        return web.json_response(
+            await _api(request).refresh_provider_models(request.match_info["provider_id"])
+        )
+    except (KeyError, RuntimeError) as exc:
+        return _settings_error(exc)
+
+
 async def handle_plugin_restart(request: web.Request) -> web.Response:
     _mw_logger.info("Plugin soft restart requested")
     try:
@@ -1842,6 +1935,14 @@ def build_app(
     app.router.add_get("/api/quota", handle_quota)
     app.router.add_get("/api/config/effective", handle_effective_config)
     app.router.add_post("/api/config/update", handle_update_config)
+    app.router.add_get("/api/settings/schema", handle_settings_schema)
+    app.router.add_patch("/api/settings", handle_settings_patch)
+    app.router.add_get("/api/providers", handle_providers_list)
+    app.router.add_post("/api/providers", handle_providers_create)
+    app.router.add_patch("/api/providers/{provider_id}", handle_providers_patch)
+    app.router.add_delete("/api/providers/{provider_id}", handle_providers_delete)
+    app.router.add_post("/api/providers/{provider_id}/test", handle_providers_test)
+    app.router.add_post("/api/providers/{provider_id}/models", handle_providers_models)
     app.router.add_post("/api/plugin/restart", handle_plugin_restart)
     app.router.add_post("/api/milvus/clear-lock", handle_clear_milvus_lock)
     app.router.add_post("/api/config/test-embedding", handle_test_embedding)

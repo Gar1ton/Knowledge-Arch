@@ -1,7 +1,7 @@
 """LLM 结构化抽取适配器（adapters 层）。
 
-主 LLM 经注入的 chat client 调用（问答生成与学术实体/有向关系的结构化 JSON 抽取）；
-另含 OpenAI 兼容端点的 HTTP 客户端，以及未配置模型时的离线占位实现。
+主 LLM 经注入的 chat client（由 ModelRouter 按角色提供）调用：问答生成与学术实体 / 有向关系的
+结构化 JSON 抽取；未配置模型时提供离线占位实现。HTTP 客户端在 kacore/providers/。
 """
 
 from __future__ import annotations
@@ -15,218 +15,14 @@ from dataclasses import replace
 from typing import Any, Protocol
 
 from kacore.domain.llm_generation import (
-    STATUS_CONTENT_FILTER,
     STATUS_EMPTY,
     STATUS_ERROR,
-    STATUS_LENGTH,
-    STATUS_OK,
     STATUS_REASONING_ONLY,
     STATUS_TIMEOUT,
     GenerationResult,
 )
-from kacore.managers.token_budget import default_tokenizer
-from kacore.utils.usage_ledger import current_usage, usage_stage
 
 logger = logging.getLogger("LLMAdapter")
-
-
-def _as_int(value: Any) -> int | None:
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _record_usage(
-    result: GenerationResult | None, system: str, prompt: str, provider_id: str,
-    started: float, status: str,
-) -> None:
-    """两种适配器共用真实尝试计账，不保存模型输入文本。"""
-    ledger = current_usage.get()
-    if ledger is None:
-        return
-    counter = default_tokenizer()
-    known = result is not None
-    actual = (known and result.prompt_tokens is not None
-              and result.completion_tokens is not None)
-    unknown_output = (known and result.reasoning_present
-                      and result.completion_tokens is None)
-    ledger.calls.append({
-        "call_id": f"{ledger.request_id}:{len(ledger.calls) + 1}",
-        "stage": usage_stage.get(), "attempt": len(ledger.calls) + 1,
-        "provider": provider_id, "model": result.model if known else "",
-        "input_tokens": (result.prompt_tokens if result.prompt_tokens is not None
-                         else counter.count(system + prompt)) if known else None,
-        "output_tokens": None if unknown_output else (result.completion_tokens
-                          if result.completion_tokens is not None
-                          else counter.count(result.text)) if known else None,
-        "measurement": ("unknown" if unknown_output or not known
-                        else "actual" if actual else "estimated"),
-        "status": status, "elapsed_ms": round((time.monotonic() - started) * 1000),
-    })
-
-
-class LMStudioLLMAdapter:
-    """OpenAI-compatible HTTP adapter，供图谱构建及配置独立 endpoint 的研究问答使用。
-
-    调用任意 OpenAI-compatible endpoint（LM Studio / Ollama / vLLM 等）。
-    也可作为 LLMAdapter 的 chat client 注入；图谱构建 LLM 与答案生成 LLM 互不影响。
-    """
-
-    def __init__(
-        self,
-        base_url: str,
-        model: str,
-        api_key: str = "",
-        *,
-        timeout_seconds: int = 900,
-        max_retries: int = 2,
-        retry_backoff_seconds: float = 2.0,
-    ) -> None:
-        self._base_url = base_url.rstrip("/")
-        self._model = model
-        self._api_key = api_key
-        self._timeout_seconds = max(1, int(timeout_seconds))
-        self._max_retries = max(0, int(max_retries))
-        self._retry_backoff_seconds = max(0.0, float(retry_backoff_seconds))
-
-    async def generate(
-        self, prompt: str, system_prompt: str = "", *, allow_mock: bool = True
-    ) -> str:
-        result = await self.generate_result(prompt, system_prompt, allow_mock=allow_mock)
-        return result.text
-
-    async def generate_result(
-        self, prompt: str, system_prompt: str = "", *, allow_mock: bool = True
-    ) -> GenerationResult:
-        """独立 endpoint 的结构化生成；HTTP 重试逐次计账，失败消费为 unknown。"""
-        try:
-            import aiohttp
-        except ImportError as exc:
-            if not allow_mock:
-                raise RuntimeError("aiohttp is required for LMStudioLLMAdapter") from exc
-            logger.error("aiohttp not available; LMStudioLLMAdapter cannot call LM Studio")
-            return GenerationResult(text="", status=STATUS_ERROR)
-
-        messages: list[dict[str, str]] = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
-
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-        if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
-
-        payload = {"model": self._model, "messages": messages, "temperature": 0.1}
-        url = f"{self._base_url}/chat/completions"
-
-        input_chars = sum(len(m["content"]) for m in messages)
-        estimated_prompt_tokens = input_chars // 4
-        attempts = self._max_retries + 1
-        last_exc: Exception | None = None
-
-        for attempt in range(1, attempts + 1):
-            t0 = time.monotonic()
-            result = None
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        url,
-                        json=payload,
-                        headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=self._timeout_seconds),
-                    ) as resp:
-                        resp.raise_for_status()
-                        data = await resp.json()
-                elapsed = time.monotonic() - t0
-                text = self._log_success(
-                    data,
-                    elapsed=elapsed,
-                    prompt_tokens_fallback=estimated_prompt_tokens,
-                    attempt=attempt,
-                )
-                choice = (data.get("choices") or [{}])[0]
-                message = choice.get("message") or {}
-                usage = data.get("usage") or {}
-                reason = str(choice.get("finish_reason") or "")
-                reasoning = bool(message.get("reasoning_content"))
-                status = (STATUS_LENGTH if reason == "length" else
-                          STATUS_CONTENT_FILTER if reason == "content_filter" else
-                          STATUS_OK if text else
-                          STATUS_REASONING_ONLY if reasoning else STATUS_EMPTY)
-                result = GenerationResult(
-                    text=text, status=status, finish_reason=reason,
-                    prompt_tokens=_as_int(usage.get("prompt_tokens")),
-                    completion_tokens=_as_int(usage.get("completion_tokens")),
-                    reasoning_present=reasoning, provider_id="openai-compatible",
-                    model=str(data.get("model") or self._model),
-                )
-                return result
-            except Exception as exc:
-                last_exc = exc
-                elapsed = time.monotonic() - t0
-                logger.warning(
-                    "LMStudio call failed attempt=%d/%d elapsed=%.1fs timeout=%ss "
-                    "model=%s error=%s",
-                    attempt,
-                    attempts,
-                    elapsed,
-                    self._timeout_seconds,
-                    self._model,
-                    exc,
-                )
-                if attempt < attempts:
-                    await asyncio.sleep(self._retry_backoff_seconds * attempt)
-            finally:
-                _record_usage(result, system_prompt, prompt, "openai-compatible", t0,
-                              result.status if result else STATUS_ERROR)
-
-        if not allow_mock:
-            raise RuntimeError(f"LM Studio call to {url} failed: {last_exc}") from last_exc
-        logger.error("LMStudioLLMAdapter.generate failed after retries: %s", last_exc)
-        return GenerationResult(text="", status=STATUS_ERROR)
-
-    def _log_success(
-        self,
-        data: dict[str, Any],
-        *,
-        elapsed: float,
-        prompt_tokens_fallback: int,
-        attempt: int,
-    ) -> str:
-        choice = (data.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
-        content = str(message.get("content") or "").strip()
-        finish_reason = str(choice.get("finish_reason") or "")
-
-        usage = data.get("usage") or {}
-        prompt_tokens = usage.get("prompt_tokens") or prompt_tokens_fallback
-        completion_tokens = usage.get("completion_tokens") or max(1, len(content) // 4)
-        tps = completion_tokens / elapsed if elapsed > 0 else 0
-
-        logger.debug(
-            "LMStudio | prompt=%d tok completion=%d tok elapsed=%.1fs "
-            "gen_speed=%.1f t/s retry=%d finish=%s model=%s",
-            prompt_tokens,
-            completion_tokens,
-            elapsed,
-            tps,
-            attempt - 1,
-            finish_reason or "unknown",
-            self._model,
-        )
-
-        if tps < 8 and completion_tokens > 10:
-            logger.warning(
-                "LMStudio 生成速度偏低 %.1f t/s（prompt=%d tok）"
-                "——长 prompt 会显著降低推理速度，可减小 max_doc_chars 缩短输入",
-                tps,
-                prompt_tokens,
-            )
-
-        return content
 
 
 class ChatClient(Protocol):
@@ -260,8 +56,11 @@ class LLMAdapter:
 
     @property
     def configured(self) -> bool:
-        """是否已注入真实 chat client（未注入时所有生成都是离线占位）。"""
-        return self._client is not None
+        """是否有可用的对话模型（未配置时所有生成都是离线占位）。
+
+        client 可声明 `configured`（如 ModelRouter 的 RoleClient 在「模型分配」为空时为 False）。
+        """
+        return self._client is not None and bool(getattr(self._client, "configured", True))
 
     async def generate(
         self, prompt: str, system_prompt: str = "", *, allow_mock: bool = True
@@ -311,7 +110,7 @@ class LLMAdapter:
         契约：本方法不抛异常（status!=ok 即失败），但失败/空响应必须留下可诊断的日志——
         调用方拿到非 ok 状态后会据此分流（重试/降级/直接失败），日志是唯一线索。
         """
-        if self._client is None:
+        if not self.configured:
             logger.warning("LLMAdapter 未配置对话模型，无法调用主 LLM。")
             return GenerationResult(text="", status=STATUS_EMPTY)
 

@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import logging.handlers
 import os
 import sys
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from ka_server import APP_VERSION
 from ka_server.lifecycle import (
@@ -28,6 +30,9 @@ from ka_server.lifecycle import (
 )
 from ka_server.paths import AppPaths
 
+if TYPE_CHECKING:
+    from kacore.settings.store import SettingsStore
+
 logger = logging.getLogger("ka_server")
 
 ENV_TOKEN = "KA_TOKEN"
@@ -36,8 +41,7 @@ LISTEN_HOST = "127.0.0.1"
 EXIT_USAGE = 2
 EXIT_DATA_DIR_LOCKED = 3
 _LOG_FILE = "ka_server.log"
-_LOG_MAX_BYTES = 5 * 1024 * 1024
-_LOG_BACKUPS = 5
+_LEGACY_RUNTIME_CONFIG = "runtime_config.json"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,25 +61,64 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def configure_logging(paths: AppPaths) -> None:
-    """stderr + 滚动文件。stdout 只留给 KA_READY 协议行。"""
+def configure_logging(paths: AppPaths, *, level: str = "info", keep_days: int = 14) -> None:
+    """stderr + 按天滚动的日志文件（保留 keep_days 份）。stdout 只留给 KA_READY 协议行。"""
+    numeric = logging.DEBUG if level == "debug" else logging.INFO
     root = logging.getLogger()
-    root.setLevel(logging.INFO)
+    root.setLevel(numeric)
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
     # 显式设 handler 级别：日志页的内存 handler 会把 root 调到 DEBUG，终端与文件不跟着刷屏。
     stderr = logging.StreamHandler(sys.stderr)
-    stderr.setLevel(logging.INFO)
+    stderr.setLevel(numeric)
     stderr.setFormatter(fmt)
     root.addHandler(stderr)
-    file_handler = logging.handlers.RotatingFileHandler(
+    file_handler = logging.handlers.TimedRotatingFileHandler(
         paths.logs / _LOG_FILE,
-        maxBytes=_LOG_MAX_BYTES,
-        backupCount=_LOG_BACKUPS,
+        when="midnight",
+        backupCount=max(1, keep_days),
         encoding="utf-8",
     )
-    file_handler.setLevel(logging.INFO)
+    file_handler.setLevel(numeric)
     file_handler.setFormatter(fmt)
     root.addHandler(file_handler)
+
+
+def open_settings(paths: AppPaths) -> SettingsStore:
+    """settings.json + 加密库（主密钥优先放系统钥匙串）。"""
+    from kacore.secret_store import EncryptedSecretStore, system_keyring
+    from kacore.settings.store import SettingsStore
+
+    secrets = EncryptedSecretStore(paths.secrets, keyring_backend=system_keyring())
+    return SettingsStore.open(paths.settings_file, secrets)
+
+
+def migrate_legacy_runtime_config(paths: AppPaths, settings: SettingsStore) -> bool:
+    """数据目录里只有旧版 runtime_config.json、还没有 settings.json 时，就地翻译一次。
+
+    旧文件保留不动（只读来源）；settings.json 一旦存在就不再触发。
+    """
+    legacy = paths.data / _LEGACY_RUNTIME_CONFIG
+    if settings.persisted or not legacy.exists():
+        return False
+    from kacore.settings.legacy_keys import apply_translation, translate
+
+    try:
+        raw = json.loads(legacy.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("旧版 runtime_config.json 无法读取，跳过迁移：%s", exc)
+        return False
+    translation = translate(raw if isinstance(raw, dict) else {})
+    apply_translation(settings, translation)
+    settings.save()
+    logger.info(
+        "已从旧版 runtime_config.json 迁移 %d 项设置；丢弃 %d 项：%s",
+        len(translation.values),
+        len(translation.dropped),
+        ", ".join(translation.dropped) or "无",
+    )
+    for note in translation.attention:
+        logger.warning("迁移提示：%s", note)
+    return True
 
 
 def dev_origins(cli_values: Sequence[str]) -> list[str]:
@@ -91,7 +134,12 @@ async def serve(args: argparse.Namespace, token: str) -> int:
 
     paths = AppPaths.resolve(args.data_dir)
     paths.ensure()
-    configure_logging(paths)
+    settings = open_settings(paths)
+    configure_logging(
+        paths,
+        level=str(settings.get("prefs.diagnostics.log_level")),
+        keep_days=int(settings.get("prefs.diagnostics.log_keep_days")),
+    )
     logger.info("Knowledge Arch backend %s, data dir: %s", APP_VERSION, paths.data)
 
     lock = DataDirLock(paths.lock_file)
@@ -101,9 +149,10 @@ async def serve(args: argparse.Namespace, token: str) -> int:
         logger.error("DataDirLockedError: %s", exc)
         return EXIT_DATA_DIR_LOCKED
 
+    migrate_legacy_runtime_config(paths, settings)
     stop = asyncio.Event()
     install_signal_handlers(stop)
-    app_init = AppInitializer({}, paths.data)
+    app_init = AppInitializer(settings, paths.data)
     runner: web.AppRunner | None = None
     try:
         await app_init.initialize()

@@ -18,7 +18,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from kacore.config import runtime_persistable_keys
 from kacore.managers.r2_backup_manifest import (
     check_sqlite_integrity,
     create_sqlite_snapshot_file,
@@ -38,6 +37,7 @@ if TYPE_CHECKING:
     from kacore.log_capture import RuntimeEventSink
     from kacore.repository.source_store.base import SourceDocumentStore
     from kacore.repository.sync_targets.base import SyncTarget
+    from kacore.settings.store import SettingsStore
 
 _PREFIX = "knowledge-arch/v1"
 _LATEST_KEY = f"{_PREFIX}/latest.json"
@@ -90,8 +90,10 @@ class R2BackupManager:
         quiesce_indexes: Callable[[], Awaitable[None]] | None = None,
         reload_callback: Callable[[], Awaitable[None]] | None = None,
         runtime_event_sink: RuntimeEventSink | None = None,
+        settings: SettingsStore | None = None,
     ) -> None:
         self._target = target
+        self._settings = settings
         self._source_store = source_store
         self._config = config
         self._r2_config = r2_config
@@ -484,11 +486,12 @@ class R2BackupManager:
         if graph_root.exists():
             await asyncio.to_thread(shutil.copytree, graph_root, root / "lightrag")
 
-        portable = _portable_config(self._config)
         (root / "config").mkdir(parents=True, exist_ok=True)
-        # 不原样复制 runtime_config.json：旧版或手工文件可能含白名单外字段；两份配置均净化。
-        _write_json_atomic(root / "config" / "runtime_config.json", portable)
-        _write_json_atomic(root / "config" / "portable_config.json", portable)
+        # 只带可携设置（不含机密、本机路径与 R2 自身凭据），不原样复制 settings.json。
+        _write_json_atomic(
+            root / "config" / "portable_settings.json",
+            _portable_settings(self._config, self._settings),
+        )
 
     async def _load_latest_manifest(self) -> tuple[dict[str, Any], dict[str, Any]]:
         try:
@@ -539,30 +542,16 @@ class R2BackupManager:
         return self._job
 
 
-def _portable_config(config: Config) -> dict[str, Any]:
-    public = config.to_public_dict()
-    allowed = runtime_persistable_keys()
-    result: dict[str, Any] = {}
-    excluded = {
-        ("zotero_sync", "zotero_data_dir"),
-        ("zotero_sync", "api_port"),
-        ("zotero_sync", "linked_root"),
-        ("zotero_sync", "zotmoov_root"),
-    }
-    for section, keys in allowed.items():
-        values = public.get(section)
-        if not isinstance(values, dict):
-            continue
-        selected = {
-            key: values[key]
-            for key in keys
-            if key in values
-            and (section, key) not in excluded
-            and section != "r2_sync"
-        }
-        if selected:
-            result[section] = selected
-    return result
+def _portable_settings(config: Config, settings: SettingsStore | None) -> dict[str, Any]:
+    """生产由 SettingsStore 给出；没有 SettingsStore 时从 Config 原始值翻译（测试 / 极简装配）。"""
+    if settings is not None:
+        return settings.portable_document()
+    from kacore.settings.legacy_keys import apply_translation, translate
+    from kacore.settings.store import SettingsStore as _SettingsStore
+
+    store = _SettingsStore.in_memory()
+    apply_translation(store, translate(config.raw))
+    return store.portable_document()
 
 
 def _snapshot_id() -> str:

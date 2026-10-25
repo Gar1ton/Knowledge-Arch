@@ -48,8 +48,10 @@ class ExternalEmbeddingProvider(EmbeddingProvider):
         self,
         base_url: str = "https://api.openai.com/v1",
         model_name: str = "text-embedding-3-large",
+        api_key: str = "",
     ) -> None:
-        self._api_key = os.environ.get(ENV_EMBEDDING_API_KEY) or ""
+        # 密钥来自「模型供应商」连接；环境变量只作开发期兜底。
+        self._api_key = api_key or os.environ.get(ENV_EMBEDDING_API_KEY) or ""
         self._model_name = model_name
 
         self._endpoint = self._embedding_endpoint(base_url)
@@ -110,10 +112,10 @@ class ExternalEmbeddingProvider(EmbeddingProvider):
 
     async def _request_vectors(self, payload: dict, count: int) -> list[list[float]]:
         """统一网络超时与有界重试；响应契约错误不重试。"""
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            # 本机服务（Ollama / LM Studio）可以不要密钥：不发空的 Bearer 头。
+            headers["Authorization"] = f"Bearer {self._api_key}"
         attempts = _MAX_RETRIES + 1
         last_error = "请求失败"
         for attempt in range(1, attempts + 1):

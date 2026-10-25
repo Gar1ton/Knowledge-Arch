@@ -109,15 +109,15 @@ async def test_backup_deduplicates_and_keeps_only_latest(tmp_path: Path) -> None
     # original.pdf 与 clean.md 内容相同，只存一个 blob。
     blob_keys = [key for key in target._objects if "/blobs/" in key]
     assert len(blob_keys) < manifest["file_count"]
-    runtime_entry = next(
-        entry for entry in manifest["files"] if entry["path"] == "config/runtime_config.json"
+    settings_entry = next(
+        entry for entry in manifest["files"] if entry["path"] == "config/portable_settings.json"
     )
-    sanitized_runtime = target._objects[
-        f"knowledge-arch/v1/blobs/{runtime_entry['sha256']}"
+    portable = target._objects[
+        f"knowledge-arch/v1/blobs/{settings_entry['sha256']}"
     ].decode("utf-8")
-    assert '"secret"' not in sanitized_runtime
-    assert "secret_access_key" not in sanitized_runtime
-    assert "r2_sync" not in sanitized_runtime
+    assert '"secret"' not in portable
+    assert "secret_access_key" not in portable
+    assert "flow.r2." not in portable
 
     second = await manager.backup()
     assert second["uploaded_bytes"] == 0

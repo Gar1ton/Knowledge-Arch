@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -35,8 +34,6 @@ from kacore.migration_runner import run_migrations
 from kacore.pipelines.sync_pipeline import SyncPipeline
 from kacore.repository.source_store.sqlite import SQLiteSourceDocumentStore
 from kacore.repository.sync_targets.r2 import R2SyncTarget
-from kacore.runtime_config import RuntimeConfigStore
-from kacore.secret_store import EncryptedSecretStore
 
 if TYPE_CHECKING:
     from kacore.index_compatibility import IndexCompatibilityStore
@@ -44,6 +41,8 @@ if TYPE_CHECKING:
     from kacore.repository.embedding.base import EmbeddingProvider
     from kacore.repository.source_store.base import SourceDocumentStore
     from kacore.repository.vector_store.base import VectorStore
+    from kacore.settings.base import SecretStore
+    from kacore.settings.store import SettingsStore
 
 logger = logging.getLogger("AppInitializer")
 
@@ -58,15 +57,19 @@ class _EmbeddingProbeTimeout(RuntimeError):
 class AppInitializer:
     """装配全部子系统并拥有其生命周期。
 
-    raw_config 是启动时的基础配置（可为空 dict，全部取默认值）；运行期写入的覆盖项落在
-    data_dir/runtime_config.json，二者合并后构造 Config。
+    settings 是设置的唯一来源（settings.json + 加密库）；`Config` 由它桥接生成，
+    每次 initialize() / reload() 重新生成，保证读到最新的持久化值。
     """
 
-    def __init__(self, raw_config: dict[str, Any], data_dir: Path) -> None:
+    def __init__(self, settings: SettingsStore, data_dir: Path) -> None:
+        from kacore.providers.registry import ProviderRegistry
+        from kacore.providers.router import ModelRouter
+
         self._data_dir = data_dir
-        self._raw_config = raw_config
-        self._runtime_config = RuntimeConfigStore(data_dir / "runtime_config.json")
-        self._config = Config(self._runtime_config.merged_with(raw_config))
+        self._settings = settings
+        self._config = Config(settings.to_config_raw())
+        self.provider_registry = ProviderRegistry(settings)
+        self.model_router = ModelRouter(settings, self.provider_registry)
         self._exit_stack: AsyncExitStack | None = None
         self._backup_task: asyncio.Task[Any] | None = None
         self._zotero_sync_task: asyncio.Task[Any] | None = None
@@ -95,7 +98,7 @@ class AppInitializer:
         self.retrieval_orchestrator: RetrievalOrchestrator | None = None
         self.metrics: PerformanceTracker = PerformanceTracker()
         self.progress_store: ProgressStore = ProgressStore()
-        self.secret_store: EncryptedSecretStore = EncryptedSecretStore(data_dir / "secrets")
+        self.secret_store: SecretStore = settings.secrets
 
         # 依赖句柄
         self.ingest_manager: IngestManager | None = None
@@ -108,6 +111,10 @@ class AppInitializer:
     def config(self) -> Config:
         """对外暴露 typed config 门面（只读）。"""
         return self._config
+
+    @property
+    def settings(self) -> SettingsStore:
+        return self._settings
 
     @property
     def log_handler(self) -> Any | None:
@@ -136,8 +143,9 @@ class AppInitializer:
         from kacore.managers.r2_backup_manager import apply_pending_restore
 
         if await asyncio.to_thread(apply_pending_restore, self._data_dir, self._config):
-            self._config = Config(self._runtime_config.merged_with(self._raw_config))
-            logger.info("R2 pending restore 已应用，按恢复后的运行时配置继续初始化")
+            self._settings.reload()
+            self._config = Config(self._settings.to_config_raw())
+            logger.info("R2 pending restore 已应用，按恢复后的设置继续初始化")
 
         self._exit_stack = AsyncExitStack()
 
@@ -207,10 +215,23 @@ class AppInitializer:
 
         _stage_done("同步目标与编排层（managers/pipelines）")
 
-        # 4.5) 主 LLM：chat client 由模型路由提供；未配置时 LLMAdapter 走离线占位。
+        # 4.5) 三个 LLM 角色都经「模型分配」路由；未分配时 LLMAdapter 走离线占位。
+        # RoleClient 每次调用现取分配与密钥，改选模型 / 换密钥无需重启。
         from kacore.adapters.llm import LLMAdapter
 
-        llm_adapter = LLMAdapter(timeout_seconds=_ask_cfg.llm_timeout_seconds)
+        llm_adapter = LLMAdapter(
+            self.model_router.client_for("chat"), timeout_seconds=_ask_cfg.llm_timeout_seconds
+        )
+        research_llm_adapter = LLMAdapter(
+            self.model_router.client_for("research"),
+            timeout_seconds=_ask_cfg.llm_timeout_seconds,
+        )
+        logger.info(
+            "模型分配：chat=%s research=%s graph=%s",
+            self.model_router.describe("chat") or "未分配",
+            self.model_router.describe("research") or "跟随 chat",
+            self.model_router.describe("graph") or "跟随 chat",
+        )
 
         # 4.6) 构造共享 Embedding，并用真实探针维度装配 Milvus/LightRAG。
         vdb_cfg = self._config.get_vector_db_config()
@@ -389,40 +410,15 @@ class AppInitializer:
             else:
                 from kacore.lightrag_core import LightRAGCoreRegistry
 
-                # 图谱构建专用 LLM 选择：main 复用主 LLM；local/api 使用
-                # OpenAI-compatible endpoint，与答案生成 LLM 完全独立。
-                lightrag_llm_adapter = llm_adapter
-                if graph_cfg.lightrag_llm_provider in {"local", "api"}:
-                    if graph_cfg.lightrag_llm_base_url and graph_cfg.lightrag_llm_model:
-                        from kacore.adapters.llm import LMStudioLLMAdapter
-                        from kacore.config import ENV_LIGHTRAG_LLM_API_KEY
-
-                        lightrag_llm_adapter = LMStudioLLMAdapter(
-                            base_url=graph_cfg.lightrag_llm_base_url,
-                            model=graph_cfg.lightrag_llm_model,
-                            api_key=os.environ.get(ENV_LIGHTRAG_LLM_API_KEY, ""),
-                            timeout_seconds=graph_cfg.lightrag_llm_timeout_seconds,
-                            max_retries=graph_cfg.lightrag_llm_max_retries,
-                            retry_backoff_seconds=graph_cfg.lightrag_llm_retry_backoff_seconds,
-                        )
-                        logger.info(
-                            "LightRAG 图谱构建将使用 %s OpenAI-compatible LLM：%s  model=%s",
-                            graph_cfg.lightrag_llm_provider,
-                            graph_cfg.lightrag_llm_base_url,
-                            graph_cfg.lightrag_llm_model,
-                        )
-                    else:
-                        logger.warning(
-                            "graph.lightrag_llm_provider=%s 但 endpoint/model 未完整配置，"
-                            "LightRAG 图谱构建回退使用主 LLM。",
-                            graph_cfg.lightrag_llm_provider,
-                        )
-                        self._config.add_diagnostic(
-                            "LightRAG LLM provider is set but endpoint/model is incomplete; "
-                            "falling back to main LLM."
-                        )
-                else:
-                    logger.info("LightRAG 图谱构建将复用主 LLM。")
+                # 图谱构建慢且长：单次超时与重试由 graph 角色的客户端负责，外层不再限时。
+                lightrag_llm_adapter = LLMAdapter(
+                    self.model_router.client_for(
+                        "graph",
+                        timeout_sec=graph_cfg.lightrag_llm_timeout_seconds,
+                        max_retries=graph_cfg.lightrag_llm_max_retries,
+                    ),
+                    timeout_seconds=0,
+                )
 
                 self.lightrag_registry = LightRAGCoreRegistry(
                     config=graph_cfg,
@@ -479,25 +475,7 @@ class AppInitializer:
             max_candidates=rerank_cfg.max_candidates,
         )
         dt_cfg = self._config.get_deep_thinking_config()
-        # 深度思考优先使用独立 OpenAI-compatible endpoint（若已配置），
-        # 回退使用主 LLM adapter（未配置模型时走离线占位）。
-        if dt_cfg.llm_base_url and dt_cfg.llm_model:
-            from kacore.adapters.llm import LMStudioLLMAdapter
-            from kacore.config import ENV_DEEP_THINKING_LLM_API_KEY
-
-            dt_api_key = os.environ.get(ENV_DEEP_THINKING_LLM_API_KEY) or dt_cfg.llm_api_key
-            dt_llm_adapter = LMStudioLLMAdapter(
-                base_url=dt_cfg.llm_base_url,
-                model=dt_cfg.llm_model,
-                api_key=dt_api_key,
-            )
-            logger.info(
-                "深度思考将使用独立 OpenAI-compat LLM：%s  model=%s",
-                dt_cfg.llm_base_url,
-                dt_cfg.llm_model,
-            )
-        else:
-            dt_llm_adapter = llm_adapter
+        dt_llm_adapter = research_llm_adapter
         self.deep_thinking_orchestrator = DeepThinkingOrchestrator(
             retrieval_orchestrator=self.retrieval_orchestrator,
             reranker=self.reranker,
@@ -542,6 +520,7 @@ class AppInitializer:
             quiesce_indexes=self._quiesce_indexes_for_backup,
             reload_callback=self.reload,
             runtime_event_sink=self._log_handler,
+            settings=self._settings,
         )
 
         # 5) 业务门面（依赖已装配的仓储/managers）。
@@ -555,6 +534,8 @@ class AppInitializer:
             lightrag_registry=self.lightrag_registry,
             config=self._config,
             config_persist=self._persist_config_value,
+            settings_store=self._settings,
+            provider_registry=self.provider_registry,
             llm_adapter=llm_adapter,
             managed_documents_dir=self._data_dir / "library",
             vector_store=self.vector_store,
@@ -751,7 +732,13 @@ class AppInitializer:
             await self.vector_store.close()
 
     def _persist_config_value(self, section: str, key: str, value: object) -> None:
-        self._runtime_config.set_value(section, key, value)
+        """业务层按旧 (section, key) 写回的值（如 Notion 自动建库得到的 ID）落到对应设置键。"""
+        from kacore.settings.schema import SPECS_BY_TARGET
+
+        spec = SPECS_BY_TARGET.get((section, key))
+        if spec is None:
+            raise ValueError(f"runtime config key is not allowed: {section}.{key}")
+        self._settings.set(spec.key, value)
 
     async def _periodic_backup(self, interval_sec: int) -> None:
         """周期性触发 R2 同步备份任务的后台循环。"""
@@ -932,7 +919,8 @@ class AppInitializer:
         reload_started = time.monotonic()
         logger.info("AppInitializer.reload() 触发服务软重启")
         await self.teardown()
-        self._config = Config(self._runtime_config.merged_with(self._raw_config))
+        self._settings.reload()
+        self._config = Config(self._settings.to_config_raw())
         try:
             await self.initialize()
         except Exception:
@@ -944,7 +932,8 @@ class AppInitializer:
             from kacore.managers.r2_backup_manager import rollback_applied_restore
 
             if await asyncio.to_thread(rollback_applied_restore, self._data_dir):
-                self._config = Config(self._runtime_config.merged_with(self._raw_config))
+                self._settings.reload()
+                self._config = Config(self._settings.to_config_raw())
                 await self.initialize()
             raise
         logger.info(
