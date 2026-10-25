@@ -21,11 +21,14 @@ import {
   type SystemInfo,
 } from "@/lib/api";
 import {
+  checkUpdate,
   getShellPrefs,
   inDesktopShell,
+  installUpdate,
   openLogDir,
   pickFolder,
   setShellPref,
+  type UpdateInfo,
 } from "@/lib/backend";
 import { useI18n, type Lang } from "@/lib/i18n";
 import { useTheme } from "@/lib/theme";
@@ -40,6 +43,44 @@ import { PrefsSchemaFields, useSettingsHome } from "./PrefsSchemaFields";
 
 // ─── 通用 ──────────────────────────────────────────────────────
 
+function UpdateField() {
+  const { t } = useI18n();
+  const { toast } = useToast();
+  const [info, setInfo] = useState<UpdateInfo | null>(null);
+  const [busy, setBusy] = useState(false);
+  const check = async () => {
+    setBusy(true);
+    try {
+      const result = await checkUpdate();
+      setInfo(result);
+      if (result && result.enabled && !result.available) toast(t("update_latest"), "ok");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const hint = !info
+    ? ""
+    : !info.enabled
+      ? t("update_disabled")
+      : info.available
+        ? t("update_available", { version: info.version ?? "" })
+        : t("update_latest");
+  return (
+    <Field label={t("update_title")} hint={info ? `${t("update_current", { version: info.current_version })} · ${hint}` : undefined}>
+      <div style={{ display: "flex", gap: 6 }}>
+        <Button size="sm" variant="outline" loading={busy} onClick={() => void check()}>{t("update_check")}</Button>
+        {info?.available && (
+          <Button size="sm" variant="primary" onClick={() => void installUpdate().catch((err) => toast(String(err), "error"))}>
+            {t("update_install")}
+          </Button>
+        )}
+      </div>
+    </Field>
+  );
+}
+
 export function GeneralGroup() {
   const { t, setLang } = useI18n();
   const { items, reload } = useSettingsHome("prefs.general");
@@ -52,7 +93,9 @@ export function GeneralGroup() {
           if (key === "prefs.general.language" && (value === "zh" || value === "en")) setLang(value as Lang);
         }}
       />
-      {!inDesktopShell() && (
+      {inDesktopShell() ? (
+        <UpdateField />
+      ) : (
         <div style={{ fontSize: 11, color: "var(--fg-subtle)", paddingTop: 8 }}>{t("prefs_shell_only_hint")}</div>
       )}
     </Card>

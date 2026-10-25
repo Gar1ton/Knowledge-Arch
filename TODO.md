@@ -154,4 +154,21 @@
       HTTP 请求实现，不引入 HTTP 客户端依赖。
     - `KA_SIDECAR_PYTHON` 可指定别的解释器（排障 / 开发用）；debug 构建自动给后端加 `--dev-origin`。
     - 前端崩溃页日志框默认滚到最后。
-- [ ] P6 · 发布：Actions 三平台矩阵、签名与公证、updater、文档改写、v2.0.0（远端操作另行批准）。
+- [x] P6 · 发布：Actions 三平台矩阵、签名与公证、updater、文档改写、v2.0.0（远端操作另行批准）。
+  - [x] P6.1 `.github/workflows/desktop-release.yml`：macOS（arm64 / x64）、Windows、Linux 矩阵出包；签名 / 公证 /
+    updater 由仓库 secret 驱动，缺 secret 时产出未签名包（不生成、不伪造任何证书或密钥）。
+  - [x] P6.2 updater：Cargo feature `updater`（tauri-plugin-updater），启动时按 `prefs.general.check_updates` 检查，
+    界面提示安装并重启；发布配置脚本把公钥 / 端点写进 tauri.conf.json。
+  - [x] P6.3 macOS：资源里的 Mach-O 逐个签名（hardened runtime + entitlements），否则无法公证。
+  - [x] P6.4 版本 v2.0.0（`ka_server.APP_VERSION`、`tauri.conf.json`、`Cargo.toml`、两个 `package.json`）+ 一致性测试。
+  - [x] P6.5 按实际功能重写 README；`docs/RELEASE.md` 列出所需 secret 与发布步骤；CHANGELOG。
+  - [x] P6.6 Developer CI：前端 Node 22；新增 desktop 作业（`cargo fmt --check`、两套 feature 的 clippy、`cargo test`）。
+  - 验证：`pytest` 1292 passed / 4 skipped；ruff / mypy；前端 lint / tsc / build；`cargo fmt --check`、
+    `cargo clippy -D warnings`（默认与 `--features updater`）、`cargo test` 6 项；`test_release_config.py`
+    覆盖无 secret / 有 secret 两种配置与版本一致性；两份 workflow YAML 可解析。
+  - 未验证（需要仓库 secret 与远端 runner）：真实签名、公证、updater 端到端；三平台 CI 出包需在推送后手动触发确认。
+  - 落点调整：
+    - 空字符串的 secret 也会被 tauri CLI 当作「要签名 / 公证」，所以流水线只把非空 secret 导出到环境；公证需
+      Apple ID 三项齐全，否则只签名。
+    - macOS x64 用 `macos-15-intel` runner（`macos-13` 已退役）。
+    - 未启用 updater 的构建里，偏好设置 › 通用的「检查更新」显示「此版本未启用自动更新」。

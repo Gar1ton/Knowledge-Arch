@@ -1,0 +1,192 @@
+name: Desktop build
+
+# 三平台出包。手动触发（workflow_dispatch）只构建并上传产物；推送 v* 标签时额外创建草稿 Release
+# （含 updater 的 latest.json）。签名、公证与 updater 都由仓库 secret / variable 驱动：
+# 缺哪一项就跳过哪一步，产出未签名的包（见 docs/RELEASE.md）。本流水线不生成任何证书或密钥。
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (Apple Silicon)
+            os: macos-15
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+          - name: macOS (Intel)
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            bundles: app,dmg
+          - name: Windows
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: msi
+          - name: Linux
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: deb,appimage
+    runs-on: ${{ matrix.os }}
+    env:
+      # 有这几个值才启用对应能力（configure_release.py / macos_sign_resources.sh 据此判断）。
+      TAURI_UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+      # secret 不能直接写在步骤的 if 里，先折成布尔标志。
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
+      HAS_WINDOWS_CERT: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            web/frontend/package-lock.json
+            desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+
+      - name: Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev patchelf file
+
+      - name: Build frontend
+        working-directory: web/frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Bundle Python backend
+        run: python desktop/scripts/bundle_python.py
+
+      - name: Import Apple signing certificate
+        if: runner.os == 'macOS' && env.HAS_APPLE_CERT == 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/ka-signing.keychain-db"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
+          rm "$RUNNER_TEMP/cert.p12"
+
+      - name: Sign bundled Python (macOS)
+        if: runner.os == 'macOS' && env.HAS_APPLE_CERT == 'true'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: bash desktop/scripts/macos_sign_resources.sh
+
+      - name: Import Windows signing certificate
+        id: wincert
+        if: runner.os == 'Windows' && env.HAS_WINDOWS_CERT == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "cert.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $password = ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          Remove-Item $pfx
+          "WINDOWS_CERTIFICATE_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Configure release (updater / Windows signing)
+        id: release
+        run: python desktop/scripts/configure_release.py
+
+      # tauri CLI 把「环境变量存在」当作要签名 / 公证；空字符串也算存在，所以只导出非空的 secret。
+      - name: Export signing environment
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          UPDATER_ENABLED: ${{ steps.release.outputs.updater }}
+        run: |
+          export_var() {
+            local name="$1"
+            local value="${!name}"
+            if [[ -n "$value" ]]; then
+              { echo "$name<<KA_ENV_EOF"; echo "$value"; echo "KA_ENV_EOF"; } >> "$GITHUB_ENV"
+            fi
+          }
+          if [[ "$RUNNER_OS" == "macOS" && "$HAS_APPLE_CERT" == "true" ]]; then
+            export_var APPLE_SIGNING_IDENTITY
+            # 公证需要三项齐全，缺一项就只签名不公证。
+            if [[ -n "$APPLE_ID" && -n "$APPLE_PASSWORD" && -n "$APPLE_TEAM_ID" ]]; then
+              export_var APPLE_ID
+              export_var APPLE_PASSWORD
+              export_var APPLE_TEAM_ID
+            fi
+          fi
+          if [[ "$UPDATER_ENABLED" == "true" ]]; then
+            export_var TAURI_SIGNING_PRIVATE_KEY
+            export_var TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+          fi
+
+      - name: Install Tauri CLI
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build and (on tags) draft a release
+        id: tauri
+        uses: tauri-apps/tauri-action@v0
+        env:
+          # 签名 / 公证 / updater 私钥由上一步按需写入 GITHUB_ENV。
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: desktop
+          tauriScript: npx tauri
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} ${{ steps.release.outputs.features }}
+          tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+          releaseName: Knowledge Arch ${{ github.ref_name }}
+          releaseBody: 见 CHANGELOG.md。
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: ${{ steps.release.outputs.updater == 'true' }}
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: knowledge-arch-${{ matrix.target }}
+          path: desktop/src-tauri/target/${{ matrix.target }}/release/bundle/
+          if-no-files-found: error
+          retention-days: 14

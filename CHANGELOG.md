@@ -2,6 +2,35 @@
 
 > 插件时代（v0.x – v1.2.0）的变更记录完整保留在本仓库首个提交 `89b251a` 中（`git show 89b251a:CHANGELOG.md`），不再随 v2 维护。
 
+## [v2.0.0] — 2026-10-25
+
+### 新增 (Added) — P6 发布
+
+- **`.github/workflows/desktop-release.yml`**：macOS（Apple Silicon / Intel）、Windows（`.msi`）、Linux（`.deb` /
+  `.AppImage`）矩阵出包；手动触发只上传 artifact，推送 `v*` 标签时创建草稿 Release。签名、公证、updater 全由仓库
+  secret / variable 驱动，缺哪项跳过哪步，产出未签名包；只把非空 secret 导出给 tauri CLI。
+- **自动更新**：`desktop/src-tauri/src/updater.rs`（Cargo feature `updater`，tauri-plugin-updater）提供
+  `check_update` / `install_update` 命令，`prefs.general.check_updates` 开启时启动 10 秒后检查，有新版本发
+  `update://available` 事件并弹系统通知；前端 `UpdateBanner`（顶部横幅「安装并重启」）与偏好设置 › 通用的检查更新项。
+- **`desktop/scripts/configure_release.py`**：CI 中按 `TAURI_UPDATER_PUBKEY`、`WINDOWS_CERTIFICATE_THUMBPRINT`
+  补全 `tauri.conf.json`（updater 公钥与端点、`createUpdaterArtifacts`、Windows 签名）并输出构建 feature。
+- **macOS 公证准备**：`desktop/src-tauri/entitlements.plist`、hardened runtime；`desktop/scripts/macos_sign_resources.sh`
+  在打包前逐个签名内置 Python 的 Mach-O。
+- **`docs/RELEASE.md`**：产物矩阵、所需 secret / variable 清单、发版步骤。
+
+### 改进 (Changed)
+
+- 版本统一为 2.0.0：`ka_server/__init__.py`、`desktop/src-tauri/tauri.conf.json`、`Cargo.toml`、
+  `desktop/package.json`、`web/frontend/package.json`。
+- **README 按实际功能重写**：安装、首次启动（欢迎页 / 导入旧版插件数据）、数据流节点、偏好设置、可选组件、数据位置、开发。
+- `.github/workflows/tests.yml`：前端改用 Node 22；新增 desktop 作业（rustfmt、默认与 `updater` feature 的 clippy、
+  `cargo test`）。
+
+### 测试 (Tests)
+
+- `tests/backend/test_release_config.py`：无 secret 时不改配置；有公钥 / 指纹时写入 updater 与 Windows 签名；
+  五处版本号一致。
+
 ## [v2.0.0-dev.5] — 2026-10-25
 
 ### 新增 (Added) — P5 桌面壳

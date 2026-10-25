@@ -159,3 +159,25 @@ export async function getShellPrefs(): Promise<Record<string, unknown>> {
   if (!inDesktopShell()) return {};
   return invokeShell<Record<string, unknown>>("get_shell_prefs");
 }
+
+// ─── 自动更新（桌面壳 Cargo feature `updater`；未启用时 enabled=false）──────────
+
+export const UPDATE_AVAILABLE_EVENT = "update://available";
+
+export type UpdateInfo = {
+  enabled: boolean;
+  available: boolean;
+  current_version: string;
+  version?: string | null;
+  notes?: string | null;
+};
+
+export async function checkUpdate(): Promise<UpdateInfo | null> {
+  if (!inDesktopShell()) return null;
+  return invokeShell<UpdateInfo>("check_update");
+}
+
+/** 下载、校验签名并安装；成功后壳会重启应用（本调用通常不会返回）。 */
+export async function installUpdate(): Promise<void> {
+  await invokeShell<void>("install_update");
+}

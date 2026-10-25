@@ -1,7 +1,7 @@
 {
   "name": "knowledge-arch-desktop",
   "private": true,
-  "version": "2.0.0-dev",
+  "version": "2.0.0",
   "scripts": {
     "tauri": "tauri",
     "icons": "tauri icon ../logo.svg --output src-tauri/icons && rm -rf src-tauri/icons/android src-tauri/icons/ios",

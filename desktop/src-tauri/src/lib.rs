@@ -5,10 +5,11 @@
 //!
 //! 前端可调用的命令（与 web/frontend/lib/backend.ts 一一对应）：
 //! backend_info / backend_state / restart_backend / pick_folder / open_log_dir / notify /
-//! set_shell_pref / get_shell_prefs。
+//! set_shell_pref / get_shell_prefs / check_update / install_update。
 
 mod prefs;
 mod sidecar;
+mod updater;
 
 use prefs::ShellPrefs;
 use sidecar::{BackendInfo, BackendState, LaunchSpec, Sidecar};
@@ -267,7 +268,7 @@ fn handle_menu_event(app: &AppHandle, id: &str) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // 单实例必须最先注册：第二个实例只把已有窗口带到前台，然后退出。
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             show_main(app)
@@ -278,12 +279,18 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             None,
-        ))
+        ));
+    #[cfg(feature = "updater")]
+    let builder = builder.plugin(updater::plugin());
+    let app = builder
         .setup(|app| {
             let handle = app.handle().clone();
             let prefs = ShellPrefs::load();
             let sidecar = Sidecar::new(handle.clone(), launch_spec(&handle, &prefs));
             sidecar.start();
+            if prefs.check_updates {
+                updater::spawn_startup_check(handle.clone());
+            }
             app.manage(ShellState {
                 prefs: Mutex::new(prefs),
                 sidecar,
@@ -318,6 +325,8 @@ pub fn run() {
             notify,
             set_shell_pref,
             get_shell_prefs,
+            updater::check_update,
+            updater::install_update,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build the Knowledge Arch shell");

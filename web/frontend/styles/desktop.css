@@ -229,3 +229,17 @@
 }
 
 .flow-consequence-tag.is-rebuild { color: var(--flow-st-warn, var(--warn)); }
+
+.ka-update-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 var(--panel-gap) 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  color: var(--fg);
+  font-size: 12.5px;
+}
+.ka-update-banner > span { flex: 1; }

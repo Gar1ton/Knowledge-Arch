@@ -1,6 +1,6 @@
 [package]
 name = "knowledge-arch"
-version = "2.0.0-dev"
+version = "2.0.0"
 description = "Knowledge Arch desktop shell"
 authors = ["Knowledge Arch"]
 license = "AGPL-3.0-only"
@@ -25,6 +25,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 getrandom = "0.2"
 dirs = "6"
+tauri-plugin-updater = { version = "2", optional = true }
+
+[features]
+# 自动更新：需要在 tauri.conf.json 里配置 updater 公钥与端点（发布流水线由
+# desktop/scripts/configure_release.py 写入）。本地构建默认不启用。
+updater = ["dep:tauri-plugin-updater"]
 
 [profile.release]
 codegen-units = 1
