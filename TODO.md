@@ -103,7 +103,33 @@
       组合根新增 `initialize_or_rollback()`（软重启与进程首启共用）。
     - HTTP 新路由放在 `web/desktop_routes.py`（`web/server.py` 已超红线，不再往里加）。
     - 服务重启的提示文案由「插件」改为「服务」（P4 的一部分，后端消息先改）。
-- [ ] P4 · 前端：`backend.ts` 与 token；`NodePanel` 与 4 个新节点；`PreferencesWindow`；
+- [x] P4 · 前端：`backend.ts` 与 token；`NodePanel` 与 4 个新节点；`PreferencesWindow`；
   删除 `LoginScreen` 与旧宿主配置弹窗。
+  - [x] P4.1 `lib/backend.ts`：壳里 `invoke("backend_info")` 取 `{base_url, token}`（`backend://ready` 后丢弃缓存），
+    开发期走 `/api/*` 代理 + `NEXT_PUBLIC_KA_TOKEN`；所有请求 Bearer，下载 / PDF.js 用 `?access_token=`；
+    删除 `LoginScreen`、cookie 与 `/api/auth|login|logout` 客户端。
+  - [x] P4.2 `components/flow/NodePanel.tsx`（schema 驱动、PATCH 写入、按 consequence 提示）+ `SettingInput`
+    （含 secret 后 4 位、model_ref 连接 + 模型两级选择）；`model.ts` 新增模型供应商 / 模型分配 / Notion / R2 节点，
+    原 sync 节点拆成 Notion 与 R2（操作区迁自旧设置弹窗）；`ProvidersPanel`（测试连接、获取模型列表、增删改）。
+    后端能力快照同步新增 `models` / `providers` / `notion` / `r2` 四个环节、删除 `sync`。
+  - [x] P4.3 `PreferencesWindow` 六组（通用 / 外观 / 存储 / 本地模型 / 组件 / 诊断），替代 SettingModal；
+    ModelsModal 并入「本地模型」，WorkflowModal 改为主窗口「数据流」页；`set_*` 文案 80 项（zh / en）；
+    界面「重启插件」统一为「重启服务」。
+  - [x] P4.4 欢迎页（导入旧版插件数据 / 从空库开始）与崩溃页（最后几行日志、重启服务、打开日志目录）；
+    后台任务完成在窗口不在前台时发系统通知。
+  - [x] P4.5 测试 + CHANGELOG。
+  - 验证：全量 1286 passed / 4 skipped；ruff、mypy、前端 lint / tsc / build 通过；新增
+    `test_settings_i18n.py`（每个 SettingSpec 标签都有 zh / en）。浏览器冒烟（真实后端 + next dev，Playwright）：
+    欢迎页 → 从空库开始 → 数据流 11 个节点 → 添加连接（密钥显示 ••••1234、测试连接报「连接被拒绝」）→
+    模型分配选连接 + 填模型名保存后节点转绿 → Notion token 保存后显示 ••••9876 → 偏好设置各组；
+    欢迎页导入一份构造的旧版数据，服务自动重启换入，结果页列出需要确认的事项。
+  - 落点调整：
+    - 新文案集中在 `lib/i18nDesktop.ts`（`lib/i18n.ts` 已超红线），合并进 zh / en 表。
+    - Zotero 节点保留专用面板（访问方式切换、密钥两段式换号、探针），保存时把旧「段.键」映射到 `flow.zotero.*`；
+      其余节点全部由 schema 渲染。
+    - 偏好设置里 owner=shell 的项同时写后端与壳（`set_shell_pref`）；数据目录只交给壳保存（重启应用生效）。
+      owner=frontend 的语言 / 明暗 / 配色以 settings.json 为准，后端就绪后同步到本机界面。
+    - 前端不再调用 `/api/config/update`；后端路由暂留，因为外部 agent skill 仍依赖它（见下方待决项）。
+    - 删除无引用的 `Rail.tsx`、`PerfPanel.tsx`、`NotionSyncStatus.tsx`。
 - [ ] P5 · 桌面壳：Tauri 工程、sidecar、单实例、原生对话框、托盘、Python 打包脚本；本地出包。
 - [ ] P6 · 发布：Actions 三平台矩阵、签名与公证、updater、文档改写、v2.0.0（远端操作另行批准）。

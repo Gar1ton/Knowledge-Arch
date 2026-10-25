@@ -6,7 +6,8 @@
   provider=external + 连接的 base_url + 模型名 + 连接密钥。指纹载荷（provider/model/base_url）
   与插件版一致，换存储不会让既有索引被判为不兼容。
 - models：各角色的「连接:模型」标签，只用于状态展示。
-- notion：token（P3 的 REST 客户端读取）。
+- notion：token（REST 客户端现取，这里只用于数据流节点的就绪判断）。
+- providers：连接数量（数据流「模型供应商」节点的状态）。
 """
 
 from __future__ import annotations
@@ -86,6 +87,7 @@ def settings_to_config_raw(store: SettingsStore) -> dict[str, Any]:
     graph_profile = profiles.get(graph_ref.provider_id) if graph_ref else None
     models["graph_is_local"] = bool(graph_profile and _is_local_url(graph_profile.base_url))
     raw["models"] = models
+    raw["providers"] = {"count": len(profiles)}
     raw.setdefault("notion_sync", {})["token"] = store.get("flow.notion.token")
     return raw
 

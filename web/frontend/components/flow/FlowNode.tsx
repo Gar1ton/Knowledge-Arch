@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import type { DependencyStatus, PipelineStage } from "@/lib/api";
 import type { FlowConfigSnapshot, QuickConfigDirty, QuickConfigHandle, QuickConfigUpdate } from "./QuickConfigPanel";
+import type { Provider, ProviderPreset, SettingItem } from "@/lib/settingsApi";
 import type { I18nKey, Lang, TFunc } from "@/lib/i18n";
 import {
   backendLabel,
@@ -159,6 +160,10 @@ export function FlowNode({
   onEditingChange,
   onSelect,
   config,
+  settingsItems,
+  providers,
+  presets,
+  onNotify,
   onSwitch,
   onQuickConfigSave,
   onRefresh,
@@ -179,6 +184,10 @@ export function FlowNode({
   restartPending: boolean;
   selected: boolean;
   config: FlowConfigSnapshot;
+  settingsItems: SettingItem[];
+  providers: Provider[];
+  presets: ProviderPreset[];
+  onNotify: (message: string, kind: "ok" | "error" | "info") => void;
   onEditingChange?: (stageId: string, editing: boolean) => void;
   onSelect: () => void;
   onSwitch: (stage: PipelineStage, value: string) => void;
@@ -312,6 +321,11 @@ export function FlowNode({
           ref={panelRef}
           stage={stage}
           config={config}
+          settingsItems={settingsItems}
+          providers={providers}
+          presets={presets}
+          hiddenKeys={SWITCH_MAP[id] ? [SWITCH_MAP[id]!.key] : []}
+          onNotify={onNotify}
           lang={lang}
           t={t}
           saving={saving}

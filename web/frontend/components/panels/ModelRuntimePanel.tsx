@@ -21,7 +21,7 @@ const STATE_TONE: Record<string, "ok" | "warn" | "danger" | "neutral"> = {
  * 显存与模型驻留状态的拉取与卸载动作。
  *
  * 单列成 hook 是因为「全部卸载」按钮按 DS 惯例属于 Modal 的 footer，而正文在 body——
- * 两处需要同一份 runtime/busy 状态，状态因此必须由 ModelsModal 持有。
+ * 两处需要同一份 runtime/busy 状态，状态因此由「偏好设置 › 本地模型」分组持有。
  */
 export function useModelRuntime() {
   const { t } = useI18n();

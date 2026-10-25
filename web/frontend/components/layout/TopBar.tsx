@@ -11,7 +11,7 @@ import { deriveModelStatus, type ModelStatus } from "@/lib/modelHealth";
 import { Z } from "@/lib/zLayers";
 
 export function TopBar() {
-  const { setSettingOpen, setWorkflowOpen, setModelsOpen } = useConsole();
+  const { view, setView, openPrefs } = useConsole();
   const { t } = useI18n();
   const [wfStatus, setWfStatus] = useState<WorkflowStatus>("red");
   const [modelStatus, setModelStatus] = useState<ModelStatus>("green");
@@ -97,38 +97,52 @@ export function TopBar() {
         Knowledge Arch
       </span>
 
+      {/* 主窗口页面：工作台 / 数据流（数据流按钮保留健康呼吸光效）。 */}
+      <span style={{ display: "flex", gap: 4, marginLeft: 12 }}>
+        <Button
+          variant="tab"
+          size="sm"
+          active={view === "workspace"}
+          style={{ height: 30, gap: 6 }}
+          onClick={() => setView("workspace")}
+        >
+          <Icon name="book" size={14} /> {t("topbar_workspace")}
+        </Button>
+        <span className={`wf-pulse-${wfStatus}`}>
+          <Button
+            variant="tab"
+            size="sm"
+            active={view === "flow"}
+            style={{ height: 30, gap: 6 }}
+            onClick={() => setView("flow")}
+          >
+            <Icon name="flow" size={14} /> {t("topbar_workflow")}
+          </Button>
+        </span>
+      </span>
+
       <span style={{ flex: 1 }} />
 
-      {/* Modal trigger buttons */}
-      <Button
-        variant="tab"
-        size="sm"
-        style={{ height: 30, gap: 6 }}
-        onClick={() => setSettingOpen(true)}
-      >
-        <Icon name="settings" size={14} /> {t("topbar_settings")}
-      </Button>
       {/* 显存/模型驻留：与数据流共用 wf-pulse-* 呼吸光效，语义为「绿=已让出显存」。 */}
       <span className={`wf-pulse-${modelStatus}`}>
         <Button
           variant="tab"
           size="sm"
           style={{ height: 30, gap: 6 }}
-          onClick={() => setModelsOpen(true)}
+          onClick={() => openPrefs("local_models")}
         >
           <Icon name="chip" size={14} /> {t("topbar_models")}
         </Button>
       </span>
-      <span className={`wf-pulse-${wfStatus}`}>
-        <Button
-          variant="tab"
-          size="sm"
-          style={{ height: 30, gap: 6 }}
-          onClick={() => setWorkflowOpen(true)}
-        >
-          <Icon name="flow" size={14} /> {t("topbar_workflow")}
-        </Button>
-      </span>
+      <Button
+        variant="tab"
+        size="sm"
+        style={{ height: 30, gap: 6 }}
+        title={t("prefs_shortcut_hint")}
+        onClick={() => openPrefs("general")}
+      >
+        <Icon name="settings" size={14} /> {t("topbar_preferences")}
+      </Button>
     </div>
   );
 }

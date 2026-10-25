@@ -2,8 +2,8 @@ import type { CapabilitiesData, PipelineStage } from "@/lib/api";
 
 export type WorkflowStatus = "red" | "green" | "purple";
 
-const CORE_STAGE_IDS = new Set(["ingest", "embedding", "vector_store", "retrieval", "ask"]);
-const OPTIONAL_STAGE_IDS = new Set(["zotero", "graph", "sync"]);
+const CORE_STAGE_IDS = new Set(["ingest", "embedding", "vector_store", "retrieval", "ask", "models"]);
+const OPTIONAL_STAGE_IDS = new Set(["zotero", "graph", "notion", "r2"]);
 
 export function deriveWorkflowStatus(caps: CapabilitiesData | null | undefined): WorkflowStatus {
   if (!caps) return "red";
@@ -20,8 +20,7 @@ export function deriveWorkflowStatus(caps: CapabilitiesData | null | undefined):
   if (!coreReady || optionalBroken) return "red";
 
   const zotero = stages.get("zotero");
-  const sync = stages.get("sync");
-  if (isReadyEnabled(zotero) || sync?.detail?.r2_enabled === true) return "purple";
+  if (isReadyEnabled(zotero) || isReadyEnabled(stages.get("r2"))) return "purple";
   return "green";
 }
 

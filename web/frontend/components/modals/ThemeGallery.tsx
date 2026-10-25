@@ -21,7 +21,7 @@ const THEME_LABEL_KEY: Record<ThemeName, I18nKey> = {
   folio: "settings_theme_folio",
 };
 
-export function ThemeGallery() {
+export function ThemeGallery({ onChange }: { onChange?: (name: ThemeName) => void } = {}) {
   const [current, setCurrent] = useState<ThemeName>(() => getColorTheme());
 
   return (
@@ -41,6 +41,7 @@ export function ThemeGallery() {
           onSelect={() => {
             setColorTheme(name);
             setCurrent(name);
+            onChange?.(name);
           }}
         />
       ))}

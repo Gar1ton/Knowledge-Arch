@@ -21,6 +21,7 @@ import { I18nContext } from "@/lib/i18n";
 import { useConsole } from "@/lib/ConsoleContext";
 import { Z } from "@/lib/zLayers";
 import { useToast } from "@/components/ui/Toast";
+import { notifyDesktop } from "@/lib/backend";
 
 // ─── 归一化模型 ───────────────────────────────────────────────
 
@@ -53,6 +54,13 @@ function pctOf(percent: number | null | undefined): number | null {
 function useProgressJobs(): DockJob[] {
   const { t } = useContext(I18nContext);
   const { toast } = useToast();
+  // 后台任务的完成 / 失败提示：窗口内用 toast；窗口不在前台时另发系统通知（桌面壳）。
+  const announce = useCallback((message: string, kind: "ok" | "error" | "info") => {
+    toast(message, kind);
+    if (typeof document !== "undefined" && (document.hidden || !document.hasFocus())) {
+      void notifyDesktop("Knowledge Arch", message);
+    }
+  }, [toast]);
   const [jobs, setJobs] = useState<DockJob[]>([]);
   const anyActiveRef = useRef(false);
   const notifiedZoteroRef = useRef<Set<string>>(new Set());
@@ -90,11 +98,11 @@ function useProgressJobs(): DockJob[] {
         const notifyKey = `${zotero.job_id}:${zotero.status}`;
         if (!notifiedZoteroRef.current.has(notifyKey)) {
           notifiedZoteroRef.current.add(notifyKey);
-          if (zotero.status === "success") toast(t("zotero_sync_done"), "ok");
+          if (zotero.status === "success") announce(t("zotero_sync_done"), "ok");
           else if (zotero.status === "partial_failure") {
-            toast(zotero.recent_error || t("zotero_sync_partial"), "error");
+            announce(zotero.recent_error || t("zotero_sync_partial"), "error");
           } else if (zotero.status === "error") {
-            toast(zotero.recent_error || t("zotero_sync_failed"), "error");
+            announce(zotero.recent_error || t("zotero_sync_failed"), "error");
           }
         }
       }
@@ -122,11 +130,11 @@ function useProgressJobs(): DockJob[] {
         const notifyKey = `${notion.job_id}:${notion.status}`;
         if (!notifiedNotionRef.current.has(notifyKey)) {
           notifiedNotionRef.current.add(notifyKey);
-          if (notion.status === "success") toast(t("notion_sync_done"), "ok");
+          if (notion.status === "success") announce(t("notion_sync_done"), "ok");
           else if (notion.status === "partial_failure") {
-            toast(notion.recent_error || t("notion_sync_partial"), "error");
+            announce(notion.recent_error || t("notion_sync_partial"), "error");
           } else if (notion.status === "error") {
-            toast(notion.recent_error || t("notion_sync_failed"), "error");
+            announce(notion.recent_error || t("notion_sync_failed"), "error");
           }
         }
       }
@@ -212,7 +220,7 @@ function useProgressJobs(): DockJob[] {
 
     anyActiveRef.current = next.some((j) => j.active);
     setJobs(next);
-  }, [t, toast]);
+  }, [announce, t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -241,7 +249,7 @@ function useProgressJobs(): DockJob[] {
 
 export function ProgressDock() {
   const { t } = useContext(I18nContext);
-  const { setWorkflowOpen } = useConsole();
+  const { setView } = useConsole();
   const jobs = useProgressJobs();
   const [collapsed, setCollapsed] = useState(false);
 
@@ -291,7 +299,7 @@ export function ProgressDock() {
       {/* rows */}
       {!collapsed &&
         jobs.map((job) => (
-          <ProgressRow key={job.key} job={job} onGotoGraph={() => setWorkflowOpen(true)} />
+          <ProgressRow key={job.key} job={job} onGotoGraph={() => setView("flow")} />
         ))}
 
       <style>{`

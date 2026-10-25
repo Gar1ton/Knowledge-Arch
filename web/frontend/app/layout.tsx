@@ -26,7 +26,7 @@ const bitcount = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "Knowledge Arch · 控制台",
+  title: "Knowledge Arch",
   description: "Knowledge Arch 本地知识库",
 };
 

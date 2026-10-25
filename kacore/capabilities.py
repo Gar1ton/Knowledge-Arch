@@ -498,31 +498,90 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
         },
     }
 
-    # ⑦ 同步：R2 需 boto3 + 凭证；Notion 经 REST API（token 在节点填写）。启用开关需重启。
-    if not (r2_cfg.enabled or notion_cfg.enabled):
-        sync_status = STATUS_OFF
-    elif (r2_cfg.enabled and not has_boto3) or (
-        r2_cfg.enabled and not (r2_cfg.account_id and r2_cfg.secret_access_key and r2_cfg.bucket)
-    ):
-        sync_status = STATUS_DEGRADED
-    else:
-        sync_status = STATUS_READY
-    sync = {
-        "id": "sync",
-        "current": "on" if (r2_cfg.enabled or notion_cfg.enabled) else "off",
-        "candidates": ["on", "off"],
-        "status": sync_status,
-        "switchable": True,
-        "consequence": CONSEQUENCE_RESTART,
-        "required_deps": ["r2"] if r2_cfg.enabled else [],
-        "configured": r2_cfg.enabled or notion_cfg.enabled,
+    # ⑦ 模型分配：chat 未分配时问答走离线占位（只回摘录），research / graph 为空跟随 chat。
+    models_stage = {
+        "id": "models",
+        "current": models.chat or "unassigned",
+        "candidates": [],
+        "status": STATUS_READY if models.chat else STATUS_DEGRADED,
+        "switchable": False,
+        "consequence": CONSEQUENCE_NONE,
+        "required_deps": [],
+        "configured": bool(models.chat),
         "detail": {
-            "r2_enabled": r2_cfg.enabled,
-            "notion_enabled": notion_cfg.enabled,
+            "chat": models.chat,
+            "research": models.research or models.chat,
+            "graph": models.graph or models.chat,
+            "research_follows_chat": not models.research,
+            "graph_follows_chat": not models.graph,
         },
     }
 
-    return [zotero, ingest, embedding, vector_store, retrieval, graph, ask, sync]
+    # ⑧ 模型供应商：连接列表（地址 + 密钥）；没有任何连接时问答与图谱都无模型可用。
+    provider_info = config.raw.get("providers")
+    provider_count = int(provider_info.get("count") or 0) if isinstance(provider_info, dict) else 0
+    providers_stage = {
+        "id": "providers",
+        "current": str(provider_count),
+        "candidates": [],
+        "status": STATUS_READY if provider_count else STATUS_DEGRADED,
+        "switchable": False,
+        "consequence": CONSEQUENCE_NONE,
+        "required_deps": [],
+        "configured": provider_count > 0,
+        "detail": {"count": provider_count},
+    }
+
+    # ⑨ Notion：REST API，需 token + 目标库（或建库用的父页面）。启用开关需重启。
+    notion_raw = config.raw.get("notion_sync")
+    notion_token = isinstance(notion_raw, dict) and bool(str(notion_raw.get("token") or "").strip())
+    notion_target = bool(notion_cfg.database_id or notion_cfg.parent_page_id)
+    if not notion_cfg.enabled:
+        notion_status = STATUS_OFF
+    elif notion_token and notion_target:
+        notion_status = STATUS_READY
+    else:
+        notion_status = STATUS_DEGRADED
+    notion = {
+        "id": "notion",
+        "current": "on" if notion_cfg.enabled else "off",
+        "candidates": ["on", "off"],
+        "status": notion_status,
+        "switchable": True,
+        "consequence": CONSEQUENCE_RESTART,
+        "required_deps": [],
+        "configured": notion_cfg.enabled,
+        "detail": {
+            "token_present": notion_token,
+            "database_ready": bool(notion_cfg.database_id and notion_cfg.qa_database_id),
+            "sync_mode": notion_cfg.sync_mode,
+        },
+    }
+
+    # ⑩ R2 备份：需 boto3（组件）+ 账号 / 密钥 / bucket。启用开关需重启。
+    r2_credentials = bool(r2_cfg.account_id and r2_cfg.secret_access_key and r2_cfg.bucket)
+    if not r2_cfg.enabled:
+        r2_status = STATUS_OFF
+    elif has_boto3 and r2_credentials:
+        r2_status = STATUS_READY
+    else:
+        r2_status = STATUS_DEGRADED
+    r2 = {
+        "id": "r2",
+        "current": "on" if r2_cfg.enabled else "off",
+        "candidates": ["on", "off"],
+        "status": r2_status,
+        "switchable": True,
+        "consequence": CONSEQUENCE_RESTART,
+        "required_deps": ["r2"] if r2_cfg.enabled else [],
+        "configured": r2_cfg.enabled,
+        "detail": {"credentials_present": r2_credentials, "bucket": r2_cfg.bucket},
+    }
+
+    return [
+        zotero, ingest, embedding, vector_store, retrieval, graph, ask,
+        models_stage, providers_stage, notion, r2,
+    ]
 
 
 def detect_capabilities(config: Config) -> dict[str, Any]:

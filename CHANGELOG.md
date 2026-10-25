@@ -2,6 +2,49 @@
 
 > 插件时代（v0.x – v1.2.0）的变更记录完整保留在本仓库首个提交 `89b251a` 中（`git show 89b251a:CHANGELOG.md`），不再随 v2 维护。
 
+## [v2.0.0-dev.4] — 2026-10-25
+
+### 新增 (Added) — P4 前端
+
+- **`web/frontend/lib/backend.ts`**：后端地址与 token 的唯一来源。桌面壳里 `invoke("backend_info")`，
+  `backend://ready` / `backend://exited` 事件刷新缓存；开发期走 `/api/*` 代理 + `NEXT_PUBLIC_KA_TOKEN`。
+  所有请求带 `Authorization: Bearer`，下载与 PDF.js 用 `?access_token=`。另封装壳命令：`backend_state`、
+  `restart_backend`、`pick_folder`、`open_log_dir`、`notify`、`set_shell_pref` / `get_shell_prefs`（P5 实现）。
+- **`lib/settingsApi.ts`**：设置 schema / PATCH、连接 CRUD / 测试 / 模型列表、组件安装 / 卸载、旧数据导入的客户端。
+- **数据流节点面板**：`components/flow/NodePanel.tsx` 按 `GET /api/settings/schema?home=flow.<node>` 渲染，
+  basic 项在节点内、advanced 项进「高级」折叠，`PATCH /api/settings` 写入后按 consequence 提示重启服务 / 重建；
+  `components/settings/SettingInput.tsx` 覆盖 9 种 kind（secret 只显示后 4 位，留空不改、可清除；model_ref 为
+  「连接 + 模型」两级选择，research / graph 可选「跟随对话模型」）。新增节点：模型供应商（`ProvidersPanel`：
+  预设、增删改、测试连接、获取模型列表、被引用时禁删）、模型分配、Notion、R2（`SyncActions.tsx`：初始化 / 立即推送 /
+  账本状态；立即备份 / 强制全量 / 恢复）。
+- **`components/prefs/PreferencesWindow.tsx`**：通用、外观、存储、本地模型、组件、诊断六组；菜单 Preferences… 与
+  ⌘, / Ctrl+, 打开。组件页显示各组件安装状态与大小，可安装 / 卸载并提示重启服务；诊断页含日志、运行环境、重启服务、
+  打开日志目录。
+- **欢迎页 / 崩溃页**：`components/desktop/WelcomeScreen.tsx`（空库首启：导入旧版插件数据——选目录、预览、导入进度、
+  结果与「需要你确认」事项——或从空库开始）；`BackendGate.tsx` + `CrashScreen.tsx`（启动失败或后端退出时显示最后几行日志，
+  可重启服务、打开日志目录）。
+- 后台任务完成 / 失败时，窗口不在前台则发系统通知（`ProgressDock`）。
+- `lib/i18nDesktop.ts`：新增界面文案与全部 80 个 `set_*` 设置项标签（zh / en）。
+
+### 改进 (Changed)
+
+- 主窗口：顶栏「工作台 / 数据流」两页切换（原 WorkflowModal 改为页面），「显存」按钮打开偏好设置 › 本地模型。
+- 后端能力快照新增 `models`、`providers`、`notion`、`r2` 四个环节，删除合并的 `sync`；设置桥额外给出连接数量。
+- 数据流节点头部开关改写设置键（`flow.*.enabled` / `flow.vector_store.backend`）；Zotero 面板的保存映射到 `flow.zotero.*`。
+- 界面文案「重启插件」统一为「重启服务」，去掉「插件配置 / 环境变量配置密钥」等过时说法；窗口标题改为 Knowledge Arch。
+- 开发期代理改用 `KA_API_HOST` / `KA_API_PORT`；`dev/README.md`、`web/frontend/README.md` 按 token 化后端改写。
+- 新增依赖 `@tauri-apps/api`。
+
+### 移除 (Removed)
+
+- `LoginScreen`（及样式）、`SettingModal`、`WorkflowModal`、`ModelsModal`、无引用的 `Rail` / `PerfPanel` / `NotionSyncStatus`；
+  前端的登录 / 注销 / cookie 逻辑与 `updateConfigValue`（`/api/config/update` 客户端）。
+
+### 测试 (Tests)
+
+- 新增 `test_settings_i18n.py`；`test_capabilities.py` 改测四个新环节。全量 1286 passed / 4 skipped；前端 lint / tsc / build 通过；
+  Playwright 冒烟覆盖欢迎页、数据流 11 节点、连接增删测、模型分配、Notion token、偏好设置与旧数据导入。
+
 ## [v2.0.0-dev.3] — 2026-10-25
 
 ### 新增 (Added) — P3 外部能力

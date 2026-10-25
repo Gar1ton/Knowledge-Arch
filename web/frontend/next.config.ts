@@ -16,8 +16,8 @@ const nextConfig: NextConfig = {
     ? {
         allowedDevOrigins: ["127.0.0.1", "localhost"],
         async rewrites() {
-          const host = process.env.KR_API_HOST ?? "127.0.0.1";
-          const port = process.env.KR_API_PORT ?? "26618";
+          const host = process.env.KA_API_HOST ?? "127.0.0.1";
+          const port = process.env.KA_API_PORT ?? "26618";
           return [
             {
               source: "/api/:path*",

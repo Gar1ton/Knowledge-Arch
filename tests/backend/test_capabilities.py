@@ -77,7 +77,8 @@ def test_pipeline_has_ordered_stages_with_zotero_first(monkeypatch: pytest.Monke
     )
     ids = [s["id"] for s in detect_pipeline(_cfg(dim=384))]
     assert ids == [
-        "zotero", "ingest", "embedding", "vector_store", "retrieval", "graph", "ask", "sync"
+        "zotero", "ingest", "embedding", "vector_store", "retrieval", "graph", "ask",
+        "models", "providers", "notion", "r2",
     ]
 
 
@@ -177,10 +178,43 @@ def test_graph_degraded_when_enabled_without_dependency(monkeypatch: pytest.Monk
     assert graph["status"] == STATUS_DEGRADED
 
 
-def test_sync_off_when_no_target_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_notion_and_r2_off_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_modules(monkeypatch, {"sentence_transformers"})
-    sync = _stage(detect_pipeline(_cfg(dim=384)), "sync")
-    assert sync["status"] == STATUS_OFF
+    pipeline = detect_pipeline(_cfg(dim=384))
+    assert _stage(pipeline, "notion")["status"] == STATUS_OFF
+    assert _stage(pipeline, "r2")["status"] == STATUS_OFF
+
+
+def test_notion_needs_token_and_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_modules(monkeypatch, set())
+    enabled = {"notion_sync": {"enabled": True, "database_id": "db"}}
+    assert _stage(detect_pipeline(_cfg(enabled, dim=384)), "notion")["status"] == STATUS_DEGRADED
+    with_token = {"notion_sync": {"enabled": True, "database_id": "db", "token": "secret_x"}}
+    assert _stage(detect_pipeline(_cfg(with_token, dim=384)), "notion")["status"] == STATUS_READY
+
+
+def test_r2_needs_component_and_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    creds = {"r2_sync": {"enabled": True, "account_id": "a", "secret_access_key": "s",
+                         "bucket": "b"}}
+    _patch_modules(monkeypatch, set())
+    r2 = _stage(detect_pipeline(_cfg(creds, dim=384)), "r2")
+    assert r2["status"] == STATUS_DEGRADED and r2["required_deps"] == ["r2"]
+    _patch_modules(monkeypatch, {"boto3"})
+    assert _stage(detect_pipeline(_cfg(creds, dim=384)), "r2")["status"] == STATUS_READY
+
+
+def test_models_and_providers_stages(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_modules(monkeypatch, set())
+    pipeline = detect_pipeline(_cfg(dim=384))
+    assert _stage(pipeline, "models")["status"] == STATUS_DEGRADED
+    assert _stage(pipeline, "providers")["status"] == STATUS_DEGRADED
+    assigned = {"models": {"chat": "deepseek:deepseek-chat"}, "providers": {"count": 1}}
+    pipeline = detect_pipeline(_cfg(assigned, dim=384))
+    models = _stage(pipeline, "models")
+    assert models["status"] == STATUS_READY
+    assert models["detail"]["graph"] == "deepseek:deepseek-chat"
+    assert models["detail"]["graph_follows_chat"] is True
+    assert _stage(pipeline, "providers")["status"] == STATUS_READY
 
 
 def test_ask_rerank_detail_ready_when_st_installed(monkeypatch: pytest.MonkeyPatch) -> None:

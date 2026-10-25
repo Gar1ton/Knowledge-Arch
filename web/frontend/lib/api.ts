@@ -1,8 +1,11 @@
 /**
  * lib/api.ts — 唯一网络出口
  * 所有组件禁止裸 fetch，必须经此模块。
+ * 后端地址与 token 由 lib/backend.ts 提供（桌面壳 / 开发代理），每个请求带 Bearer token。
  * ?mock 参数启用内置离线模拟数据。
  */
+
+import { apiUrl, authHeaders, authedUrl, inDesktopShell, resetBackendInfo } from "@/lib/backend";
 
 // ─── 类型定义 ──────────────────────────────────────────────────
 
@@ -86,7 +89,6 @@ export interface EffectiveConfig {
   source_store?: Record<string, unknown>;
   r2_sync?: Record<string, unknown>;
   notion_sync?: Record<string, unknown>;
-  web_console?: Record<string, unknown>;
   graph?: Record<string, unknown>;
   ask?: Record<string, unknown>;
   rerank?: Record<string, unknown>;
@@ -515,11 +517,11 @@ const UPLOAD_TIMEOUT_MS = 300_000; // PDF 清洗 + 切块 + 首次索引
 const DEPENDENCY_INSTALL_TIMEOUT_MS = 900_000; // pip 安装 torch 等大包
 const MODEL_PROBE_TIMEOUT_MS = 300_000; // 模型连通性探测（可能触发首次下载）
 
-type ApiFetchOptions = RequestInit & {
+export type ApiFetchOptions = RequestInit & {
   timeoutMs?: number;
 };
 
-async function apiFetch<T>(
+export async function apiFetch<T>(
   path: string,
   options?: ApiFetchOptions,
 ): Promise<T> {
@@ -543,9 +545,11 @@ async function apiFetch<T>(
 
   let res: Response;
   try {
-    res = await fetch(path, {
+    const headers = new Headers(fetchOptions.headers);
+    for (const [name, value] of Object.entries(await authHeaders())) headers.set(name, value);
+    res = await fetch(await apiUrl(path), {
       ...fetchOptions,
-      credentials: "include",
+      headers,
       signal: controller?.signal ?? signal,
     });
   } catch (err) {
@@ -557,6 +561,8 @@ async function apiFetch<T>(
         timedOut,
       );
     }
+    // 桌面壳里网络错误多半是后端重启换了端口：丢弃缓存，下一次请求重新向壳要地址。
+    if (inDesktopShell()) resetBackendInfo();
     throw err;
   } finally {
     if (timeout) clearTimeout(timeout);
@@ -715,7 +721,6 @@ const MOCK_CONFIG: EffectiveConfig = {
   source_store: { db_filename: "knowledge_repository.db", default_collection: "default", ocr_enabled: false },
   r2_sync: { enabled: true, bucket: "kr-bucket", account_id: "ac****nt", access_key_id: "ak****id", secret_access_key: "****", free_tier_gb: 10, warn_threshold: 0.8 },
   notion_sync: { enabled: true, database_id: "db-****", qa_database_id: "qa-****", auto_sync_enabled: true, auto_sync_interval_sec: 300, sync_mode: "preserve", max_upload_mib: 5 },
-  web_console: { enabled: true, host: "0.0.0.0", port: 26618, username: "admin", password: "****" },
   ask: { answer_language: "auto" },
   graph: { enabled: false, query_mode: "mix", llm_max_async: 4, embedding_max_async: 8, working_dir: "lightrag_workspaces", max_doc_chars: 30000, lightrag_llm_provider: "main", lightrag_llm_base_url: "", lightrag_llm_model: "", lightrag_llm_timeout_seconds: 900 },
   rerank: { provider: "cross_encoder", model: "Alibaba-NLP/gte-reranker-modernbert-base", device: "auto", batch_size: 32, max_candidates: 30, keep: 12 },
@@ -748,39 +753,6 @@ const MOCK_ASK: AskResult = {
   retrieval_engines: ["milvus", "sqlite_lexical"],
   fallback_reason: null,
 };
-
-// ─────────────────────────────────────────────────────────────
-// 认证 Auth
-// ─────────────────────────────────────────────────────────────
-
-export async function getAuth(): Promise<{ logged_in: boolean }> {
-  if (isMock()) return { logged_in: true };
-  return apiFetch<{ logged_in: boolean }>("/api/auth");
-}
-
-export async function login(username: string, password: string): Promise<void> {
-  if (isMock()) {
-    if (username === "admin") return;
-    throw new ApiError(401, "用户名或密码错误");
-  }
-  await apiFetch<{ status: string }>("/api/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
-  });
-}
-
-export async function logout(): Promise<void> {
-  if (isMock()) return;
-  try {
-    await apiFetch<{ ok: boolean }>("/api/logout", { method: "POST" });
-  } catch {
-    // Fallback: clear session cookie locally if backend logout endpoint doesn't exist
-    if (typeof document !== "undefined") {
-      document.cookie = "kr_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT;";
-    }
-  }
-}
 
 // ─────────────────────────────────────────────────────────────
 // 集合 Collections
@@ -936,9 +908,15 @@ export async function reextractDocument(id: string): Promise<{ chunk_count: numb
   return apiFetch(`/api/documents/${encodeURIComponent(id)}/reextract`, { method: "POST" });
 }
 
-export function downloadDocument(id: string): void {
+export async function downloadDocument(id: string): Promise<void> {
   if (isMock() || typeof window === "undefined") return;
-  window.location.assign(`/api/documents/${encodeURIComponent(id)}/raw`);
+  window.location.assign(await authedUrl(`/api/documents/${encodeURIComponent(id)}/raw`));
+}
+
+/** PDF.js 等「只能给 URL」的加载方用：带 access_token 的原件地址。 */
+export async function rawDocumentUrl(id: string, inline = true): Promise<string> {
+  const suffix = inline ? "?disposition=inline" : "";
+  return authedUrl(`/api/documents/${encodeURIComponent(id)}/raw${suffix}`);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -983,165 +961,12 @@ export async function getEffectiveConfig(timeoutMs = 8_000): Promise<EffectiveCo
   return apiFetch<EffectiveConfig>("/api/config/effective", { timeoutMs });
 }
 
-const MOCK_REBUILD_KEYS = new Set([
-  "embedding.provider",
-  "embedding.model",
-  "embedding.base_url",
-  "graph.max_doc_chars",
-  "zotero_sync.storage_mode",
-  "zotero_sync.linked_root",
-  "zotero_sync.zotmoov_root",
-  "zotero_sync.sync_mode",
-]);
-
-const MOCK_RESTART_KEYS = new Set([
-  "vector_db.backend",
-  "vector_db.auto_index_enabled",
-  "source_store.default_collection",
-  "graph.enabled",
-  "graph.query_mode",
-  "graph.llm_max_async",
-  "graph.embedding_max_async",
-  "graph.lightrag_llm_provider",
-  "graph.lightrag_llm_base_url",
-  "graph.lightrag_llm_model",
-  "graph.lightrag_llm_timeout_seconds",
-  "deep_thinking.llm_base_url",
-  "deep_thinking.llm_model",
-  "r2_sync.enabled",
-  "notion_sync.enabled",
-  "source_store.ocr_enabled",
-  "zotero_sync.enabled",
-  "zotero_sync.access_mode",
-  "zotero_sync.zotero_data_dir",
-  "zotero_sync.api_port",
-  "zotero_sync.auto_sync_enabled",
-  "zotero_sync.auto_sync_interval_sec",
-]);
-
-function applyMockConfigUpdate(section: string, key: string, value: unknown): void {
-  const configSection = (MOCK_CONFIG as Record<string, Record<string, unknown>>)[section];
-  if (configSection) configSection[key] = value;
-
-  const stage = (id: string) => MOCK_CAPABILITIES.pipeline.find((item) => item.id === id);
-  const embedding = stage("embedding");
-  const vectorStore = stage("vector_store");
-  const graph = stage("graph");
-  const ask = stage("ask");
-  const sync = stage("sync");
-  const ingest = stage("ingest");
-  const zotero = stage("zotero");
-
-  if (section === "embedding" && embedding) {
-    if (key === "provider") embedding.current = String(value);
-    if (key === "model") embedding.detail.model = value;
-    if (key === "max_token_size") embedding.detail.max_token_size = value;
-  }
-
-  if (section === "vector_db" && vectorStore) {
-    if (key === "backend") vectorStore.current = String(value);
-    if (key === "auto_index_enabled") vectorStore.detail.auto_index_enabled = Boolean(value);
-    if (key === "auto_rebuild_enabled") vectorStore.detail.auto_rebuild_enabled = Boolean(value);
-    if (key === "auto_rebuild_delay_seconds") vectorStore.detail.auto_rebuild_delay_seconds = Number(value);
-  }
-
-  if (section === "rerank" && ask) {
-    if (key === "provider") {
-      const provider = String(value);
-      ask.detail.rerank_provider = provider;
-      ask.detail.rerank_status = provider === "noop" ? "off" : "idle";
-      ask.detail.rerank_runtime = {
-        provider,
-        status: provider === "noop" ? "off" : "idle",
-        model: MOCK_CONFIG.rerank?.model,
-        enabled: provider !== "noop",
-        last_error: null,
-      };
-    }
-    if (key === "model") {
-      ask.detail.rerank_model = value;
-      const runtime = ask.detail.rerank_runtime as Record<string, unknown> | undefined;
-      if (runtime) runtime.model = value;
-    }
-  }
-
-  if (section === "graph" && graph) {
-    if (key === "enabled") {
-      const enabled = Boolean(value);
-      graph.current = enabled ? "on" : "off";
-      graph.status = enabled ? "degraded" : "off";
-      graph.configured = enabled;
-    } else {
-      graph.detail[key] = value;
-    }
-  }
-
-  if ((section === "r2_sync" || section === "notion_sync") && key === "enabled" && sync) {
-    sync.detail[section === "r2_sync" ? "r2_enabled" : "notion_enabled"] = Boolean(value);
-    const r2Enabled = Boolean(MOCK_CONFIG.r2_sync?.enabled);
-    const notionEnabled = Boolean(MOCK_CONFIG.notion_sync?.enabled);
-    sync.current = r2Enabled || notionEnabled ? "on" : "off";
-    sync.status = r2Enabled || notionEnabled ? "ready" : "off";
-    sync.configured = r2Enabled || notionEnabled;
-  }
-
-  if (section === "source_store" && key === "ocr_enabled" && ingest) {
-    ingest.detail.ocr_enabled = Boolean(value);
-  }
-
-  if (section === "zotero_sync" && zotero) {
-    if (key === "enabled") {
-      const enabled = Boolean(value);
-      zotero.current = enabled ? "on" : "off";
-      zotero.status = enabled ? "ready" : "off";
-      zotero.configured = enabled;
-    } else {
-      zotero.detail[key] = value;
-    }
-  }
-}
-
-function mockConfigResult(section: string, key: string): ConfigUpdateResult {
-  const fullKey = `${section}.${key}`;
-  return {
-    status: "success",
-    restart_required: MOCK_RESTART_KEYS.has(fullKey),
-    rebuild_required: MOCK_REBUILD_KEYS.has(fullKey),
-    message: "Configuration saved.",
-  };
-}
-
-export async function updateConfigValue(
-  section: string,
-  key: string,
-  value: unknown
-): Promise<ConfigUpdateResult> {
-  if (isMock()) {
-    applyMockConfigUpdate(section, key, value);
-    return mockConfigResult(section, key);
-  }
-  return apiFetch<ConfigUpdateResult>("/api/config/update", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ section, key, value }),
-  });
-}
-
-export interface ConfigUpdateResult {
-  status: string;
-  restart_required: boolean;
-  rebuild_required: boolean;
-  message: string;
-}
-
 export interface PluginRestartResult {
   status: string;
   message: string;
 }
 
-/** 触发插件软重启（teardown + 重新 initialize，重读持久化配置）。重启瞬间 Web 控制台短暂断连后自动重连。 */
+/** 触发服务软重启（teardown + 重新 initialize，重读持久化设置）；进程与端口不变，期间请求短暂返回 503。 */
 export async function restartPlugin(): Promise<PluginRestartResult> {
   if (isMock()) {
     return { status: "restarting", message: "mock restart" };
@@ -1937,7 +1762,10 @@ const MOCK_CAPABILITIES: CapabilitiesData = {
     { id: "retrieval", current: "rrf_fusion", candidates: ["rrf_fusion"], status: "ready", switchable: false, consequence: "none", required_deps: [], configured: true, detail: { engines: ["milvus", "sqlite_lexical"] } },
     { id: "graph", current: "off", candidates: ["on", "off"], status: "off", switchable: true, consequence: "rebuild", required_deps: ["lightrag"], configured: false, detail: { query_mode: "mix", llm_provider: "main", llm_model: "", llm_label: "<main - main LLM>" } },
     { id: "ask", current: "", candidates: [], status: "ready", switchable: false, consequence: "none", required_deps: [], configured: true, detail: { rerank_provider: "cross_encoder", rerank_model: "Alibaba-NLP/gte-reranker-modernbert-base", rerank_status: "idle", rerank_dependency_ready: true, rerank_runtime: { provider: "cross_encoder", status: "idle", model: "Alibaba-NLP/gte-reranker-modernbert-base", enabled: true, last_error: null } } },
-    { id: "sync", current: "off", candidates: ["on", "off"], status: "off", switchable: true, consequence: "restart", required_deps: [], configured: false, detail: { r2_enabled: false, notion_enabled: false } },
+    { id: "models", current: "", candidates: [], status: "degraded", switchable: false, consequence: "none", required_deps: [], configured: false, detail: { chat: "", research: "", graph: "", research_follows_chat: true, graph_follows_chat: true } },
+    { id: "providers", current: "0", candidates: [], status: "degraded", switchable: false, consequence: "none", required_deps: [], configured: false, detail: { count: 0 } },
+    { id: "notion", current: "off", candidates: ["on", "off"], status: "off", switchable: true, consequence: "restart", required_deps: [], configured: false, detail: { token_present: false, database_ready: false, sync_mode: "preserve" } },
+    { id: "r2", current: "off", candidates: ["on", "off"], status: "off", switchable: true, consequence: "restart", required_deps: [], configured: false, detail: { credentials_present: false, bucket: "" } },
   ],
   dependencies: MOCK_DEPENDENCIES,
   diagnostics: [],
@@ -2117,8 +1945,8 @@ export async function getDocumentContent(
 ): Promise<string> {
   if (isMock()) return "";
   const res = await fetch(
-    `/api/documents/${encodeURIComponent(docId)}/content?format=${format}`,
-    { credentials: "include" },
+    await apiUrl(`/api/documents/${encodeURIComponent(docId)}/content?format=${format}`),
+    { headers: await authHeaders() },
   );
   if (!res.ok) {
     throw new ApiError(res.status, res.statusText);

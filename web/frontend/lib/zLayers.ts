@@ -12,9 +12,9 @@
 export const Z = {
   base: 0,
   raised: 10,     // 固定外壳：TopBar、Rail（sticky）
-  widget: 100,    // 常驻小部件 / 登录遮罩：BuildWidget、LoginScreen
+  widget: 100,    // 常驻小部件：BuildWidget
   dialog: 1000,   // modal 遮罩 + 对话框：ds/Modal、各面板全屏弹窗、dir-picker
-  panel: 1100,    // 浮动开发面板：PerfPanel、TerminalPanel
+  panel: 1100,    // 浮动面板：TerminalPanel
   dropdown: 1200, // Select 下拉 / popover / 菜单（高于 dialog 以支持 modal 内嵌套）
   tooltip: 1300,  // Tooltip
   progressDock: 1350, // 统一进度面板（左下角浮动停靠）：Modal 之上、Toast 之下

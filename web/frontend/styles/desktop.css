@@ -1,0 +1,231 @@
+/* 桌面版新增界面：启动 / 崩溃 / 欢迎整窗卡片，模型供应商列表，节点操作区。 */
+
+.ka-splash {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+.ka-fullscreen-card {
+  position: fixed;
+  inset: 0;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+  background: var(--bg);
+}
+
+.ka-fullscreen-inner {
+  width: min(640px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg, 14px);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+}
+
+.ka-fullscreen-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--heading, var(--fg));
+}
+
+.ka-fullscreen-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--fg);
+}
+
+.ka-fullscreen-hint {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--fg-subtle);
+}
+
+.ka-fullscreen-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.ka-fullscreen-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+}
+
+.ka-crash-reason {
+  display: block;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.ka-crash-log {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-inset);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ka-welcome-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.ka-welcome-option {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px;
+  text-align: left;
+  cursor: pointer;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+}
+
+.ka-welcome-option:hover {
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 3px var(--ring);
+}
+
+.ka-welcome-option strong { font-size: 14px; }
+.ka-welcome-option span { font-size: 12px; color: var(--fg-muted); line-height: 1.5; }
+
+.ka-welcome-preview {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--fg);
+}
+
+.ka-progress {
+  height: 6px;
+  border-radius: var(--radius-pill, 999px);
+  background: var(--bg-inset);
+  overflow: hidden;
+}
+
+.ka-progress-bar {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s;
+}
+
+/* ── 数据流：模型供应商列表与节点操作区 ───────────────────────── */
+
+.flow-providers { gap: 8px; }
+
+.flow-provider-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 9px;
+  border: 1px solid var(--flow-node-bd);
+  border-radius: 10px;
+  background: var(--flow-inset);
+}
+
+.flow-provider-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.flow-provider-name { font-size: 12px; font-weight: 600; color: var(--flow-ink); }
+
+.flow-provider-status {
+  font-size: 10.5px;
+  color: var(--flow-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 60%;
+}
+.flow-provider-status.is-ok { color: var(--flow-st-ready, var(--ok)); }
+.flow-provider-status.is-error { color: var(--flow-st-warn, var(--danger)); }
+
+.flow-provider-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--flow-muted);
+}
+
+.flow-provider-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.flow-provider-actions .flow-dep-button { margin-left: 0; }
+
+.flow-provider-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 9px;
+  border: 1px dashed var(--flow-node-bd);
+  border-radius: 10px;
+}
+
+.flow-provider-add { margin-left: 0; align-self: flex-start; }
+
+.flow-node-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.flow-meta-chip.is-error {
+  color: var(--flow-st-warn, var(--danger));
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flow-quick-textarea {
+  min-height: 84px;
+  resize: vertical;
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  padding-top: 6px;
+}
+
+.flow-consequence-tag.is-rebuild { color: var(--flow-st-warn, var(--warn)); }

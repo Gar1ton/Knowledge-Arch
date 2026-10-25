@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { DependencyStatus, PipelineStage } from "@/lib/api";
 import type { FlowConfigSnapshot, QuickConfigUpdate } from "./QuickConfigPanel";
+import type { Provider, ProviderPreset, SettingItem } from "@/lib/settingsApi";
 import type { Lang, TFunc } from "@/lib/i18n";
 import { FitIcon, MinusIcon, PlusIcon } from "./Icons";
-import { EDGES, GRID, isFlowStageId, STAGE_META, type FlowStageId, type FlowStageStatus } from "./model";
+import { EDGES, GRID, isFlowStageId, STAGE_HOME, STAGE_META, type FlowStageId, type FlowStageStatus } from "./model";
 import { FlowNode } from "./FlowNode";
 
 type Rect = { x: number; y: number; w: number; h: number };
@@ -69,6 +70,10 @@ export function FlowDiagram({
   rebuildingIndex,
   restartPendingIds,
   config,
+  settingsItems,
+  providers,
+  presets,
+  onNotify,
   onSwitch,
   onQuickConfigSave,
   onRefresh,
@@ -89,6 +94,10 @@ export function FlowDiagram({
   rebuildingIndex: boolean;
   restartPendingIds: Set<string>;
   config: FlowConfigSnapshot;
+  settingsItems: SettingItem[];
+  providers: Provider[];
+  presets: ProviderPreset[];
+  onNotify: (message: string, kind: "ok" | "error" | "info") => void;
   onEditingChange?: (stageId: string, editing: boolean) => void;
   onSwitch: (stage: PipelineStage, value: string) => void;
   onQuickConfigSave: (stageId: FlowStageId, updates: QuickConfigUpdate[]) => void;
@@ -398,6 +407,12 @@ export function FlowDiagram({
                   onEditingChange={onEditingChange}
                   selected={selectedId === stage.id}
                   config={config}
+                  settingsItems={settingsItems.filter(
+                    (item) => item.home === STAGE_HOME[stage.id as FlowStageId],
+                  )}
+                  providers={providers}
+                  presets={presets}
+                  onNotify={onNotify}
                   onSelect={() => setSelectedId(stage.id)}
                   onSwitch={onSwitch}
                   onQuickConfigSave={onQuickConfigSave}

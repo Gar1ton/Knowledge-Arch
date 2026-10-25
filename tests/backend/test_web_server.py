@@ -1582,7 +1582,8 @@ async def test_capabilities_route_returns_pipeline_and_dependencies(tmp_path: Pa
         data = await resp.json()
         stage_ids = [s["id"] for s in data["pipeline"]]
         assert stage_ids == [
-            "zotero", "ingest", "embedding", "vector_store", "retrieval", "graph", "ask", "sync",
+            "zotero", "ingest", "embedding", "vector_store", "retrieval", "graph", "ask",
+            "models", "providers", "notion", "r2",
         ]
         assert {d["key"] for d in data["dependencies"]} == {
             "local_embedding",

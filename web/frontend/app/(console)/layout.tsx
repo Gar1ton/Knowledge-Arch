@@ -4,18 +4,20 @@ import React, { useEffect, useState, useCallback, useRef } from "react";
 import { ToastProvider } from "@/components/ui/Toast";
 import { I18nContext, Lang, makeT, useI18n } from "@/lib/i18n";
 import { initColorTheme } from "@/lib/theme";
-import { getAuth } from "@/lib/api";
 import { ConsoleProvider, useConsole } from "@/lib/ConsoleContext";
-import { LoginScreen } from "@/components/auth/LoginScreen";
+import { MENU_PREFERENCES_EVENT, onShellEvent } from "@/lib/backend";
+import { getSettingsSchema } from "@/lib/settingsApi";
+import { setColorTheme, THEMES, type ThemeName, useTheme } from "@/lib/theme";
+import { BackendGate } from "@/components/desktop/BackendGate";
+import { WelcomeScreen, useWelcomeNeeded } from "@/components/desktop/WelcomeScreen";
+import { PreferencesWindow } from "@/components/prefs/PreferencesWindow";
+import { FlowPageContent } from "@/components/panels/FlowPageContent";
 import { ProgressDock } from "@/components/progress/ProgressDock";
 import { TopBar } from "@/components/layout/TopBar";
 import { FilePanel } from "@/components/panels/FilePanel";
 import { DocumentsPanel } from "@/components/panels/DocumentsPanel";
 import { ChatPanel } from "@/components/panels/ChatPanel";
 import { NotePanel } from "@/components/panels/NotePanel";
-import { WorkflowModal } from "@/components/modals/WorkflowModal";
-import { ModelsModal } from "@/components/modals/ModelsModal";
-import { SettingModal } from "@/components/modals/SettingModal";
 
 // ─── I18n Provider ────────────────────────────────────────────
 
@@ -53,8 +55,22 @@ const MAX_FILE_W = 528;
 
 type DragTarget = "file" | "chat" | null;
 
-function ConsoleCanvas({ onLogout }: { onLogout: () => void }) {
-  const { noteDocId, selectedDocId, selectedCollection, settingOpen, setSettingOpen, workflowOpen, setWorkflowOpen, modelsOpen, setModelsOpen } = useConsole();
+function ConsoleCanvas() {
+  const { noteDocId, selectedDocId, selectedCollection, view, setView, openPrefs } = useConsole();
+
+  // 菜单 Preferences…（桌面壳）与 ⌘, / Ctrl+,（窗口内）都打开偏好设置。
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    void onShellEvent(MENU_PREFERENCES_EVENT, () => openPrefs("general")).then((f) => { off = f; });
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+        e.preventDefault();
+        openPrefs("general");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => { off?.(); window.removeEventListener("keydown", onKey); };
+  }, [openPrefs]);
 
   const [chatWidth, setChatWidth] = useState(DEFAULT_CHAT_W);
   const [fileWidth, setFileWidth] = useState(DEFAULT_FILE_W);
@@ -115,7 +131,11 @@ function ConsoleCanvas({ onLogout }: { onLogout: () => void }) {
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }}>
       <TopBar />
 
-      {/* Three-panel stage */}
+      {view === "flow" ? (
+        <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+          <FlowPageContent onClose={() => setView("workspace")} />
+        </div>
+      ) : (
       <div
         ref={containerRef}
         style={{
@@ -201,67 +221,64 @@ function ConsoleCanvas({ onLogout }: { onLogout: () => void }) {
         {/* Right: Chat */}
         <ChatPanel width={chatWidth} />
       </div>
+      )}
 
-      {/* Full-screen modals */}
-      {settingOpen && <SettingModal onClose={() => setSettingOpen(false)} onLogout={onLogout} />}
-      {workflowOpen && <WorkflowModal onClose={() => setWorkflowOpen(false)} />}
-      {modelsOpen && <ModelsModal onClose={() => setModelsOpen(false)} />}
+      <PreferencesWindow />
     </div>
   );
 }
 
-// ─── Console Shell (auth gate) ────────────────────────────────
+// ─── Console Shell（后端闸门 → 欢迎页 → 控制台）──────────────────
 
-function ConsoleShell() {
-  const { t } = useI18n();
-  const [authChecked, setAuthChecked] = useState(false);
-  const [loggedIn, setLoggedIn] = useState(false);
-
+/** 界面偏好以后端 settings.json 为准（可随 R2 快照换机）：就绪后把已设置的值应用到本机界面。 */
+function usePrefsFromBackend(epoch: number) {
+  const { setLang } = useI18n();
+  const { setTheme } = useTheme();
   useEffect(() => {
-    getAuth()
-      .then(({ logged_in }) => {
-        setLoggedIn(logged_in);
-        setAuthChecked(true);
+    let alive = true;
+    getSettingsSchema("prefs")
+      .then(({ items }) => {
+        if (!alive) return;
+        for (const item of items) {
+          if (!item.is_set) continue;
+          if (item.key === "prefs.general.language" && (item.value === "zh" || item.value === "en")) {
+            setLang(item.value as Lang);
+          } else if (item.key === "prefs.appearance.theme_mode" && typeof item.value === "string") {
+            setTheme(item.value);
+          } else if (
+            item.key === "prefs.appearance.palette" &&
+            (THEMES as readonly string[]).includes(String(item.value))
+          ) {
+            setColorTheme(item.value as ThemeName);
+          }
+        }
       })
-      .catch(() => {
-        setLoggedIn(false);
-        setAuthChecked(true);
-      });
-  }, []);
+      .catch(() => undefined);
+    return () => { alive = false; };
+  }, [epoch, setLang, setTheme]);
+}
 
-  const handleLogout = useCallback(() => {
-    setLoggedIn(false);
-  }, []);
+function ReadyShell({ epoch }: { epoch: number }) {
+  const { t } = useI18n();
+  const [welcomeNeeded, dismissWelcome] = useWelcomeNeeded(epoch);
+  usePrefsFromBackend(epoch);
 
-  if (!authChecked) {
-    return (
-      <div
-        style={{
-          position: "fixed",
-          inset: 0,
-          background: "var(--bg)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          color: "var(--fg-muted)",
-          fontSize: 13,
-        }}
-      >
-        {t("panel_loading")}
-      </div>
-    );
+  if (welcomeNeeded === null) {
+    return <div className="ka-splash">{t("panel_loading")}</div>;
   }
-
-  if (!loggedIn) {
-    return <LoginScreen onLogin={() => setLoggedIn(true)} />;
+  if (welcomeNeeded) {
+    return <WelcomeScreen onDone={dismissWelcome} />;
   }
-
   return (
     <ConsoleProvider>
-      <ConsoleCanvas onLogout={handleLogout} />
+      <ConsoleCanvas />
       <ProgressDock />
     </ConsoleProvider>
   );
+}
+
+function ConsoleShell() {
+  return <BackendGate>{(epoch) => <ReadyShell key={epoch} epoch={epoch} />}</BackendGate>;
 }
 
 // ─── Layout Export ────────────────────────────────────────────
