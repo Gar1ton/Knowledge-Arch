@@ -57,7 +57,7 @@ _REF_HEADING_RE = re.compile(
 # 尾块里「像书目」的行：列表项，或含引用标记。
 _LIST_ITEM_RE = re.compile(r"^\s{0,3}(?:[-*+]\s|\d{1,3}[.)]\s)")
 
-_REFERENCE_HEADING_DEFAULT = "参考文献"
+_REFERENCE_HEADING_DEFAULT = "References"
 
 
 # ── source dict → CitationRef ─────────────────────────────────

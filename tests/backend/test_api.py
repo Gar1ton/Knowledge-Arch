@@ -478,7 +478,7 @@ async def test_notion_init_without_pipeline_reports_unavailable() -> None:
     result = await api.initialize_notion_database()
 
     assert result["status"] == "unavailable"
-    assert "未装配" in result["message"]
+    assert "not set up" in result["message"]
 
 
 async def test_push_note_to_notion_outbox_path() -> None:
@@ -1572,7 +1572,7 @@ async def test_capabilities_degraded_while_milvus_building(tmp_path: Path) -> No
     assert vs["detail"]["building"] is True
     assert vs["detail"]["rebuild_required"] is True
     assert vs["detail"]["build_stage"] == "data_cleaning"
-    assert "清洗数据" in vs["detail"]["reason"]
+    assert "Cleaning data" in vs["detail"]["reason"]
 
 
 async def test_start_milvus_rebuild_partial_failure(
@@ -2446,7 +2446,7 @@ async def test_llm_unavailable_fallback_is_formatted_excerpts() -> None:
     """v0.30.0：合成失败降级不再是碎片拼接——引导行 + [n] 标题 + 句边界截断摘录。"""
     api = await _make_api()  # 无 llm_adapter → 走降级排版分支。
     result = await api.ask(question="alpha", collection="kb1")
-    assert result["answer"].startswith("⚠️ LLM 暂不可用，未能合成回答。")
+    assert result["answer"].startswith("⚠️ The LLM is unavailable, so no answer could be written.")
     assert "**[1] " in result["answer"]
 
 
@@ -2579,7 +2579,7 @@ async def test_rebuild_reports_embedding_not_ready_when_deps_are_installed(
 
     with pytest.raises(RuntimeError) as excinfo:
         await api.rebuild_index_pending()
-    assert "Embedding provider 未就绪" in str(excinfo.value)
+    assert "embedding provider is not ready" in str(excinfo.value)
 
 
 async def test_rebuild_reports_lexical_backend_without_telling_user_to_install_milvus(
@@ -2855,7 +2855,7 @@ async def test_ask_references_are_embedded_in_stored_history() -> None:
 
     history = await store.get_chat_messages(result["conversation_id"])
     stored = [m for m in history if m["role"] == "assistant"][-1]["content"]
-    assert "**参考文献**" in stored
+    assert "**References**" in stored
     assert "Anon. (2020) T." in stored
 
 

@@ -45,6 +45,6 @@ def fulltext_with_notes(text: str, directory: Path) -> str:
         return text
     return (
         text
-        + "\n\n## 脚注\n\n"
-        + "\n\n".join(f"[PDF p.{note.page}, 注 {note.marker}] {note.text}" for note in notes)
+        + "\n\n## Footnotes\n\n"
+        + "\n\n".join(f"[PDF p.{note.page}, note {note.marker}] {note.text}" for note in notes)
     )

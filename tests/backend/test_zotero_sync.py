@@ -594,7 +594,7 @@ async def test_pull_zotmoov_duplicate_filename_skipped_with_error(tmp_path: Path
     result = await pipeline.pull()
     assert result.new_document_ids == []
     assert await store.get_document(make_document_id(LIB, ITEM, "ATTLNK03")) is None
-    assert any("同名" in e for e in result.errors)
+    assert any("files named" in e for e in result.errors)
 
 
 async def test_pull_zotmoov_duplicate_disambiguated_by_parent_dir(tmp_path: Path) -> None:
@@ -749,9 +749,9 @@ def test_probe_zotmoov_root_branches(tmp_path: Path) -> None:
     from kacore.adapters.zotero import paths as zpaths
 
     unset = zpaths.probe_zotmoov_root("")
-    assert unset["valid"] is False and "未配置" in str(unset["reason"])
+    assert unset["valid"] is False and "not configured" in str(unset["reason"])
     missing = zpaths.probe_zotmoov_root(str(tmp_path / "nope"))
-    assert missing["valid"] is False and "不存在" in str(missing["reason"])
+    assert missing["valid"] is False and "not found" in str(missing["reason"])
     ok = zpaths.probe_zotmoov_root(str(tmp_path))
     assert ok["valid"] is True and ok["resolved"] == str(tmp_path)
 
@@ -855,4 +855,4 @@ def test_probe_local_read_server_mode_is_skipped(tmp_path: Path) -> None:
 
     probe = pipeline.probe_local_read()
     assert probe["available"] is False
-    assert "本地" in str(probe["reason"])
+    assert "local mode" in str(probe["reason"])

@@ -59,7 +59,7 @@ class NotionAutoSync:
         try:
             accepted = await self._push()
         except Exception as exc:  # noqa: BLE001 — 重试由调度器统一退避
-            logger.warning("Notion 自动同步失败：%s", exc)
+            logger.warning("Notion auto sync failed: %s", exc)
             accepted = False
         if accepted is None:
             return
@@ -76,5 +76,5 @@ class NotionAutoSync:
             try:
                 await self.tick()
             except Exception as exc:  # noqa: BLE001 — 本地版本读取失败不结束任务
-                logger.warning("Notion 本地变更检测失败：%s", exc)
+                logger.warning("Notion local change detection failed: %s", exc)
             await asyncio.sleep(1)

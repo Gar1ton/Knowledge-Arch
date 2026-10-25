@@ -87,7 +87,8 @@ async def llm_json_call(
         except JsonContractError as exc:
             if result.status == STATUS_LENGTH:
                 logger.warning(
-                    "LLM JSON 调用输出疑似被长度截断（finish_reason=length）导致解析失败：%s",
+                    "LLM JSON call output looks truncated by the length limit "
+                    "(finish_reason=length), so parsing failed: %s",
                     exc,
                 )
             # 把重试耗尽前的真实消费写回异常，调用方的 except 分支不再被迫当作零消费。

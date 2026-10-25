@@ -15,15 +15,19 @@ def validate_vectors(
 ) -> list[list[float]]:
     """校验整个批次再返回；拒绝空向量、布尔值、非有限数值和不一致的维度。"""
     if not isinstance(raw, list) or len(raw) != expected_count:
-        raise EmbeddingValidationError(f"Embedding 批量结果数量应为 {expected_count}")
+        raise EmbeddingValidationError(
+            f"The embedding batch should have {expected_count} result(s)"
+        )
     for index, vector in enumerate(raw):
         if not isinstance(vector, list) or not vector:
-            raise EmbeddingValidationError(f"第 {index} 条 embedding 应为非空数值列表")
+            raise EmbeddingValidationError(
+                f"Embedding {index} should be a non-empty list of numbers"
+            )
         if dimension is None:
             dimension = len(vector)
         if len(vector) != dimension:
             raise EmbeddingValidationError(
-                f"Embedding 维度不一致：应为 {dimension}，实际为 {len(vector)}"
+                f"Inconsistent embedding dimension: expected {dimension}, got {len(vector)}"
             )
         for value in vector:
             try:
@@ -35,7 +39,7 @@ def validate_vectors(
             except (OverflowError, TypeError, ValueError):
                 finite = False
             if not finite:
-                raise EmbeddingValidationError(f"第 {index} 条 embedding 含无效数值")
+                raise EmbeddingValidationError(f"Embedding {index} contains invalid numbers")
     return raw
 
 
@@ -43,7 +47,9 @@ def parse_openai_vectors(raw: Any, expected_count: int) -> list[list[float]]:
     """按唯一且完整的 index 恢复输入顺序，不接受缺项、重复项或隐式 index。"""
     data = raw.get("data") if isinstance(raw, dict) else None
     if not isinstance(data, list) or len(data) != expected_count:
-        raise EmbeddingValidationError(f"Embedding 响应 data 数量应为 {expected_count}")
+        raise EmbeddingValidationError(
+            f"The embedding response data should have {expected_count} item(s)"
+        )
     ordered: list[Any] = [None] * expected_count
     seen: set[int] = set()
     for item in data:
@@ -52,7 +58,9 @@ def parse_openai_vectors(raw: Any, expected_count: int) -> list[list[float]]:
             isinstance(index, bool) or not isinstance(index, int)
             or not 0 <= index < expected_count or index in seen
         ):
-            raise EmbeddingValidationError("Embedding 响应 index 必须唯一且完整覆盖输入")
+            raise EmbeddingValidationError(
+                "Embedding response indices must be unique and cover every input"
+            )
         seen.add(index)
         ordered[index] = item.get("embedding")
     return validate_vectors(ordered, expected_count)

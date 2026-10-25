@@ -131,9 +131,9 @@ class ProviderRegistry:
         if kind not in PROVIDER_KINDS:
             raise ValueError(f"kind must be one of {', '.join(PROVIDER_KINDS)}")
         if not re.match(r"^https?://[^\s/]+", base_url):
-            raise ValueError("base_url 需要以 http:// 或 https:// 开头")
+            raise ValueError("base_url must start with http:// or https://")
         if not 1 <= int(timeout_sec) <= 3600:
-            raise ValueError("timeout_sec 超出范围 [1, 3600]")
+            raise ValueError("timeout_sec is out of range [1, 3600]")
 
     def create(
         self,
@@ -150,7 +150,7 @@ class ProviderRegistry:
         existing = {p.id for p in self.list()}
         candidate = provider_id.strip().lower() or _slug(label)
         if not _ID_RE.match(candidate):
-            raise ValueError("provider id 只能包含小写字母、数字、_ 与 -")
+            raise ValueError("A provider id may only contain lowercase letters, digits, _ and -")
         unique, n = candidate, 2
         while unique in existing:
             unique = f"{candidate}-{n}"
@@ -208,7 +208,10 @@ class ProviderRegistry:
         profile = self.require(provider_id)
         refs = self.references(provider_id)
         if refs:
-            raise ValueError(f"连接仍被使用：{', '.join(refs)}；请先在「模型分配」中改选其它模型")
+            raise ValueError(
+                f"The connection is still in use: {', '.join(refs)}; pick another model under "
+                "“Model assignment” first"
+            )
         if profile.api_key_ref:
             self._settings.secrets.delete_secret(profile.api_key_ref)
         self._save([p for p in self.list() if p.id != provider_id])
@@ -227,7 +230,7 @@ class ProviderRegistry:
         profile = self.require(provider_id)
         key = self.api_key(provider_id)
         if profile.kind == KIND_ANTHROPIC and not key:
-            raise ProviderError(ERROR_NO_KEY, "该连接还没有填写 API Key")
+            raise ProviderError(ERROR_NO_KEY, "This connection has no API key yet")
         timeout = timeout_sec or profile.timeout_sec
         return self._client_factory(profile, key, model, int(timeout), max_retries)
 
@@ -259,7 +262,10 @@ class ProviderRegistry:
                 model = self._probe_model(profile)
                 if not model:
                     raise ProviderError(
-                        exc.code, "该端点不支持列出模型；请先在「模型分配」里选好模型再测试"
+                        exc.code, (
+                            "This endpoint cannot list models; pick a model under “Model "
+                            "assignment” before testing"
+                        )
                     ) from None
                 await self.client(provider_id, model).ping(model)
                 result = {"status": "ok", "models": len(profile.models)}

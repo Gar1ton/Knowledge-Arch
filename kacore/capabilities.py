@@ -57,7 +57,8 @@ MILVUS_PIP_SPEC = "pymilvus[milvus_lite]>=2.6,<3.0"
 MILVUS_LITE_PIP_SPEC = "milvus-lite>=3.0,<4.0"
 
 _MILVUS_REINSTALL_HINT = (
-    "在数据流页点「一键安装」补装核心依赖；装好后重启服务。"
+    "Click “Install” on the data flow page to install the core dependencies, then restart the "
+    "service."
 )
 
 
@@ -82,13 +83,14 @@ def milvus_runtime_status() -> dict[str, Any]:
 
     if not has_pymilvus:
         missing = MILVUS_IMPORT_NAME
-        hint = f"未安装 pymilvus。{_MILVUS_REINSTALL_HINT}"
+        hint = f"pymilvus is not installed. {_MILVUS_REINSTALL_HINT}"
     else:
         missing = MILVUS_LITE_IMPORT_NAME
         hint = (
-            "已安装 pymilvus，但缺少 milvus-lite（本地向量库真正的运行时）——"
-            "pymilvus 的 milvus_lite extra 带着已过时的 win32 排除标记，"
-            f"Windows 上 pip 会静默跳过它。{_MILVUS_REINSTALL_HINT}"
+                "pymilvus is installed but milvus-lite (the actual local vector store runtime) is "
+                "missing: the milvus_lite extra of pymilvus carries an outdated win32 exclusion "
+                f"marker, so pip silently skips it on Windows. {_MILVUS_REINSTALL_HINT}"
+            
         )
 
     return {
@@ -101,10 +103,11 @@ def milvus_runtime_status() -> dict[str, Any]:
 
 
 _MILVUS_LOCK_HINT = (
-    "Milvus 数据目录仍被服务占用，持锁者可能是另一个仍在运行的 Knowledge Arch 后端进程；"
-    "请完整退出应用（含托盘）后重新启动，仅重启服务可能无法释放旧服务。"
-    "若仍失败，再检查重复进程、目录 ACL 或安全软件；"
-    "不要直接删除锁文件或向量数据目录。"
+    "The Milvus data folder is still held by a service; the holder may be another Knowledge "
+    "Arch backend that is still running. Quit the app completely (including the tray) and "
+    "start it again; restarting only the service may not release the old one. If it still "
+    "fails, check for duplicate processes, folder permissions or security software. Do not "
+    "delete the lock file or the vector data folder."
 )
 
 
@@ -304,7 +307,7 @@ def _graph_llm_label(graph_model: str, chat_model: str) -> str:
     """返回数据流 UI 的只读图谱 LLM 摘要（连接:模型），不暴露 endpoint。"""
     if graph_model:
         return graph_model
-    return chat_model or "未分配模型"
+    return chat_model or "no model assigned"
 
 
 def detect_pipeline(config: Config) -> list[dict[str, Any]]:
@@ -406,7 +409,8 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
         },
     }
 
-    # ③ 向量库：milvus 需 pymilvus + embedding 就绪，否则受控回退到 SQLite 词法召回。
+    # ③ 向量库：只提供 Milvus Lite（内置）；embedding 未就绪时检索受控回退到 SQLite 词法召回。
+    #    lexical 仅作内部装配（测试 / 无向量环境），不再是用户可选项。
     if vdb_cfg.backend == "milvus":
         vector_ready = has_milvus and embedding_runtime_ready
         vector_status = STATUS_READY if vector_ready else STATUS_DEGRADED
@@ -417,9 +421,9 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
     vector_store = {
         "id": "vector_store",
         "current": vdb_cfg.backend,
-        "candidates": ["milvus", "lexical"],
+        "candidates": ["milvus"],
         "status": vector_status,
-        "switchable": True,
+        "switchable": False,
         "consequence": CONSEQUENCE_RESTART,
         "required_deps": vector_deps,
         "configured": True,
@@ -428,6 +432,7 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
             "auto_rebuild_enabled": vdb_cfg.auto_rebuild_enabled,
             "auto_rebuild_delay_seconds": vdb_cfg.auto_rebuild_delay_seconds,
             "milvus_runtime_ready": has_milvus,
+            "waiting_for_embedding": vdb_cfg.backend == "milvus" and not embedding_runtime_ready,
             "milvus_runtime_hint": milvus_runtime["hint"],
         },
     }
@@ -473,8 +478,10 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
     }
 
     # ⑥ 问答模式：普通 Ask 配置即时生效；rerank 仅供 Deep Thinking 路径使用。
-    rerank_enabled = rerank_cfg.provider == "cross_encoder"
-    rerank_ready = rerank_enabled and has_local
+    # 本地 cross-encoder 需要本地组件；线上 Rerank 只需连接（地址由设置桥注入）。
+    rerank_enabled = rerank_cfg.provider in {"cross_encoder", "remote"}
+    needs_local_rerank = rerank_cfg.provider == "cross_encoder" and not has_local
+    rerank_ready = rerank_enabled and not needs_local_rerank
     rerank_status = (
         STATUS_OFF
         if not rerank_enabled
@@ -485,10 +492,10 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
         "id": "ask",
         "current": "",
         "candidates": [],
-        "status": STATUS_DEGRADED if rerank_enabled and not has_local else STATUS_READY,
+        "status": STATUS_DEGRADED if needs_local_rerank else STATUS_READY,
         "switchable": False,
         "consequence": CONSEQUENCE_NONE,
-        "required_deps": ["local_embedding"] if rerank_enabled and not has_local else [],
+        "required_deps": ["local_embedding"] if needs_local_rerank else [],
         "configured": True,
         "detail": {
             "rerank_provider": rerank_cfg.provider,

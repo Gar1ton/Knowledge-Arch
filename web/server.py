@@ -100,7 +100,7 @@ async def _request_observability_middleware(
             category=category,
             operation="http_request",
             status="started",
-            msg=f"Web 请求开始：{request.method} {route}",
+            msg=f"Web request started: {request.method} {route}",
             metadata=base_metadata,
         )
     try:
@@ -115,7 +115,7 @@ async def _request_observability_middleware(
                 operation="http_request",
                 status="error" if exc.status >= 500 else "warning",
                 level=level,
-                msg=f"Web 请求结束：{request.method} {route} → HTTP {exc.status}",
+                msg=f"Web request finished: {request.method} {route} → HTTP {exc.status}",
                 metadata={**base_metadata, "http_status": exc.status, "elapsed_ms": elapsed_ms},
             )
         exc.headers["X-KA-Request-ID"] = request_id
@@ -144,7 +144,7 @@ async def _request_observability_middleware(
             operation="http_request",
             status=status,
             level=level,
-            msg=f"Web 请求结束：{request.method} {route} → HTTP {response.status}",
+            msg=f"Web request finished: {request.method} {route} → HTTP {response.status}",
             metadata={**base_metadata, "http_status": response.status, "elapsed_ms": elapsed_ms},
         )
     return response
@@ -792,7 +792,7 @@ async def handle_notion_status(request: web.Request) -> web.Response:
 async def handle_notion_push_note(request: web.Request) -> web.Response:
     body = await request.json() if request.can_read_body else {}
     if not isinstance(body, dict):
-        return web.json_response({"status": "error", "message": "无效请求体"}, status=400)
+        return web.json_response({"status": "error", "message": "Invalid request body"}, status=400)
     content = str(body.get("content", ""))
     tags = body.get("tags") if isinstance(body.get("tags"), list) else []
     citations = body.get("citations") if isinstance(body.get("citations"), list) else []

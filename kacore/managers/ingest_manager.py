@@ -153,7 +153,7 @@ class IngestManager(BaseIngestManager):
 
         # 本地上传同样写入 Zotero 镜像（origin=local），使作用域检索/同步一视同仁。
         await self._source_store.upsert_zotero_library(
-            ZoteroLibrary(library_id=LOCAL_LIBRARY_ID, library_type="LOCAL", name="本地上传")
+            ZoteroLibrary(library_id=LOCAL_LIBRARY_ID, library_type="LOCAL", name="Local uploads")
         )
         await self._source_store.upsert_zotero_item(
             ZoteroItem(

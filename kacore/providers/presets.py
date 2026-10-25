@@ -22,17 +22,21 @@ PRESETS: tuple[ProviderPreset, ...] = (
     ProviderPreset("anthropic", "Anthropic", KIND_ANTHROPIC, ANTHROPIC_BASE_URL),
     ProviderPreset("deepseek", "DeepSeek", KIND_OPENAI_COMPATIBLE, "https://api.deepseek.com/v1"),
     ProviderPreset(
-        "dashscope", "DashScope（通义）", KIND_OPENAI_COMPATIBLE,
+        "dashscope", "DashScope (Qwen)", KIND_OPENAI_COMPATIBLE,
         "https://dashscope.aliyuncs.com/compatible-mode/v1",
     ),
-    ProviderPreset("moonshot", "Moonshot（Kimi）", KIND_OPENAI_COMPATIBLE, "https://api.moonshot.cn/v1"),
+    ProviderPreset((
+        "moonshot"
+    ), "Moonshot (Kimi)", KIND_OPENAI_COMPATIBLE, "https://api.moonshot.cn/v1"),
     ProviderPreset(
-        "zhipu", "智谱 GLM", KIND_OPENAI_COMPATIBLE, "https://open.bigmodel.cn/api/paas/v4"
+        "zhipu", "Zhipu GLM", KIND_OPENAI_COMPATIBLE, "https://open.bigmodel.cn/api/paas/v4"
     ),
     ProviderPreset(
         "siliconflow", "SiliconFlow", KIND_OPENAI_COMPATIBLE, "https://api.siliconflow.cn/v1"
     ),
-    ProviderPreset("openrouter", "OpenRouter", KIND_OPENAI_COMPATIBLE, "https://openrouter.ai/api/v1"),
+    ProviderPreset((
+        "openrouter"
+    ), "OpenRouter", KIND_OPENAI_COMPATIBLE, "https://openrouter.ai/api/v1"),
     ProviderPreset(
         "ollama", "Ollama", KIND_OPENAI_COMPATIBLE, "http://localhost:11434/v1", needs_key=False
     ),

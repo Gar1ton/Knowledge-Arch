@@ -32,7 +32,9 @@ class JsonFileSettingsBackend(SettingsBackend):
             data = json.loads(self._path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             # 读坏文件不应让应用起不来：退回默认值并保留原文件供人工排查。
-            logger.error("settings.json 无法解析，本次使用默认设置：%s", exc)
+            logger.error((
+                "settings.json cannot be parsed; using the default settings this time: %s"
+            ), exc)
             return {}
         return data if isinstance(data, dict) else {}
 

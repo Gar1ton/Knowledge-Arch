@@ -57,24 +57,26 @@ def classify_anthropic_error(exc: BaseException) -> ProviderError:
     if isinstance(exc, ProviderError):
         return exc
     if isinstance(exc, (anthropic.AuthenticationError, anthropic.PermissionDeniedError)):
-        return ProviderError(ERROR_AUTH, "API Key 无效或没有权限", exc.status_code)
+        return ProviderError(ERROR_AUTH, "Invalid API key or no permission", exc.status_code)
     if isinstance(exc, anthropic.NotFoundError):
-        return ProviderError(ERROR_NOT_FOUND, "地址或模型不存在（HTTP 404）", 404)
+        return ProviderError(ERROR_NOT_FOUND, "Address or model not found (HTTP 404)", 404)
     if isinstance(exc, anthropic.RateLimitError):
-        return ProviderError(ERROR_RATE_LIMITED, "请求过于频繁或额度不足（HTTP 429）", 429)
+        return ProviderError(ERROR_RATE_LIMITED, (
+            "Too many requests or quota exhausted (HTTP 429)"
+        ), 429)
     if isinstance(exc, anthropic.APIStatusError):
         if exc.status_code >= 500:
             return ProviderError(
-                ERROR_SERVER, f"服务端错误（HTTP {exc.status_code}）", exc.status_code
+                ERROR_SERVER, f"Server error (HTTP {exc.status_code})", exc.status_code
             )
         return ProviderError(
-            ERROR_BAD_RESPONSE, f"请求被拒绝（HTTP {exc.status_code}）", exc.status_code
+            ERROR_BAD_RESPONSE, f"Request rejected (HTTP {exc.status_code})", exc.status_code
         )
     if isinstance(exc, anthropic.APITimeoutError):
-        return ProviderError(ERROR_TIMEOUT, "请求超时")
+        return ProviderError(ERROR_TIMEOUT, "Request timed out")
     if isinstance(exc, anthropic.APIConnectionError):
-        return ProviderError(ERROR_UNREACHABLE, "连接被拒绝或地址不可达")
-    return ProviderError(ERROR_BAD_RESPONSE, f"响应不可用：{type(exc).__name__}")
+        return ProviderError(ERROR_UNREACHABLE, "Connection refused or address unreachable")
+    return ProviderError(ERROR_BAD_RESPONSE, f"Response unavailable: {type(exc).__name__}")
 
 
 class AnthropicChat(ProviderClient):

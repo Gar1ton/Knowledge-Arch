@@ -365,7 +365,7 @@ class InMemorySourceDocumentStore(SourceDocumentStore):
 
     async def add_notion_outbox(self, item: NotionOutboxItem) -> None:
         if item.id in self._notion_outbox:
-            raise ValueError(f"notion_outbox id 已存在：{item.id}")
+            raise ValueError(f"notion_outbox id already exists: {item.id}")
         stored = copy.deepcopy(item)
         if stored.created_at is None:
             stored.created_at = datetime.now(timezone.utc)

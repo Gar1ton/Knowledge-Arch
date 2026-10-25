@@ -330,7 +330,7 @@ async def test_roles_follow_chat_and_pick_up_changes_without_restart() -> None:
     router = ModelRouter(settings, registry)
     research = LLMAdapter(router.client_for("research"))
     assert not research.configured
-    assert "离线测试占位答案" in await research.generate("q")
+    assert "offline placeholder answer" in await research.generate("q")
 
     settings.set("flow.models.chat", {"provider_id": "a", "model": "chat-m"})
     assert research.configured

@@ -63,8 +63,8 @@ class QuotaManager(BaseQuotaManager):
             proj_str = self._fmt_size(usage.projected_bytes)
             limit_str = self._fmt_size(usage.limit_bytes)
             msg = (
-                f"同步将超出配额上限（预计用量 {proj_str} / 上限 {limit_str}），"
-                f"同步已被硬性安全阻断！"
+                f"The sync would exceed the quota (projected {proj_str} / limit {limit_str}); "
+                "the sync was blocked for safety."
             )
             logger.error(msg)
             return QuotaWarning(kind, QuotaLevel.BLOCK, msg)
@@ -74,8 +74,9 @@ class QuotaManager(BaseQuotaManager):
         projected_ratio = usage.projected_bytes / usage.limit_bytes
         if projected_ratio >= warn_ratio:
             msg = (
-                f"用量接近配额上限（预计用量达 {projected_ratio * 100:.1f}%，"
-                f"上限 {self._fmt_size(usage.limit_bytes)}），请合理安排备份原件。"
+                f"Usage is close to the quota (projected {projected_ratio * 100:.1f}%, limit "
+                f"{self._fmt_size(usage.limit_bytes)}); plan your original-file backups "
+                "accordingly."
             )
             logger.warning(msg)
             return QuotaWarning(kind, QuotaLevel.WARN, msg)

@@ -34,7 +34,7 @@ async def failure_summary(store: SourceDocumentStore) -> list[dict[str, Any]]:
     failed.extend(await store.list_notion_outbox(NOTION_PUSH_FAILED))
     grouped: dict[str, dict[str, Any]] = {}
     for rec in failed:
-        message = rec.message or "（无错误详情）"
+        message = rec.message or "(no error details)"
         item = grouped.setdefault(message, {"message": message, "count": 0})
         item["count"] += 1
     return sorted(grouped.values(), key=lambda item: item["count"], reverse=True)[:5]

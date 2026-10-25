@@ -129,7 +129,7 @@ async def test_dimension_drift_is_rejected_and_previous_dimension_retained(http)
     queue.extend([response([[1, 2]]), response([[1, 2, 3]]), response([[3, 4]])])
     provider = ExternalEmbeddingProvider(model_name="alias")
     await provider.embed_query("first")
-    with pytest.raises(RuntimeError, match="维度漂移"):
+    with pytest.raises(RuntimeError, match="dimension drift"):
         await provider.embed_query("second")
     assert provider.get_dimension() == 2
     assert await provider.embed_query("third") == [3, 4]

@@ -136,7 +136,7 @@ class AppInitializer:
         from kacore.log_capture import install as _install_log_capture
 
         self._log_handler = _install_log_capture()
-        logger.info("AppInitializer.initialize() 开始")
+        logger.info("AppInitializer.initialize() started")
 
         # 启动是一条长链路，任何一环卡住都表现为「重启没反应」。逐段落记累计耗时，
         # 让终端页最后一条 INFO 直接指出卡在哪一步。
@@ -144,7 +144,7 @@ class AppInitializer:
 
         def _stage_done(stage: str) -> None:
             logger.info(
-                "初始化步骤完成：%s（累计 %.1fs）", stage, time.monotonic() - init_started
+                "startup step done: %s (%.1fs so far)", stage, time.monotonic() - init_started
             )
 
         # 完整恢复必须发生在 SQLite/Milvus/LightRAG 建立连接之前。
@@ -154,14 +154,14 @@ class AppInitializer:
         if await asyncio.to_thread(apply_pending_restore, self._data_dir, self._config):
             self._settings.reload()
             self._config = Config(self._settings.to_config_raw())
-            logger.info("R2 pending restore 已应用，按恢复后的设置继续初始化")
+            logger.info("Pending R2 restore applied; continuing startup with the restored settings")
 
         # 旧版插件数据导入：staging 已在上一轮准备好，这里在连接数据库前换入。
         from kacore.legacy_import.apply import apply_pending_legacy_import
 
         if await asyncio.to_thread(apply_pending_legacy_import, self._data_dir, self._settings):
             self._config = Config(self._settings.to_config_raw())
-            logger.info("旧版插件数据已换入，按导入后的设置继续初始化")
+            logger.info("Old plugin data swapped in; continuing startup with the imported settings")
 
         self._exit_stack = AsyncExitStack()
 
@@ -183,8 +183,8 @@ class AppInitializer:
         interrupted = await self.source_store.mark_interrupted_build_jobs()
         if interrupted > 0:
             logger.warning(
-                "%d 个图谱构建任务因进程重启被中断。"
-                "重新发起构建将自动从断点续建（仅处理 pending/error 文档）。",
+                "%d graph build job(s) were interrupted by a process restart. Starting the build "
+                "again resumes from where it stopped (pending/error documents only).",
                 interrupted,
             )
         existing_collections = {
@@ -197,7 +197,7 @@ class AppInitializer:
                     description="Default collection",
                 )
             )
-        _stage_done(f"SQLite 迁移与仓储（{db_path.name}）")
+        _stage_done(f"SQLite migrations and repositories ({db_path.name})")
 
         # 3) 构造同步目标
         from kacore.repository.sync_targets.base import SyncTarget
@@ -238,7 +238,7 @@ class AppInitializer:
             db_path=db_path,
         )
 
-        _stage_done("同步目标与编排层（managers/pipelines）")
+        _stage_done("sync targets and orchestration (managers/pipelines)")
 
         # 4.5) 三个 LLM 角色都经「模型分配」路由；未分配时 LLMAdapter 走离线占位。
         # RoleClient 每次调用现取分配与密钥，改选模型 / 换密钥无需重启。
@@ -252,10 +252,10 @@ class AppInitializer:
             timeout_seconds=_ask_cfg.llm_timeout_seconds,
         )
         logger.info(
-            "模型分配：chat=%s research=%s graph=%s",
-            self.model_router.describe("chat") or "未分配",
-            self.model_router.describe("research") or "跟随 chat",
-            self.model_router.describe("graph") or "跟随 chat",
+            "model assignment: chat=%s research=%s graph=%s",
+            self.model_router.describe("chat") or "unassigned",
+            self.model_router.describe("research") or "follows chat",
+            self.model_router.describe("graph") or "follows chat",
         )
 
         # 4.6) 构造共享 Embedding，并用真实探针维度装配 Milvus/LightRAG。
@@ -269,23 +269,27 @@ class AppInitializer:
         self.index_compatibility = IndexCompatibilityStore(
             self._data_dir / "index_compatibility.json"
         )
-        embedding_runtime_available = not (
-            embedding_cfg.provider == "local"
-            and not _module_available("sentence_transformers")
+        local_missing = embedding_cfg.provider == "local" and not _module_available(
+            "sentence_transformers"
         )
+        online_unset = embedding_cfg.provider == "external" and not embedding_cfg.base_url
+        embedding_runtime_available = not (local_missing or online_unset)
         if not embedding_runtime_available:
             logger.warning(
-                "未安装本地 Embedding 可选依赖；Milvus/LightRAG 已跳过，"
-                "SQLite 词法召回保持可用。"
+                "Embedding is not ready (%s): Milvus Lite is built in and turns on once embedding "
+                "is set up; until then search uses SQLite keyword recall.",
+                (
+                    "no online API connection chosen yet"
+                ) if online_unset else "local model component not installed",
             )
 
         if (vdb_cfg.backend == "milvus" or graph_cfg.enabled) and embedding_runtime_available:
             from kacore.repository.embedding.factory import EmbeddingProviderFactory
 
             logger.info(
-                "开始 Embedding 维度探针：%s 超时上限 %ss",
+                "starting embedding dimension probe: %s timeout %ss",
                 self._config.describe_embedding(),
-                embedding_cfg.load_timeout_seconds or "不限",
+                embedding_cfg.load_timeout_seconds or "none",
             )
 
             probe_started = time.monotonic()
@@ -304,14 +308,14 @@ class AppInitializer:
                 )
                 self._config.set_embedding_dimension(self.embedding_dimension)
                 logger.info(
-                    "Embedding 维度探针完成：%s dim=%d 耗时 %.1fs",
+                    "embedding dimension probe done: %s dim=%d in %.1fs",
                     self._config.describe_embedding(),
                     self.embedding_dimension,
                     time.monotonic() - probe_started,
                 )
             except _EmbeddingProbeTimeout as exc:
                 logger.error(
-                    "Embedding 维度探针超时（%ss），跳过向量/图谱继续启动：%s",
+                    "Embedding dimension probe timed out (%ss); starting without vectors/graph: %s",
                     embedding_cfg.load_timeout_seconds,
                     exc,
                 )
@@ -319,17 +323,19 @@ class AppInitializer:
                 self.embedding_provider = None
             except NotImplementedError as exc:
                 logger.warning(
-                    "Embedding provider 初始化失败，图谱/向量检索功能已禁用：%s", exc
+                    "Embedding provider failed to initialize; graph and vector search are off: %s",
+                    exc,
                 )
                 self._config.add_diagnostic(f"Embedding provider unavailable: {exc}")
                 self.embedding_provider = None
             except Exception as exc:
                 logger.error(
-                    "Embedding provider 初始化异常，图谱/向量检索功能已禁用：%s", exc, exc_info=True
+                    "Embedding provider raised during initialization; graph and vector search are "
+                    "off: %s", exc, exc_info=True
                 )
                 self._config.add_diagnostic(f"Embedding dimension probe failed: {exc}")
                 self.embedding_provider = None
-            _stage_done("Embedding 探针")
+            _stage_done("embedding probe")
 
         # 就绪判定收口至 capabilities（pymilvus ∧ milvus_lite）：只探 pymilvus 会在 Windows
         # 上放行一个必然抛 ConnectionConfigException 的装配，并让依赖面板显示假绿灯。
@@ -415,11 +421,11 @@ class AppInitializer:
             and self.embedding_dimension is not None
         ):
             # 缺什么、怎么修，一次说清；不再笼统地说「未安装 Milvus Lite 可选依赖」。
-            logger.warning("Milvus 本地向量库不可用：%s", milvus_runtime["hint"])
-            self._config.add_diagnostic(f"Milvus 不可用：{milvus_runtime['hint']}")
+            logger.warning("Local Milvus vector store unavailable: %s", milvus_runtime["hint"])
+            self._config.add_diagnostic(f"Milvus unavailable: {milvus_runtime['hint']}")
         if vdb_cfg.backend == "milvus":
             _stage_done(
-                f"Milvus 向量库（{'已装配' if self.vector_store is not None else '未激活'}）"
+                f"Milvus vector store ({'ready' if self.vector_store is not None else 'inactive'})"
             )
 
         # 4.6.5) 构造官方 LightRAG Core registry（按 collection 懒加载实例）。
@@ -430,7 +436,8 @@ class AppInitializer:
         ):
             if not _module_available("lightrag"):
                 logger.warning(
-                    "graph.enabled=true 但未安装 LightRAG 可选依赖，LightRAG Core 已跳过。"
+                    "graph.enabled=true but the LightRAG component is not installed; skipped "
+                    "LightRAG Core."
                 )
             else:
                 from kacore.lightrag_core import LightRAGCoreRegistry
@@ -469,8 +476,8 @@ class AppInitializer:
                     )
         elif graph_cfg.enabled and self.embedding_provider is None:
             logger.warning(
-                "graph.enabled=true 但 embedding provider 不可用，LightRAG Core 已跳过。"
-                " 请检查 embedding 配置（provider 可选 'local' / 'external'）。"
+                "graph.enabled=true but the embedding provider is unavailable; skipped LightRAG "
+                "Core. Check the embedding settings (provider can be 'local' or 'external')."
             )
 
         # 4.7) 构造统一检索编排器 (RetrievalOrchestrator)
@@ -498,6 +505,8 @@ class AppInitializer:
             device=rerank_cfg.device,
             batch_size=rerank_cfg.batch_size,
             max_candidates=rerank_cfg.max_candidates,
+            base_url=rerank_cfg.base_url,
+            api_key=rerank_cfg.api_key,
         )
         dt_cfg = self._config.get_deep_thinking_config()
         dt_llm_adapter = research_llm_adapter
@@ -610,7 +619,7 @@ class AppInitializer:
             config_provider=self._config.get_notion_sync_config,
         )
         self.api.attach_notion_sync_pipeline(self.notion_sync_pipeline)
-        _stage_done("业务门面 API 与检索编排")
+        _stage_done("business API facade and retrieval orchestration")
 
         # 6) 周期任务（如 R2 周期备份，v0.3.0 起注册）。
         if r2_cfg.enabled and r2_cfg.backup_interval_sec > 0:
@@ -650,16 +659,16 @@ class AppInitializer:
 
         # 6.5) 启动摘要——记录各关键组件激活状态，方便终端页快速诊断。
         logger.info(
-            "初始化完成 | embedding=%s dim=%s | vector_store=%s | lightrag=%s",
+            "startup complete | embedding=%s dim=%s | vector_store=%s | lightrag=%s",
             self._config.get_embedding_config().provider if self._config else "N/A",
             self.embedding_dimension or "N/A",
-            "Milvus" if self.vector_store is not None else "未激活",
-            "已启用" if self.lightrag_registry is not None else "未激活",
+            "Milvus" if self.vector_store is not None else "inactive",
+            "on" if self.lightrag_registry is not None else "inactive",
         )
         vdb_backend = self._config.get_vector_db_config().backend if self._config else None
         if self.vector_store is None and vdb_backend == "milvus":
             logger.warning(
-                "VectorStore 未激活——重建索引在此之前会失败。原因：%s",
+                "VectorStore is inactive; index rebuilds will fail until it is. Reason: %s",
                 self.api.vector_store_unavailable_reason()
                 if self.api is not None
                 else milvus_runtime["hint"],
@@ -671,7 +680,7 @@ class AppInitializer:
         await asyncio.to_thread(commit_applied_restore, self._data_dir)
         await asyncio.to_thread(commit_applied_legacy_import, self._data_dir)
         logger.info(
-            "AppInitializer.initialize() 完成，总耗时 %.1fs", time.monotonic() - init_started
+            "AppInitializer.initialize() finished in %.1fs", time.monotonic() - init_started
         )
 
     # ── Embedding 维度探针 ──────────────────────────────────────
@@ -700,15 +709,16 @@ class AppInitializer:
         task.add_done_callback(self._on_late_embedding_probe)
         if str(getattr(embedding_cfg, "provider", "")) == "local":
             raise _EmbeddingProbeTimeout(
-                f"本地 Embedding 模型 {embedding_cfg.model} 加载超时（{timeout_seconds:g}s）："
-                "首次使用需从 HuggingFace 下载权重，下载仍在后台继续。"
-                "本次启动已跳过向量检索与知识图谱（SQLite 词法召回仍可用）；"
-                "下载完成后请再次点击「重启服务」。"
+                f"Loading the local embedding model {embedding_cfg.model} timed out "
+                f"({timeout_seconds:g}s): the first use downloads the weights from HuggingFace, "
+                "and the download continues in the background. This start skipped vector search "
+                "and the knowledge graph (keyword search still works); click “Restart service” "
+                "again once it finishes."
             )
         raise _EmbeddingProbeTimeout(
-            f"Embedding 接口探测超时（{timeout_seconds:g}s，model={embedding_cfg.model}）："
-            "请检查 base_url、网络与 KR_EMBEDDING_API_KEY 后重启服务。"
-            "本次启动已跳过向量检索与知识图谱（SQLite 词法召回仍可用）。"
+            f"Embedding API probe timed out ({timeout_seconds:g}s, model={embedding_cfg.model}): "
+            "check the address, network and API key, then restart the service. "
+            "This start skipped vector search and the knowledge graph (keyword search still works)."
         )
 
     def _on_late_embedding_probe(self, task: asyncio.Task[Any]) -> None:
@@ -721,15 +731,19 @@ class AppInitializer:
             return
         exc = task.exception()
         if exc is not None:
-            logger.error("后台 Embedding 探针最终失败：%s", exc)
+            logger.error("Background embedding probe finally failed: %s", exc)
             return
         vector = task.result() or []
         logger.info(
-            "后台 Embedding 探针已完成（维度 %d）：模型已就绪，点击「重启服务」即可启用向量检索。",
+            (
+"Background embedding probe finished (dimension %d): the model is ready; "
+                    "click “Restart service” to turn on vector search."
+),
             len(vector),
         )
         self._config.add_diagnostic(
-            "Embedding 模型已在后台就绪，点击「重启服务」即可启用向量检索与知识图谱。"
+"The embedding model is ready in the background; click “Restart service” to turn on "
+                    "vector search and the knowledge graph."
         )
 
     async def _quiesce_indexes_for_backup(self) -> None:
@@ -740,7 +754,7 @@ class AppInitializer:
                 ("LightRAG", active_graph),
                 ("Milvus", self.api.get_active_milvus_build_job()),
                 ("Zotero", self.api.get_active_zotero_sync_job()),
-                ("文档摄入", self.api.get_active_ingest_job()),
+                ("document ingest", self.api.get_active_ingest_job()),
             ]
             running = [
                 name
@@ -753,7 +767,8 @@ class AppInitializer:
             ]
             if running:
                 raise RuntimeError(
-                    f"以下持久化任务仍在运行，请完成后再备份：{', '.join(running)}"
+                    "These tasks are still running; back up after they finish: "
+                    f"{', '.join(running)}"
                 )
         if self.lightrag_registry is not None:
             await self.lightrag_registry.close()
@@ -846,15 +861,21 @@ class AppInitializer:
         from kacore.capabilities import milvus_lock_error_hint
 
         if self._config is None or self._config.get_vector_db_config().backend != "milvus":
-            return {"status": "error", "message": "当前向量库后端不是 milvus，无需清除锁定。"}
+            return {(
+                "status"
+            ): "error", "message": "The vector store backend is not Milvus; there is "
+                                                  "no lock to clear."}
         if self.vector_store is not None:
-            return {"status": "error", "message": "Milvus 已正常装配，无需清除锁定。"}
+            return {"status": "error", "message": "Milvus is set up normally; there is no lock to "
+                                                  "clear."}
         if not self._vector_store_init_error or not milvus_lock_error_hint(
             self._vector_store_init_error
         ):
-            return {"status": "error", "message": "未检测到 Milvus 数据目录锁定问题，拒绝清除。"}
+            return {"status": "error", "message": "No Milvus data folder lock was detected; "
+                                                  "refusing to clear."}
         if self._milvus_db_path is None:
-            return {"status": "error", "message": "尚未确定 Milvus 数据目录路径，无法清除。"}
+            return {"status": "error", "message": "The Milvus data folder is not known yet, so it "
+                                                  "cannot be cleared."}
 
         return {
             "status": "error",
@@ -864,7 +885,7 @@ class AppInitializer:
     # ── 关闭：与构造顺序相反释放 ────────────────────────────────
     async def teardown(self) -> None:
         teardown_started = time.monotonic()
-        logger.info("AppInitializer.teardown() 开始释放子系统")
+        logger.info("AppInitializer.teardown() releasing subsystems")
 
         if self._backup_task is not None:
             self._backup_task.cancel()
@@ -936,7 +957,7 @@ class AppInitializer:
         # 门面已不可用（数据库已关）：置空让 HTTP 层在软重启窗口内回 503 而非撞已关闭的连接。
         self.api = None
         logger.info(
-            "AppInitializer.teardown() 完成，耗时 %.1fs", time.monotonic() - teardown_started
+            "AppInitializer.teardown() finished in %.1fs", time.monotonic() - teardown_started
         )
 
     async def initialize_or_rollback(self, *, raise_after_recovery: bool = True) -> None:
@@ -960,8 +981,9 @@ class AppInitializer:
             )
             if rolled_back_restore or rolled_back_import:
                 logger.error(
-                    "initialize() 失败，已撤回待确认的%s，按原数据重试",
-                    "旧版数据导入" if rolled_back_import else " R2 恢复",
+                    "initialize() failed; rolled back the pending %s and retrying with the "
+                    "original data",
+                    "old plugin data import" if rolled_back_import else "R2 restore",
                     exc_info=True,
                 )
                 await self.teardown()
@@ -979,7 +1001,7 @@ class AppInitializer:
         重建全部子系统。重启期间到达的请求可能短暂失败，由前端轮询重连。
         """
         reload_started = time.monotonic()
-        logger.info("AppInitializer.reload() 触发服务软重启")
+        logger.info("AppInitializer.reload() soft restart triggered")
         await self.teardown()
         self._settings.reload()
         self._config = Config(self._settings.to_config_raw())
@@ -987,13 +1009,13 @@ class AppInitializer:
             await self.initialize_or_rollback()
         except Exception:
             logger.error(
-                "软重启的 initialize() 阶段失败（耗时 %.1fs）",
+                "The initialize() step of the soft restart failed (%.1fs)",
                 time.monotonic() - reload_started,
                 exc_info=True,
             )
             raise
         logger.info(
-            "AppInitializer.reload() 软重启完成，总耗时 %.1fs",
+            "AppInitializer.reload() soft restart finished in %.1fs",
             time.monotonic() - reload_started,
         )
 

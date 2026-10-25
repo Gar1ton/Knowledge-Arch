@@ -103,9 +103,9 @@ async def test_unconfigured_adapter_uses_offline_placeholder_with_warning(caplog
     adapter = LLMAdapter()
     with caplog.at_level("WARNING", logger="LLMAdapter"):
         text = await adapter.generate("问题：什么是 RAG？")
-    assert "离线测试占位答案" in text and "模型分配" in text
+    assert "offline placeholder answer" in text and "Model assignment" in text
     assert adapter.configured is False
-    assert any("离线占位" in r.getMessage() for r in caplog.records)
+    assert any("offline placeholder" in r.getMessage() for r in caplog.records)
 
 
 async def test_unconfigured_adapter_raises_when_mock_is_disabled() -> None:
@@ -122,7 +122,7 @@ async def test_client_exception_is_logged_with_traceback(caplog: Any) -> None:
     with caplog.at_level("ERROR", logger="LLMAdapter"):
         result = await adapter._call_client_result("q")
     assert result.status == STATUS_ERROR
-    record = next(r for r in caplog.records if "主 LLM 调用失败" in r.getMessage())
+    record = next(r for r in caplog.records if "Main LLM call failed" in r.getMessage())
     assert record.exc_info is not None
 
 
@@ -136,8 +136,8 @@ async def test_main_llm_call_is_time_boxed(caplog: Any) -> None:
     adapter._timeout_seconds = 0.05  # type: ignore[assignment]
     with caplog.at_level("ERROR", logger="LLMAdapter"):
         result = await adapter.generate_result("q", allow_mock=True)
-    assert "离线测试占位答案" in result.text
-    assert any("调用超时" in r.getMessage() for r in caplog.records)
+    assert "offline placeholder answer" in result.text
+    assert any("timed out" in r.getMessage() for r in caplog.records)
     raw = await adapter._call_client_result("q")
     assert raw.status == STATUS_TIMEOUT
 
@@ -179,7 +179,7 @@ async def test_reasoning_only_twice_reports_reasoning_only_status(caplog: Any) -
         GenerationResult("", STATUS_REASONING_ONLY, reasoning_present=True),
     )
     mocked = await LLMAdapter(client2).generate_result("q")
-    assert mocked.status == STATUS_REASONING_ONLY and "离线测试占位答案" in mocked.text
+    assert mocked.status == STATUS_REASONING_ONLY and "offline placeholder answer" in mocked.text
 
 
 async def test_true_empty_response_is_not_retried() -> None:

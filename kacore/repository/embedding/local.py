@@ -35,8 +35,8 @@ def _hf_cache_hint() -> str:
     for env_var in _HF_CACHE_ENV_VARS:
         value = os.environ.get(env_var)
         if value:
-            return f"{value}（{env_var}）"
-    return "~/.cache/huggingface（默认）"
+            return f"{value} ({env_var})"
+    return "~/.cache/huggingface (default)"
 
 
 class LocalEmbeddingProvider(EmbeddingProvider):
@@ -88,10 +88,10 @@ class LocalEmbeddingProvider(EmbeddingProvider):
             logger.info("Successfully imported sentence-transformers for local embedding.")
         except ImportError as e:
             error_msg = (
-                f"本地向量模型需要 sentence-transformers 依赖。\n"
-                f"检测到未安装，请在运行环境中执行：\n"
-                f"  pip install sentence-transformers\n"
-                f"原报错: {e}"
+                    "The local embedding model needs sentence-transformers, which is not "
+                    "installed.\nInstall it in the runtime environment:\n  pip install "
+                    f"sentence-transformers\nOriginal error: {e}"
+                
             )
             logger.error(error_msg)
             raise RuntimeError(error_msg) from e
@@ -101,8 +101,8 @@ class LocalEmbeddingProvider(EmbeddingProvider):
         self._fail_fast_if_explicit_cuda_unavailable()
 
         logger.info(
-            "开始加载本地 Embedding 模型 '%s'（未缓存时会从 HuggingFace 下载权重，"
-            "缓存目录 %s，device=%s）",
+            "Loading local embedding model '%s' (weights are downloaded from HuggingFace if not "
+            "cached; cache folder %s, device=%s)",
             self._model_name,
             _hf_cache_hint(),
             self._device or "auto",
@@ -121,8 +121,8 @@ class LocalEmbeddingProvider(EmbeddingProvider):
             torch_version, cuda_available, gpu_name = self._torch_diagnostics()
             resolved_device = str(getattr(self._model, "device", self._device or "cpu"))
             logger.info(
-                "本地 Embedding 模型 '%s' 加载完成，维度 %s，耗时 %.1fs，"
-                "torch=%s cuda_available=%s resolved_device=%s gpu=%s",
+                "Local embedding model '%s' loaded, dimension %s, %.1fs, torch=%s "
+                "cuda_available=%s resolved_device=%s gpu=%s",
                 self._model_name,
                 self._dimension,
                 time.monotonic() - started,
@@ -133,13 +133,15 @@ class LocalEmbeddingProvider(EmbeddingProvider):
             )
         except Exception as e:
             logger.error(
-                "本地 Embedding 模型 '%s' 加载失败（已等待 %.1fs）：%s",
+                "Local embedding model '%s' failed to load (after %.1fs): %s",
                 self._model_name,
                 time.monotonic() - started,
                 e,
                 exc_info=True,
             )
-            raise RuntimeError(f"加载本地向量模型 {self._model_name} 失败: {e}") from e
+            raise RuntimeError(
+                f"Failed to load the local embedding model {self._model_name}: {e}"
+            ) from e
         finally:
             self._loading = False
             stop_heartbeat.set()
@@ -155,7 +157,7 @@ class LocalEmbeddingProvider(EmbeddingProvider):
         def _beat() -> None:
             while not stop.wait(_LOAD_HEARTBEAT_SECONDS):
                 logger.info(
-                    "本地 Embedding 模型 '%s' 仍在加载/下载中，已等待 %.0fs…",
+                    "Local embedding model '%s' is still loading or downloading, waited %.0fs…",
                     self._model_name,
                     time.monotonic() - started,
                 )
@@ -177,14 +179,15 @@ class LocalEmbeddingProvider(EmbeddingProvider):
             import torch
         except ImportError as e:
             raise RuntimeError(
-                f"Embedding 设备被显式设为 '{self._device}'，但未安装 torch，无法使用 GPU。\n"
-                "请安装支持 CUDA 的 torch，或将 embedding.device 改为 'auto'/'cpu'。"
+                f"The embedding device is set to '{self._device}', but torch is not installed, so "
+                "the GPU cannot be used.\nInstall a CUDA build of torch, or set embedding.device "
+                "to 'auto' or 'cpu'."
             ) from e
         if not torch.cuda.is_available():
             raise RuntimeError(
-                f"Embedding 设备被显式设为 '{self._device}'，但当前环境 CUDA 不可用"
-                "（torch.cuda.is_available() 为 False）。\n"
-                "请检查 GPU 驱动/CUDA 版 torch 安装，或将 embedding.device 改为 'auto'/'cpu'。"
+                f"The embedding device is set to '{self._device}', but CUDA is not available "
+                "(torch.cuda.is_available() is False).\nCheck the GPU driver and the CUDA build "
+                "of torch, or set embedding.device to 'auto' or 'cpu'."
             )
 
     def _torch_diagnostics(self) -> tuple[str, bool, str]:
@@ -283,7 +286,8 @@ class LocalEmbeddingProvider(EmbeddingProvider):
         """
         if self._model is None and self._loading and self._load_timeout > 0:
             raise RuntimeError(
-                f"本地向量模型 {self._model_name} 仍在后台加载/下载中，请稍后重试。"
+                f"The local embedding model {self._model_name} is still loading or downloading in "
+                "the background; try again shortly."
             )
         call = asyncio.ensure_future(asyncio.to_thread(fn, payload))
         if self._model is not None or self._load_timeout <= 0:
@@ -295,15 +299,17 @@ class LocalEmbeddingProvider(EmbeddingProvider):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 logger.error(
-                    "本地 Embedding 模型 '%s' 在 %.0fs 内未完成加载，本次调用放弃等待；"
-                    "下载/加载仍在后台继续，完成后可重试。",
+                    "Local embedding model '%s' did not finish loading within %.0fs; this call "
+                    "stopped waiting. The download/load continues in the background; try again "
+                    "when it finishes.",
                     self._model_name,
                     self._load_timeout,
                 )
                 raise RuntimeError(
-                    f"本地向量模型 {self._model_name} 加载超时"
-                    f"（{self._load_timeout:.0f}s）。首次使用需从 HuggingFace 下载权重，"
-                    "下载仍在后台继续；请检查网络后重试，或改用 external Embedding。"
+                    f"Loading the local embedding model {self._model_name} timed out "
+                    f"({self._load_timeout:.0f}s). The first use downloads the weights from "
+                    "HuggingFace and the download continues in the background; check the network "
+                    "and try again, or use an online embedding API."
                 )
             await asyncio.wait({call}, timeout=min(poll_interval, remaining))
             if call.done():

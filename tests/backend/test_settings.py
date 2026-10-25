@@ -56,11 +56,11 @@ def test_homes_cover_the_data_flow_nodes_and_preference_groups() -> None:
 @pytest.mark.parametrize(
     ("key", "value", "message"),
     [
-        ("flow.graph.query_mode", "bogus", "只能是"),
-        ("flow.graph.enabled", "yes", "布尔"),
-        ("flow.zotero.api_port", 70000, "超出范围"),
-        ("flow.zotero.api_port", 1.5, "整数"),
-        ("flow.retrieval.deep_thinking.rerank_weight", float("nan"), "有限"),
+        ("flow.graph.query_mode", "bogus", "must be one of"),
+        ("flow.graph.enabled", "yes", "boolean"),
+        ("flow.zotero.api_port", 70000, "out of range"),
+        ("flow.zotero.api_port", 1.5, "integer"),
+        ("flow.retrieval.deep_thinking.rerank_weight", float("nan"), "finite"),
         ("flow.models.chat", {"provider_id": "x"}, "provider_id"),
         ("flow.embedding.source", "remote", "provider_id"),
     ],
@@ -177,7 +177,7 @@ def test_bridge_maps_targets_and_merged_device() -> None:
 
 
 def test_bridge_keeps_frozen_fingerprints_for_local_and_provider_backed_external() -> None:
-    local = SettingsStore.in_memory()
+    local = SettingsStore.in_memory({"flow.embedding.source": "local"})
     local_cfg = Config(local.to_config_raw()).get_embedding_config()
     assert embedding_fingerprint(local_cfg, 384) == (
         "901fa583ba316a6ba3174b92a009840be8e4708296a12de9b23e8dba41a5351e"
@@ -281,7 +281,7 @@ def test_translate_handles_external_and_removed_embedding_sources(monkeypatch) -
     assert external.values["flow.embedding.source"] == {
         "provider_id": "openai", "model": "text-embedding-3-small"
     }
-    assert any("API Key" in note for note in external.attention)
+    assert any("API key" in note for note in external.attention)
 
     monkeypatch.setenv("KR_EMBEDDING_API_KEY", "env-emb-key")
     with_key = translate({"embedding": {"provider": "external", "model": "m",
@@ -289,9 +289,17 @@ def test_translate_handles_external_and_removed_embedding_sources(monkeypatch) -
     assert with_key.secrets == {"provider.emb-example.api_key": "env-emb-key"}
 
     removed = translate({"embedding": {"provider": "astr", "model": "ignored"}})
-    assert "flow.embedding.source" not in removed.values
+    assert removed.values["flow.embedding.source"] == "local"  # 旧版默认本地，迁移后保持
     assert "flow.embedding.local_model" not in removed.values
-    assert any("已移除" in note for note in removed.attention)
+    assert any("was removed" in note for note in removed.attention)
+
+
+def test_translate_moves_lexical_only_backend_to_milvus() -> None:
+    for legacy in ("lexical", "astr"):
+        result = translate({"vector_db": {"backend": legacy}})
+        assert result.values["flow.vector_store.backend"] == "milvus"
+        assert any("Milvus Lite" in note for note in result.attention)
+    assert not any("Milvus Lite" in note for note in translate({"vector_db": {}}).attention)
 
 
 def test_apply_translation_round_trips_into_config(monkeypatch) -> None:
@@ -395,4 +403,26 @@ def test_legacy_snapshot_portable_config_is_translated_on_restore(tmp_path: Path
     staged = config_dir / "settings.json"
     _stage_merged_settings(data_dir, config_dir, staged)
     merged = json.loads(staged.read_text(encoding="utf-8"))["values"]
-    assert merged == {"flow.answer.language": "en", "flow.graph.query_mode": "naive"}
+    # 旧快照没写 embedding：旧版默认本地，迁移后保持本地（新版默认线上）。
+    assert merged == {
+        "flow.answer.language": "en", "flow.graph.query_mode": "naive",
+        "flow.embedding.source": "local",
+    }
+
+
+def test_fresh_settings_default_to_online_embedding_and_rerank() -> None:
+    """新版默认线上：未选连接时 Embedding 待配置（不探针）、Rerank 不重排。"""
+    cfg = Config(SettingsStore.in_memory().to_config_raw())
+    emb = cfg.get_embedding_config()
+    assert (emb.provider, emb.base_url, emb.model) == ("external", "", "")
+    assert cfg.get_rerank_config().provider == "noop"
+
+    store = SettingsStore.in_memory()
+    store.set_providers([ProviderProfile(
+        "jina", "openai_compatible", "Jina", "https://api.jina.ai/v1", api_key_ref_for("jina")
+    ).to_dict()])
+    store.set("flow.embedding.source", {"provider_id": "jina", "model": "jina-embeddings-v3"})
+    store.set("flow.retrieval.rerank.remote", {"provider_id": "jina", "model": "jina-reranker-v2"})
+    cfg = Config(store.to_config_raw())
+    assert cfg.get_embedding_config().base_url == "https://api.jina.ai/v1"
+    assert cfg.get_rerank_config().provider == "remote"  # 默认 provider 即 remote

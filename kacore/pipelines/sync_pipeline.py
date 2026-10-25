@@ -54,7 +54,9 @@ class SyncPipeline:
         """
         target = self._sync_targets.get(target_kind)
         if target is None:
-            return {"status": "error", "message": f"同步目标 {target_kind.value} 未配置"}
+            return {(
+                "status"
+            ): "error", "message": f"Sync target {target_kind.value} is not configured"}
 
         # 1) 获取待处理的文档列表
         docs = []
@@ -90,7 +92,7 @@ class SyncPipeline:
             await self._backup_db_snapshot(target_kind)
             return {
                 "status": "success",
-                "message": "所有文档已是最新状态，无需同步。",
+                "message": "All documents are up to date; nothing to sync.",
                 "synced_count": 0,
                 "failed_count": 0,
             }
@@ -133,19 +135,25 @@ class SyncPipeline:
 
                 # 同步成功，修改记账
                 status = SyncStatus.SYNCED
-                msg = "同步成功"
+                msg = "Sync succeeded"
                 if remote_ref.startswith("degraded_skipped:"):
                     status = SyncStatus.SKIPPED
                     remote_ref = remote_ref[len("degraded_skipped:"):]
-                    msg = "已跳过文件二进制镜像，且因 Notion 数据库列缺失已自动降级为仅推标题"
+                    msg = (
+                        "Skipped the binary file mirror; Notion database columns are missing, so "
+                        "only titles were pushed"
+                    )
                 elif remote_ref.startswith("degraded:"):
                     status = SyncStatus.SYNCED
                     remote_ref = remote_ref[len("degraded:"):]
-                    msg = "同步成功，但因 Notion 数据库列缺失已自动降级为仅推标题"
+                    msg = (
+                        "Sync succeeded, but Notion database columns are missing, so only titles "
+                        "were pushed"
+                    )
                 elif remote_ref.startswith("skipped:"):
                     status = SyncStatus.SKIPPED
                     remote_ref = remote_ref[len("skipped:"):]
-                    msg = "已跳过文件二进制镜像，仅推送元数据"
+                    msg = "Skipped the binary file mirror; pushed metadata only"
 
                 record.status = status
                 record.remote_ref = remote_ref
@@ -236,14 +244,16 @@ class SyncPipeline:
     async def restore(self, target_kind: SyncTargetKind) -> dict:
         """从 R2 备份归档中拉取最新的数据库快照并覆盖恢复本地。"""
         if target_kind != SyncTargetKind.R2:
-            return {"status": "error", "message": "目前仅支持从 R2 对象存储恢复"}
+            return {(
+                "status"
+            ): "error", "message": "Restoring is only supported from R2 object storage"}
 
         target = self._sync_targets.get(target_kind)
         if target is None:
-            return {"status": "error", "message": "R2 备份目标未配置"}
+            return {"status": "error", "message": "The R2 backup target is not configured"}
 
         if self._db_path is None:
-            return {"status": "error", "message": "本地数据库路径未配置"}
+            return {"status": "error", "message": "The local database path is not configured"}
 
         try:
             logger.info("Fetching SQLite database snapshot from Cloudflare R2...")
@@ -254,11 +264,14 @@ class SyncPipeline:
             return {
                 "status": "success",
                 "restart_required": True,
-                "message": "数据库快照已安全替换，请重启服务以加载恢复后的数据。",
+                "message": (
+                    "The database snapshot was replaced safely; restart the service to load the "
+                    "restored data."
+                ),
             }
         except Exception as e:
             logger.error(f"Failed to restore database from R2: {e}")
-            return {"status": "error", "message": f"灾难恢复失败: {e}"}
+            return {"status": "error", "message": f"Disaster recovery failed: {e}"}
 
 
 __all__ = ["SyncPipeline"]

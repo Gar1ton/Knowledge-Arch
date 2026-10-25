@@ -164,7 +164,7 @@ async def test_r2_disabled_boundary() -> None:
     # 1) 未启用时，计算配额应当返回空用量，并提示已关闭
     usage = await target.check_quota(pending_bytes=100)
     assert usage.used_bytes == 0
-    assert usage.detail == "R2 同步服务已关闭"
+    assert usage.detail == "R2 sync is turned off"
 
     # 2) 未启用时执行 push 应当直接抛错
     with pytest.raises(ValueError, match="R2 sync is disabled"):

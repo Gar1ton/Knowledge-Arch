@@ -194,7 +194,7 @@ class ZoteroSyncPipeline:
             return {
                 "available": False,
                 "access_mode": cfg.access_mode,
-                "reason": "未找到 zotero.sqlite（请在设置中配置数据目录）",
+                "reason": "zotero.sqlite not found (set the data folder in the settings)",
             }
         result: dict[str, object] = {
             "available": True,
@@ -214,10 +214,12 @@ class ZoteroSyncPipeline:
         """
         cfg = self._config.get_zotero_sync_config()
         if cfg.access_mode == ZOTERO_ACCESS_SERVER:
-            return {"available": False, "reason": "探针仅用于本地模式"}
+            return {"available": False, "reason": "The probe is only for local mode"}
         data_dir = zpaths.resolve_data_dir(cfg.zotero_data_dir)
         if data_dir is None:
-            return {"available": False, "reason": "未找到 zotero.sqlite（请在设置中配置数据目录）"}
+            return {(
+                "available"
+            ): False, "reason": "zotero.sqlite not found (set the data folder in the settings)"}
         try:
             snapshot = self._reader_factory(data_dir).read_snapshot()
         except Exception as exc:  # noqa: BLE001 — 干读失败原因透传给前端

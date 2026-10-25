@@ -69,9 +69,11 @@ class SettingsApiMixin:
         registry = self._require_registry()
         profile = registry.get(ref.provider_id)
         if profile is None:
-            raise ValueError(f"连接 {ref.provider_id} 不存在")
+            raise ValueError(f"Connection {ref.provider_id} does not exist")
         if key == "flow.embedding.source" and profile.kind != KIND_OPENAI_COMPATIBLE:
-            raise ValueError("Embedding 只能使用 OpenAI 兼容连接（/embeddings 接口）")
+            raise ValueError(
+                "Embedding can only use an OpenAI-compatible connection (the /embeddings API)"
+            )
 
     async def update_setting(self, key: str, value: Any) -> dict[str, Any]:
         """写入一个设置项；返回后果（none / restart / rebuild）。非法值抛 ValueError。"""
@@ -79,7 +81,7 @@ class SettingsApiMixin:
         try:
             spec = spec_for(key)
         except KeyError:
-            raise ValueError(f"未知设置项：{key}") from None
+            raise ValueError(f"Unknown setting: {key}") from None
         if spec.kind == "model_ref":
             self._validate_model_ref_target(key, value)
         if key == "flow.zotero.access_mode":

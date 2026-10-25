@@ -115,7 +115,7 @@ async def test_append_blocks_splits_into_batches_of_100() -> None:
 
 async def test_missing_id_in_response_raises() -> None:
     client, _ = _client(FakeTransport(responses=[{"object": "page"}]))
-    with pytest.raises(NotionMCPError, match="缺少 id"):
+    with pytest.raises(NotionMCPError, match="without an id"):
         await client.create_database_item("db-1", {})
 
 
@@ -161,7 +161,7 @@ async def test_query_database_page_cap(monkeypatch: pytest.MonkeyPatch) -> None:
         ]
     )
     client, _ = _client(transport)
-    with pytest.raises(NotionMCPError, match="分页上限"):
+    with pytest.raises(NotionMCPError, match="page limit"):
         await client.query_database("db-1")
     assert len(transport.calls) == 3
 
@@ -187,7 +187,7 @@ async def test_malformed_pagination_cannot_return_partial_success(response: dict
     "status, code, needle",
     [
         (401, "unauthorized", "token"),
-        (403, "restricted_resource", "分享"),
+        (403, "restricted_resource", "share the target page"),
         (404, "object_not_found", "object_not_found"),
         (400, "validation_error", "validation_error"),
     ],

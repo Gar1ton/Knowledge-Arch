@@ -500,7 +500,7 @@ export class AskTaskTimeoutError extends Error {
     public readonly conversationId: string,
     public readonly timeoutSeconds: number,
   ) {
-    super(`ask 任务超过后端总超时 ${timeoutSeconds}s，仍在后台运行`);
+    super(`The ask task exceeded the backend timeout of ${timeoutSeconds}s and is still running in the background`);
     this.name = "AskTaskTimeoutError";
   }
 }
@@ -556,7 +556,7 @@ export async function apiFetch<T>(
     if (err instanceof Error && err.name === "AbortError") {
       throw new ApiError(
         0,
-        timedOut ? "请求超时，请稍后重试" : "请求已取消",
+        timedOut ? "The request timed out; please try again later" : "The request was cancelled",
         undefined,
         timedOut,
       );
@@ -613,9 +613,9 @@ export function isGraphNotReady(x: unknown): x is GraphNotReady {
 // ─────────────────────────────────────────────────────────────
 
 const MOCK_COLLECTIONS: Collection[] = [
-  { name: "papers", description: "学术论文集合" },
-  { name: "manuals", description: "产品手册与文档" },
-  { name: "default", description: "默认集合" },
+  { name: "papers", description: "Academic papers" },
+  { name: "manuals", description: "Product manuals and docs" },
+  { name: "default", description: "Default collection" },
 ];
 
 const MOCK_DOCS: KrDocument[] = [
@@ -643,8 +643,8 @@ const MOCK_DOCS: KrDocument[] = [
   },
   {
     doc_id: "seed-3",
-    title: "Knowledge Arch 使用手册.md",
-    filename: "Knowledge Arch 使用手册.md",
+    title: "Knowledge Arch user guide.md",
+    filename: "Knowledge Arch user guide.md",
     collection: "manuals",
     tags: ["manual"],
     size: 98_432,
@@ -654,7 +654,7 @@ const MOCK_DOCS: KrDocument[] = [
   },
   {
     doc_id: "seed-4",
-    title: "GraphRAG 技术报告.pdf",
+    title: "GraphRAG technical report.pdf",
     filename: "GraphRAG.pdf",
     collection: "papers",
     tags: ["graphrag", "knowledge-graph"],
@@ -665,7 +665,7 @@ const MOCK_DOCS: KrDocument[] = [
   },
   {
     doc_id: "seed-5",
-    title: "系统配置说明.txt",
+    title: "System configuration notes.txt",
     filename: "system-config.txt",
     collection: "default",
     tags: [],
@@ -677,9 +677,9 @@ const MOCK_DOCS: KrDocument[] = [
 ];
 
 const MOCK_KB_CHUNKS: KbChunk[] = [
-  { chunk_id: "k1", doc_id: "seed-1", ordinal: 0, text: "Transformer 架构通过自注意力机制（Self-Attention）实现对序列中任意位置的直接依赖建模，彻底摆脱了 RNN 的顺序计算限制。", context_before: [], context_after: [] },
-  { chunk_id: "k2", doc_id: "seed-2", ordinal: 1, text: "LightRAG 将知识图谱与向量检索融合，采用双层检索策略：局部级（实体邻域）与全局级（跨文档主题）协同工作以提升召回质量。", context_before: [], context_after: [] },
-  { chunk_id: "k3", doc_id: "seed-1", ordinal: 2, text: "RRF（Reciprocal Rank Fusion）是一种无参数排名融合算法，通过 1/(k+rank_i) 公式合并多路召回结果，天然规避了分数量纲不统一的问题。", context_before: [], context_after: [] },
+  { chunk_id: "k1", doc_id: "seed-1", ordinal: 0, text: "The Transformer models direct dependencies between any positions in a sequence through self-attention, removing the sequential computation limit of RNNs.", context_before: [], context_after: [] },
+  { chunk_id: "k2", doc_id: "seed-2", ordinal: 1, text: "LightRAG combines a knowledge graph with vector retrieval using two levels: local (entity neighbourhoods) and global (cross-document themes) work together to improve recall.", context_before: [], context_after: [] },
+  { chunk_id: "k3", doc_id: "seed-1", ordinal: 2, text: "RRF (Reciprocal Rank Fusion) is a parameter-free rank fusion method that merges several result lists with 1/(k+rank_i), sidestepping incompatible score scales.", context_before: [], context_after: [] },
 ];
 
 const MOCK_GRAPH: GraphData = {
@@ -742,11 +742,11 @@ const MOCK_CONFIG: EffectiveConfig = {
 
 const MOCK_ASK: AskResult = {
   conversation_id: "conv-demo-1",
-  answer: "Transformer 架构的核心是**自注意力机制**（Self-Attention），它允许模型在处理序列时直接建模任意位置之间的依赖关系 [1]。与 RNN 不同，Transformer 可以并行计算，显著提升训练效率。\n\nLightRAG 则将图结构检索与向量检索融合，通过 RRF 算法 [3] 对多路召回结果进行排名融合，提供更准确的上下文 [2]。",
+  answer: "The core of the Transformer is **self-attention**, which lets the model relate any two positions in a sequence directly [1]. Unlike RNNs, Transformers compute in parallel, which speeds up training considerably.\n\nLightRAG combines graph retrieval with vector retrieval and fuses the result lists with RRF [3] to provide more accurate context [2].",
   sources: [
-    { n: 1, doc_id: "seed-1", title: "Attention Is All You Need", chunk_id: "k1", ordinal: 0, text: "Transformer 架构通过自注意力机制（Self-Attention）实现对序列中任意位置的直接依赖建模。", rrf_score: 0.0327 },
-    { n: 2, doc_id: "seed-2", title: "LightRAG 论文", chunk_id: "k2", ordinal: 1, text: "LightRAG 将知识图谱与向量检索融合，采用双层检索策略。", rrf_score: 0.0289 },
-    { n: 3, doc_id: "seed-1", title: "Attention Is All You Need", chunk_id: "k3", ordinal: 2, text: "RRF 是一种无参数排名融合算法，通过 1/(k+rank_i) 公式合并多路召回结果。", rrf_score: 0.0214 },
+    { n: 1, doc_id: "seed-1", title: "Attention Is All You Need", chunk_id: "k1", ordinal: 0, text: "The Transformer models direct dependencies between any positions in a sequence through self-attention.", rrf_score: 0.0327 },
+    { n: 2, doc_id: "seed-2", title: "LightRAG paper", chunk_id: "k2", ordinal: 1, text: "LightRAG combines a knowledge graph with vector retrieval using a two-level strategy.", rrf_score: 0.0289 },
+    { n: 3, doc_id: "seed-1", title: "Attention Is All You Need", chunk_id: "k3", ordinal: 2, text: "RRF is a parameter-free rank fusion method that merges result lists with 1/(k+rank_i).", rrf_score: 0.0214 },
   ],
   requested_retrieval_mode: "default",
   actual_retrieval_mode: "milvus",
@@ -870,7 +870,7 @@ export async function patchDocument(
 ): Promise<KrDocument> {
   if (isMock()) {
     const doc = MOCK_DOCS.find((d) => d.doc_id === id);
-    if (!doc) throw new ApiError(404, "文档不存在");
+    if (!doc) throw new ApiError(404, "Document not found");
     if (patch.collection !== undefined) doc.collection = patch.collection;
     if (patch.tags !== undefined) doc.tags = patch.tags;
     return { ...doc };
@@ -1147,7 +1147,7 @@ export async function queryGraph(
       chunks: MOCK_KB_CHUNKS,
       entities: MOCK_GRAPH.nodes.slice(0, 2),
       relations: MOCK_GRAPH.edges.slice(0, 1),
-      context: "模拟图谱查询结果",
+      context: "Mock graph query result",
       debug: { vector_chunk_ids: ["k1"], keyword_chunk_ids: ["k2"], graph_chunk_ids: ["k3"], rrf_scores: { k1: 0.033, k2: 0.028, k3: 0.021 } },
     };
   }
@@ -1163,7 +1163,7 @@ export async function estimateGraphBuild(collection?: string): Promise<GraphBuil
     estimated_llm_calls_min: 12, estimated_llm_calls_max: 18, estimated_embedding_batches: 2,
     estimated_duration_seconds_min: 648, estimated_duration_seconds_max: 2592,
     seconds_per_chunk: 90, runtime_profile: "local",
-    estimate_notice: "这是估算，不是承诺；实际 LLM 调用次数和耗时可能更高。",
+    estimate_notice: "This is an estimate, not a promise; actual LLM calls and time may be higher.",
   };
   return apiFetch<GraphBuildEstimate>("/api/graph/build/estimate", {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -1744,6 +1744,8 @@ export interface InstallResult {
   returncode?: number;
   restart_required?: boolean;
   message?: string;
+  reason?: import("./settingsApi").InstallFailureReason;
+  detail?: string[];
 }
 
 const MOCK_DEPENDENCIES: DependencyStatus[] = [
@@ -1758,7 +1760,7 @@ const MOCK_CAPABILITIES: CapabilitiesData = {
     { id: "zotero", current: "off", candidates: ["on", "off"], status: "off", switchable: true, consequence: "restart", required_deps: [], configured: false, detail: { access_mode: "local", api_port: 23119, sync_mode: "conservative", storage_mode: "managed_copy" } },
     { id: "ingest", current: "pymupdf4llm", candidates: ["pymupdf4llm"], status: "ready", switchable: false, consequence: "none", required_deps: [], configured: true, detail: { ocr_enabled: false, pdf_converter: "pymupdf4llm", pdf_converter_ready: true, dependency_source: "requirements.txt" } },
     { id: "embedding", current: "local", candidates: ["local", "external"], status: "ready", switchable: true, consequence: "rebuild", required_deps: ["local_embedding"], configured: true, detail: { model: "intfloat/multilingual-e5-small", actual_dimension: 384 } },
-    { id: "vector_store", current: "milvus", candidates: ["milvus", "lexical"], status: "ready", switchable: true, consequence: "restart", required_deps: ["milvus"], configured: true, detail: { auto_index_enabled: true, auto_rebuild_enabled: true, auto_rebuild_delay_seconds: 30, compatible: true, rebuild_required: false, pending_reindex_count: 0, document_count: 0, chunk_count: 0, reason: "", lock_detected: false } },
+    { id: "vector_store", current: "milvus", candidates: ["milvus"], status: "ready", switchable: false, consequence: "restart", required_deps: ["milvus"], configured: true, detail: { auto_index_enabled: true, auto_rebuild_enabled: true, auto_rebuild_delay_seconds: 30, compatible: true, rebuild_required: false, pending_reindex_count: 0, document_count: 0, chunk_count: 0, reason: "", lock_detected: false } },
     { id: "retrieval", current: "rrf_fusion", candidates: ["rrf_fusion"], status: "ready", switchable: false, consequence: "none", required_deps: [], configured: true, detail: { engines: ["milvus", "sqlite_lexical"] } },
     { id: "graph", current: "off", candidates: ["on", "off"], status: "off", switchable: true, consequence: "rebuild", required_deps: ["lightrag"], configured: false, detail: { query_mode: "mix", llm_provider: "main", llm_model: "", llm_label: "<main - main LLM>" } },
     { id: "ask", current: "", candidates: [], status: "ready", switchable: false, consequence: "none", required_deps: [], configured: true, detail: { rerank_provider: "cross_encoder", rerank_model: "Alibaba-NLP/gte-reranker-modernbert-base", rerank_status: "idle", rerank_dependency_ready: true, rerank_runtime: { provider: "cross_encoder", status: "idle", model: "Alibaba-NLP/gte-reranker-modernbert-base", enabled: true, last_error: null } } },
@@ -1859,14 +1861,24 @@ export async function listDependencies(): Promise<DependencyStatus[]> {
   return res.dependencies;
 }
 
+/** 安装失败时后端用 500 返回结构化结果（含失败归类）：当作结果交给调用方，而不是抛异常。 */
+export async function installResultOf<T extends { status: string }>(request: Promise<T>): Promise<T> {
+  try {
+    return await request;
+  } catch (err) {
+    if (err instanceof ApiError && err.body?.status === "error") return err.body as unknown as T;
+    throw err;
+  }
+}
+
 export async function installDependency(pkg: string): Promise<InstallResult> {
   if (isMock()) return { status: "ok", package: pkg, restart_required: true, message: "mock installed" };
-  return apiFetch<InstallResult>("/api/dependencies/install", {
+  return installResultOf(apiFetch<InstallResult>("/api/dependencies/install", {
     method: "POST",
     timeoutMs: DEPENDENCY_INSTALL_TIMEOUT_MS,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ package: pkg }),
-  });
+  }));
 }
 
 export async function recheckDependencies(): Promise<CapabilitiesData> {

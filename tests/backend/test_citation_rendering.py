@@ -236,7 +236,7 @@ def test_render_appends_reference_block_and_mutates_sources_in_place() -> None:
     body, references = render_answer_with_references("结论 [1] 与 [2]。", sources)
     assert body == (
         "结论 (Aoki, 2020, p. 3) 与 (Bell, 2021, p. 7)。\n\n"
-        "**参考文献**\n\n"
+        "**References**\n\n"
         "- Aoki, A. (2020) Paper A.\n"
         "- Bell, B. (2021) Paper B."
     )
@@ -254,7 +254,7 @@ def test_render_reference_list_does_not_repeat_filename_author_year_or_extension
 
     assert body == (
         "结论 (Hui, 2021)。\n\n"
-        "**参考文献**\n\n"
+        "**References**\n\n"
         "- Hui (2021) Art and Cosmotechnics."
     )
     assert references == ["Hui (2021) Art and Cosmotechnics."]

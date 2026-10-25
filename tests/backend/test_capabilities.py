@@ -254,9 +254,9 @@ def test_milvus_lock_error_hint_matches_datadirlockederror() -> None:
     )
     hint = milvus_lock_error_hint(text)
     assert hint is not None
-    assert "另一个仍在运行的 Knowledge Arch 后端进程" in hint
-    assert "完整退出应用" in hint
-    assert "不要直接删除锁文件" in hint
+    assert "another Knowledge Arch backend that is still running" in hint
+    assert "Quit the app completely" in hint
+    assert "Do not delete the lock file" in hint
 
 
 def test_milvus_lock_error_hint_case_insensitive() -> None:

@@ -175,10 +175,10 @@ fn get_shell_prefs(state: tauri::State<'_, ShellState>) -> serde_json::Value {
 // ── 菜单与托盘 ─────────────────────────────────────────────────
 
 fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
-    let preferences = MenuItemBuilder::with_id(MENU_PREFERENCES, "偏好设置…")
+    let preferences = MenuItemBuilder::with_id(MENU_PREFERENCES, "Preferences…")
         .accelerator("CmdOrCtrl+,")
         .build(app)?;
-    let edit = SubmenuBuilder::new(app, "编辑")
+    let edit = SubmenuBuilder::new(app, "Edit")
         .undo()
         .redo()
         .separator()
@@ -203,7 +203,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             .separator()
             .quit()
             .build()?;
-        let window = SubmenuBuilder::new(app, "窗口")
+        let window = SubmenuBuilder::new(app, "Window")
             .minimize()
             .item(&PredefinedMenuItem::close_window(app, None)?)
             .build()?;
@@ -213,10 +213,10 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let quit = MenuItemBuilder::with_id(MENU_QUIT, "退出")
+        let quit = MenuItemBuilder::with_id(MENU_QUIT, "Quit")
             .accelerator("CmdOrCtrl+Q")
             .build(app)?;
-        let file = SubmenuBuilder::new(app, "文件")
+        let file = SubmenuBuilder::new(app, "File")
             .item(&preferences)
             .separator()
             .item(&quit)
@@ -226,9 +226,9 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
 }
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
-    let show = MenuItemBuilder::with_id(MENU_SHOW, "显示窗口").build(app)?;
-    let preferences = MenuItemBuilder::with_id(MENU_PREFERENCES, "偏好设置…").build(app)?;
-    let quit = MenuItemBuilder::with_id(MENU_QUIT, "退出 Knowledge Arch").build(app)?;
+    let show = MenuItemBuilder::with_id(MENU_SHOW, "Show window").build(app)?;
+    let preferences = MenuItemBuilder::with_id(MENU_PREFERENCES, "Preferences…").build(app)?;
+    let quit = MenuItemBuilder::with_id(MENU_QUIT, "Quit Knowledge Arch").build(app)?;
     let menu = MenuBuilder::new(app)
         .items(&[&show, &preferences])
         .separator()

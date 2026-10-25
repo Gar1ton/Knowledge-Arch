@@ -62,7 +62,7 @@ mod imp {
             .check()
             .await
             .map_err(|e| e.to_string())?
-            .ok_or("已是最新版本")?;
+            .ok_or("Already up to date")?;
         update
             .download_and_install(|_chunk, _total| {}, || {})
             .await
@@ -81,7 +81,7 @@ mod imp {
                         .notification()
                         .builder()
                         .title("Knowledge Arch")
-                        .body(format!("新版本 {version} 可用，可在应用内安装。"))
+                        .body(format!("Version {version} is available; install it from the app."))
                         .show();
                 }
             }
@@ -109,7 +109,7 @@ mod imp {
     }
 
     pub async fn install(_app: &AppHandle) -> Result<(), String> {
-        Err("此版本未启用自动更新".into())
+        Err("Automatic updates are not enabled in this build".into())
     }
 
     pub fn spawn_startup_check(_app: AppHandle) {}

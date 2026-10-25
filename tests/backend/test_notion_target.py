@@ -606,7 +606,7 @@ def test_text_to_paragraph_blocks_caps_and_splits() -> None:
     long_text = "\n\n".join(f"段落 {i} " + "x" * 50 for i in range(60))
     blocks = schema.text_to_paragraph_blocks(long_text)
     assert len(blocks) == schema.MAX_BODY_BLOCKS
-    assert "已截断" in blocks[-1]["paragraph"]["rich_text"][0]["text"]["content"]
+    assert "truncated" in blocks[-1]["paragraph"]["rich_text"][0]["text"]["content"]
 
     oversize = "y" * 4000
     split_blocks = schema.text_to_paragraph_blocks(oversize)

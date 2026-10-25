@@ -104,11 +104,13 @@ class NotionSyncPipeline:
         并发重入直接返回 already_running。`progress` 非空时逐阶段/逐文档更新进度快照。
         """
         if not self._config.enabled:
-            return {"status": "disabled", "message": "Notion 同步未启用。"}
+            return {"status": "disabled", "message": "Notion sync is turned off."}
         if not self._config.database_id:
-            return {"status": "error", "message": "Notion 数据库未初始化，请先执行初始化建库。"}
+            return {"status": "error", (
+                "message"
+            ): "The Notion database is not set up; run the database setup first."}
         if self._lock.locked():
-            return {"status": "already_running", "message": "已有 Notion 推送任务在执行。"}
+            return {"status": "already_running", "message": "A Notion push is already running."}
 
         async with self._lock:
             started = time.monotonic()
@@ -170,8 +172,8 @@ class NotionSyncPipeline:
                     if progress is not None:
                         progress.record_document("failed")
                         progress.note_error(f"{doc.doc_id}: {e}")
-                    warnings.append(f"文档 {doc.doc_id} 推送失败：{e}")
-                    logger.warning("Notion 文档推送失败（%s）：%s", doc.doc_id, e)
+                    warnings.append(f"Pushing document {doc.doc_id} failed: {e}")
+                    logger.warning("Notion document push failed (%s): %s", doc.doc_id, e)
                     await self._record_failure(NOTION_ENTITY_DOCUMENT, doc.doc_id, str(e))
 
             if progress is not None:
@@ -194,8 +196,8 @@ class NotionSyncPipeline:
                     if progress is not None:
                         progress.tags_pruned = pruned["collections"] + pruned["collection_path"]
                 except Exception as e:  # noqa: BLE001 — 清理失败不阻断整轮推送
-                    warnings.append(f"Strict 选项清理失败：{e}")
-                    logger.warning("Strict 选项清理失败：%s", e)
+                    warnings.append(f"Strict option cleanup failed: {e}")
+                    logger.warning("Strict option cleanup failed: %s", e)
 
             notes = {"scanned": 0, "marked": 0, "failed": 0}
             if scan_notes:
@@ -205,7 +207,7 @@ class NotionSyncPipeline:
                     notes.update(await self._target.scan_notes())
                 except Exception as exc:  # noqa: BLE001 — 水位留待下次重试
                     notes["failed"] = 1
-                    warnings.append(f"正文笔记检查失败：{exc}")
+                    warnings.append(f"Body note check failed: {exc}")
             request_count = self._target.request_count - requests_before
             elapsed_seconds = round(time.monotonic() - started, 2)
             if progress is not None:
@@ -320,9 +322,9 @@ class NotionSyncPipeline:
             prior.page_id if prior is not None else "",
         )
         message = (
-            f"Strict 模式已归档 {archived_count} 个 detached Notion 页面。"
+            f"Strict mode archived {archived_count} detached Notion page(s)."
             if archived_count
-            else "Strict 模式确认 detached Notion 页面已不存在。"
+            else "Strict mode confirmed the detached Notion pages no longer exist."
         )
         await self._store.upsert_notion_entity(
             NotionEntityRecord(
@@ -366,9 +368,11 @@ class NotionSyncPipeline:
         无法解析为 Notion 页面的引用降级为正文尾部文本列表（relation 只链已同步文章）。
         """
         if not self._config.enabled:
-            return {"status": "disabled", "message": "Notion 同步未启用。"}
+            return {"status": "disabled", "message": "Notion sync is turned off."}
         if not self._config.qa_database_id:
-            return {"status": "error", "message": "Notion QA 库未初始化，请先执行初始化建库。"}
+            return {"status": "error", (
+                "message"
+            ): "The Notion Q&A database is not set up; run the database setup first."}
 
         collections = await self._store.list_collections()
         paths = schema.build_collection_paths(collections)
@@ -377,8 +381,8 @@ class NotionSyncPipeline:
         )
         body = content
         if unresolved:
-            listed = "、".join(unresolved)
-            body = f"{content}\n\n未同步引用（本地 DocID）：{listed}"
+            listed = ", ".join(unresolved)
+            body = f"{content}\n\nUnsynced references (local DocID): {listed}"
 
         result = await self._target.create_qa_entry(
             title=_qa_title(title, content),
@@ -403,7 +407,7 @@ class NotionSyncPipeline:
         """推送单条 outbox QA：成功清正文留存根，失败保留全文记 failed。"""
         item = await self._store.get_notion_outbox(item_id)
         if item is None:
-            return {"status": "error", "message": f"暂存条目不存在：{item_id}"}
+            return {"status": "error", "message": f"Queued item not found: {item_id}"}
         try:
             result = await self.push_qa_record(
                 note_id=f"outbox:{item.id}",
@@ -444,7 +448,9 @@ class NotionSyncPipeline:
                 stats["pushed"] += 1
             else:
                 stats["failed"] += 1
-                warnings.append(f"QA {item.id} 补推失败：{result.get('message')}")
+                warnings.append(
+                    f"Retrying the push of QA {item.id} failed: {result.get('message')}"
+                )
         return stats
 
     async def _mark_outbox_failed(self, item: NotionOutboxItem, message: str) -> None:
@@ -497,7 +503,7 @@ class NotionSyncPipeline:
                 else:
                     unresolved.append(doc_id)
             except Exception as e:  # noqa: BLE001
-                logger.warning("按需推送引用文章失败（%s）：%s", doc_id, e)
+                logger.warning("Pushing referenced articles on demand failed (%s): %s", doc_id, e)
                 unresolved.append(doc_id)
         return page_ids, resolved_labels, unresolved
 

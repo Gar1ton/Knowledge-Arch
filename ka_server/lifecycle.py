@@ -145,7 +145,7 @@ async def wait_for_shutdown(stop: asyncio.Event, parent_pid: int | None = None) 
             return "requested"
         except TimeoutError:
             if parent_pid is not None and not pid_alive(parent_pid):
-                logger.warning("父进程 %s 已退出，后端随之关闭。", parent_pid)
+                logger.warning("Parent process %s exited; shutting down the backend.", parent_pid)
                 return "parent_exited"
 
 

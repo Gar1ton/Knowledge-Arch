@@ -44,7 +44,7 @@ class RuntimeModelsApiMixin:
         try:
             status = dict(provider.runtime_status)
         except Exception as exc:  # 面板每几秒轮询一次，读状态失败绝不能打断请求。
-            logger.warning("读取 embedding 运行态失败: %s", exc)
+            logger.warning("Failed to read the embedding runtime state: %s", exc)
             return None
         status["kind"] = KIND_EMBEDDING
         status.setdefault("state", "external")
@@ -58,7 +58,7 @@ class RuntimeModelsApiMixin:
         try:
             raw = dict(reranker.status)
         except Exception as exc:
-            logger.warning("读取 rerank 运行态失败: %s", exc)
+            logger.warning("Failed to read the rerank runtime state: %s", exc)
             return None
         return {
             "kind": KIND_RERANK,
@@ -105,7 +105,7 @@ class RuntimeModelsApiMixin:
                     provider.unload()
                     unloaded.append(KIND_EMBEDDING)
                 except Exception as exc:
-                    logger.warning("卸载 embedding 模型失败: %s", exc)
+                    logger.warning("Failed to unload the embedding model: %s", exc)
                     errors[KIND_EMBEDDING] = str(exc)
         if KIND_RERANK in wanted:
             reranker = getattr(self, "_reranker", None)
@@ -114,7 +114,7 @@ class RuntimeModelsApiMixin:
                     reranker.close()
                     unloaded.append(KIND_RERANK)
                 except Exception as exc:
-                    logger.warning("卸载 rerank 模型失败: %s", exc)
+                    logger.warning("Failed to unload the rerank model: %s", exc)
                     errors[KIND_RERANK] = str(exc)
         # 两个 provider 各自释放过一次；这里兜底再清一次，覆盖「provider 为 None 但显存
         # 仍被上一次加载留在缓存分配器里」的情况。

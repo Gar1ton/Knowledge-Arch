@@ -47,27 +47,29 @@ def classify_http_status(status: int, body: str = "") -> ProviderError:
     """把 HTTP 状态码翻译成带可读提示的 ProviderError（正文只截取一小段用于诊断）。"""
     snippet = body.strip().replace("\n", " ")[:200]
     if status in (401, 403):
-        return ProviderError(ERROR_AUTH, "API Key 无效或没有权限", status)
+        return ProviderError(ERROR_AUTH, "Invalid API key or no permission", status)
     if status == 404:
-        return ProviderError(ERROR_NOT_FOUND, "地址或模型不存在（HTTP 404）", status)
+        return ProviderError(ERROR_NOT_FOUND, "Address or model not found (HTTP 404)", status)
     if status == 429:
-        return ProviderError(ERROR_RATE_LIMITED, "请求过于频繁或额度不足（HTTP 429）", status)
+        return ProviderError(ERROR_RATE_LIMITED, (
+            "Too many requests or quota exhausted (HTTP 429)"
+        ), status)
     if status >= 500:
-        return ProviderError(ERROR_SERVER, f"服务端错误（HTTP {status}）", status)
-    suffix = f"：{snippet}" if snippet else ""
-    return ProviderError(ERROR_BAD_RESPONSE, f"请求被拒绝（HTTP {status}）{suffix}", status)
+        return ProviderError(ERROR_SERVER, f"Server error (HTTP {status})", status)
+    suffix = f": {snippet}" if snippet else ""
+    return ProviderError(ERROR_BAD_RESPONSE, f"Request rejected (HTTP {status}){suffix}", status)
 
 
 def classify_exception(exc: BaseException) -> ProviderError:
     if isinstance(exc, ProviderError):
         return exc
     if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
-        return ProviderError(ERROR_TIMEOUT, "请求超时")
+        return ProviderError(ERROR_TIMEOUT, "Request timed out")
     if isinstance(exc, aiohttp.ClientConnectorError):
-        return ProviderError(ERROR_UNREACHABLE, "连接被拒绝或地址不可达")
+        return ProviderError(ERROR_UNREACHABLE, "Connection refused or address unreachable")
     if isinstance(exc, aiohttp.ClientError):
-        return ProviderError(ERROR_UNREACHABLE, f"网络错误：{type(exc).__name__}")
-    return ProviderError(ERROR_BAD_RESPONSE, f"响应不可用：{type(exc).__name__}")
+        return ProviderError(ERROR_UNREACHABLE, f"Network error: {type(exc).__name__}")
+    return ProviderError(ERROR_BAD_RESPONSE, f"Response unavailable: {type(exc).__name__}")
 
 
 def _as_int(value: Any) -> int | None:
@@ -177,9 +179,11 @@ class OpenAICompatChat(ProviderClient):
                 try:
                     data = await resp.json(content_type=None)
                 except ValueError as exc:
-                    raise ProviderError(ERROR_BAD_RESPONSE, "响应不是有效 JSON") from exc
+                    raise ProviderError(ERROR_BAD_RESPONSE, (
+                        "The response is not valid JSON"
+                    )) from exc
         if not isinstance(data, dict):
-            raise ProviderError(ERROR_BAD_RESPONSE, "响应形状不可用")
+            raise ProviderError(ERROR_BAD_RESPONSE, "Unexpected response shape")
         return data
 
     def _build_result(
@@ -223,7 +227,8 @@ class OpenAICompatChat(ProviderClient):
         )
         if tps < _SLOW_TOKENS_PER_SECOND and tokens > 10:
             logger.warning(
-                "模型生成速度偏低 %.1f t/s——长 prompt 会显著降低本地推理速度，可减小 max_doc_chars",
+                "Model generation speed is low at %.1f t/s; long prompts slow local inference "
+                "noticeably, consider lowering max_doc_chars",
                 tps,
             )
 
@@ -239,7 +244,7 @@ class OpenAICompatChat(ProviderClient):
             raise classify_exception(exc) from None
         rows = data.get("data") if isinstance(data, dict) else None
         if not isinstance(rows, list):
-            raise ProviderError(ERROR_BAD_RESPONSE, "模型列表形状不可用")
+            raise ProviderError(ERROR_BAD_RESPONSE, "Unexpected model list shape")
         return sorted(
             {str(row.get("id")) for row in rows if isinstance(row, dict) and row.get("id")}
         )

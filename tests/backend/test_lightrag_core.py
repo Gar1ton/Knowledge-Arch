@@ -40,7 +40,7 @@ def test_estimate_lightrag_build_uses_existing_chunks_without_model_calls() -> N
     assert result["chunks_count"] == 2
     assert result["chars_count"] == len("abc\n\ndef")
     assert result["estimated_lrag_chunks"] == 1
-    assert "LRAG chunk" in result["estimate_notice"]
+    assert "LightRAG chunks" in result["estimate_notice"]
 
 
 def test_parse_lightrag_csv_entities_and_relations(tmp_path: Path) -> None:

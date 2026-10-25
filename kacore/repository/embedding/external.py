@@ -78,9 +78,9 @@ class ExternalEmbeddingProvider(EmbeddingProvider):
         try:
             parts = urlsplit(base_url)
         except ValueError:
-            raise ValueError("Embedding Base URL 无效") from None
+            raise ValueError("Invalid embedding base URL") from None
         if parts.scheme not in {"http", "https"} or not parts.netloc:
-            raise ValueError("Embedding Base URL 必须是 HTTP(S) 地址")
+            raise ValueError("The embedding base URL must be an HTTP(S) address")
         path = parts.path.rstrip("/")
         if not path.endswith("/embeddings"):
             path += "/embeddings"
@@ -117,14 +117,14 @@ class ExternalEmbeddingProvider(EmbeddingProvider):
             # 本机服务（Ollama / LM Studio）可以不要密钥：不发空的 Bearer 头。
             headers["Authorization"] = f"Bearer {self._api_key}"
         attempts = _MAX_RETRIES + 1
-        last_error = "请求失败"
+        last_error = "request failed"
         for attempt in range(1, attempts + 1):
             try:
                 async with aiohttp.ClientSession(timeout=_REQUEST_TIMEOUT) as session:
                     async with session.post(self._endpoint, headers=headers, json=payload) as resp:
                         if resp.status != 200:
                             logger.error(f"Embedding API failed with status {resp.status}")
-                            msg = f"Embedding API 响应异常，HTTP {resp.status}"
+                            msg = f"Unexpected embedding API response, HTTP {resp.status}"
                             # 4xx 是请求本身的问题，重试无意义；5xx/网络错误才重试。
                             if resp.status < 500:
                                 raise _NonRetryableEmbeddingError(msg)
@@ -134,12 +134,12 @@ class ExternalEmbeddingProvider(EmbeddingProvider):
                             data = await resp.json()
                         except (ValueError, aiohttp.ContentTypeError):
                             raise _NonRetryableEmbeddingError(
-                                "Embedding API 未返回有效 JSON"
+                                "The embedding API did not return valid JSON"
                             ) from None
                         return self._validate_response(data, count)
             except _NonRetryableEmbeddingError as e:
                 logger.error("External embedding request failed: %s", e)
-                raise RuntimeError(f"Embedding 接口通信错误: {e}") from None
+                raise RuntimeError(f"Embedding API communication error: {e}") from None
             except Exception as e:
                 # 网络异常可能带出含凭据 URL，日志和异常均只保留错误类别。
                 last_error = str(e) if isinstance(e, _RetryableEmbeddingError) else type(e).__name__
@@ -151,7 +151,7 @@ class ExternalEmbeddingProvider(EmbeddingProvider):
                 )
                 if attempt < attempts:
                     await asyncio.sleep(_RETRY_BACKOFF_SECONDS * attempt)
-        raise RuntimeError(f"Embedding 接口通信错误: {last_error}") from None
+        raise RuntimeError(f"Embedding API communication error: {last_error}") from None
 
     def _validate_response(self, data: object, count: int) -> list[list[float]]:
         """完整批次通过后才更新维度；一次坏响应不能改变 provider 的已确认身份。"""
@@ -162,8 +162,9 @@ class ExternalEmbeddingProvider(EmbeddingProvider):
         dimension = len(result[0])
         if self._observed_dimension is not None and dimension != self._observed_dimension:
             raise _NonRetryableEmbeddingError(
-                f"Embedding 维度漂移：已锁定 {self._observed_dimension}，实际为 {dimension}；"
-                "检查模型配置并重启服务，沿现有索引兼容检查决定是否重建"
+                f"Embedding dimension drift: locked at {self._observed_dimension}, got "
+                f"{dimension}; check the model settings and restart the service, and let the index "
+                "compatibility check decide whether to rebuild"
             )
         self._observed_dimension = self._dimension = dimension
         return result

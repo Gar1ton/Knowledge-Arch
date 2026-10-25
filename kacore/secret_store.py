@@ -106,7 +106,9 @@ class EncryptedSecretStore:
         try:
             value = self._keyring.get_password(KEYRING_SERVICE, self._keyring_user)
         except Exception as exc:  # noqa: BLE001 - 钥匙串不可用时回退文件
-            logger.warning("系统钥匙串读取失败，回退文件主密钥：%s", type(exc).__name__)
+            logger.warning((
+                "Reading the system keychain failed; falling back to the file master key: %s"
+            ), type(exc).__name__)
             self._keyring = None
             return None
         return value.encode("ascii") if value else None
@@ -118,7 +120,9 @@ class EncryptedSecretStore:
         try:
             self._keyring.set_password(KEYRING_SERVICE, self._keyring_user, key.decode("ascii"))
         except Exception as exc:  # noqa: BLE001
-            logger.warning("系统钥匙串写入失败，继续使用文件主密钥：%s", type(exc).__name__)
+            logger.warning((
+                "Writing to the system keychain failed; keeping the file master key: %s"
+            ), type(exc).__name__)
             self._keyring = None
             return False
         return self._load_keyring_key() == key
@@ -131,7 +135,7 @@ class EncryptedSecretStore:
             key = self._key_path.read_bytes().strip()
             if self._store_keyring_key(key):
                 self._key_path.unlink()
-                logger.info("主密钥已迁入系统钥匙串")
+                logger.info("Master key moved into the system keychain")
         if key is None:
             key = Fernet.generate_key()
             if not self._store_keyring_key(key):

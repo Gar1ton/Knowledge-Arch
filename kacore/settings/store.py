@@ -63,23 +63,23 @@ def mask_secret(value: str) -> str:
 
 def _number(spec: SettingSpec, value: Any, *, integer: bool) -> int | float:
     if isinstance(value, bool):
-        raise SettingsValidationError(f"{spec.key} 需要数字")
+        raise SettingsValidationError(f"{spec.key} needs a number")
     try:
         number: int | float = float(value) if not isinstance(value, (int, float)) else value
     except (TypeError, ValueError):
-        raise SettingsValidationError(f"{spec.key} 需要数字") from None
+        raise SettingsValidationError(f"{spec.key} needs a number") from None
     if isinstance(number, float) and not math.isfinite(number):
-        raise SettingsValidationError(f"{spec.key} 需要有限数字")
+        raise SettingsValidationError(f"{spec.key} needs a finite number")
     if integer:
         if float(number) != int(number):
-            raise SettingsValidationError(f"{spec.key} 需要整数")
+            raise SettingsValidationError(f"{spec.key} needs an integer")
         number = int(number)
     else:
         number = float(number)
     if spec.bounds is not None:
         lo, hi = spec.bounds
         if not lo <= number <= hi:
-            raise SettingsValidationError(f"{spec.key} 超出范围 [{lo:g}, {hi:g}]")
+            raise SettingsValidationError(f"{spec.key} is out of range [{lo:g}, {hi:g}]")
     return number
 
 
@@ -89,10 +89,10 @@ def normalize_value(spec: SettingSpec, value: Any) -> Any:
     if value is None:
         if spec.nullable:
             return None
-        raise SettingsValidationError(f"{spec.key} 不能为空")
+        raise SettingsValidationError(f"{spec.key} cannot be empty")
     if kind == "bool":
         if not isinstance(value, bool):
-            raise SettingsValidationError(f"{spec.key} 需要布尔值")
+            raise SettingsValidationError(f"{spec.key} needs a boolean")
         return value
     if kind == "int":
         return _number(spec, value, integer=True)
@@ -100,16 +100,16 @@ def normalize_value(spec: SettingSpec, value: Any) -> Any:
         return _number(spec, value, integer=False)
     if kind in {"str", "path", "secret"}:
         if not isinstance(value, str):
-            raise SettingsValidationError(f"{spec.key} 需要字符串")
+            raise SettingsValidationError(f"{spec.key} needs a string")
         return value.strip()
     if kind == "text":
         if not isinstance(value, str):
-            raise SettingsValidationError(f"{spec.key} 需要字符串")
+            raise SettingsValidationError(f"{spec.key} needs a string")
         return value
     if kind == "enum":
         if value not in spec.options:
             raise SettingsValidationError(
-                f"{spec.key} 只能是 {' / '.join(spec.options)}"
+                f"{spec.key} must be one of {' / '.join(spec.options)}"
             )
         return value
     if kind == "model_ref":
@@ -117,9 +117,9 @@ def normalize_value(spec: SettingSpec, value: Any) -> Any:
             return value
         ref = ModelRef.parse(value)
         if ref is None:
-            raise SettingsValidationError(f"{spec.key} 需要 {{provider_id, model}}")
+            raise SettingsValidationError(f"{spec.key} needs {{provider_id, model}}")
         return ref.to_dict()
-    raise SettingsValidationError(f"{spec.key} 的类型 {kind} 不受支持")
+    raise SettingsValidationError(f"{spec.key} has an unsupported type {kind}")
 
 
 class SettingsStore:

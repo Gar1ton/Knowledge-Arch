@@ -37,7 +37,7 @@ class LegacyImportApiMixin:
 
     def _require_data_dir(self) -> Path:
         if self._data_dir is None:
-            raise RuntimeError("当前环境不支持导入旧版插件数据。")
+            raise RuntimeError("This environment cannot import old plugin data.")
         return self._data_dir
 
     async def _library_is_empty(self) -> bool:
@@ -58,10 +58,11 @@ class LegacyImportApiMixin:
         data_dir = self._require_data_dir()
         job = self._legacy_import_job
         if job is not None and job.get("status") in {"running", "restarting"}:
-            raise LegacyImportConflictError("已有一个导入任务在进行中。")
+            raise LegacyImportConflictError("An import is already in progress.")
         if not await self._library_is_empty():
             raise LegacyImportConflictError(
-                "当前数据目录里已有文档。旧版插件数据只能导入到空库：请在偏好设置里换一个空的数据目录。"
+                "The current data folder already has documents. Old plugin data can only be "
+                "imported into an empty library: choose an empty data folder in Preferences."
             )
         locate(path)  # 先同步校验一次路径，错误立即返回给界面
         self._legacy_import_job = {
@@ -81,7 +82,7 @@ class LegacyImportApiMixin:
         job = self._legacy_import_job
         assert job is not None
         operation_id = self._runtime_events.start(
-            category="system", operation="legacy_import", msg="旧版插件数据导入开始"
+            category="system", operation="legacy_import", msg="old plugin data import started"
         )
 
         def _progress(stage: str, done: int, total: int) -> None:
@@ -90,14 +91,14 @@ class LegacyImportApiMixin:
         try:
             marker = await stage_legacy_import(path, data_dir, progress=_progress)
         except Exception as exc:  # noqa: BLE001 - 后台任务：记录并在状态里返回
-            message = str(exc) if isinstance(exc, LegacyImportError) else f"导入失败：{exc}"
-            logger.error("旧版插件数据导入失败：%s", message, exc_info=True)
+            message = str(exc) if isinstance(exc, LegacyImportError) else f"Import failed: {exc}"
+            logger.error("Old plugin data import failed: %s", message, exc_info=True)
             job.update(status="error", error=message)
             self._runtime_events.fail(
                 operation_id=operation_id,
                 category="system",
                 operation="legacy_import",
-                msg="旧版插件数据导入失败",
+                msg="old plugin data import failed",
                 error=message,
             )
             return
@@ -112,14 +113,14 @@ class LegacyImportApiMixin:
             operation_id=operation_id,
             category="system",
             operation="legacy_import",
-            msg="旧版插件数据已准备好，重启服务后换入",
+            msg="Old plugin data is ready; it will be swapped in after the service restarts",
         )
         restart = await self.restart_plugin()  # type: ignore[attr-defined]
         if restart.get("status") != "restarting":
             job.update(
                 status="staged",
                 stage="staged",
-                error="请手动重启服务以完成导入。",
+                error="Restart the service manually to finish the import.",
             )
 
     async def get_legacy_import_status(self) -> dict[str, Any]:
@@ -139,7 +140,9 @@ class LegacyImportApiMixin:
         data_dir = self._require_data_dir()
         job = self._legacy_import_job
         if job is not None and job.get("status") in {"running", "restarting"}:
-            raise LegacyImportConflictError("导入任务进行中，暂时不能放弃。")
+            raise LegacyImportConflictError(
+                "The import is in progress and cannot be discarded yet."
+            )
         discarded = await asyncio.to_thread(discard_pending_legacy_import, data_dir)
         self._legacy_import_job = None
         return {"status": "ok", "discarded": discarded}

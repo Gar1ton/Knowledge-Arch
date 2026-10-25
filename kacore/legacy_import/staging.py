@@ -298,7 +298,10 @@ def _guard_directories(install: LegacyInstall, data_dir: Path) -> None:
     source = install.data_dir.resolve()
     target = Path(data_dir).resolve()
     if source == target or source in target.parents or target in source.parents:
-        raise LegacyImportError("旧版插件数据目录与当前数据目录重叠，请换一个数据目录再导入。")
+        raise LegacyImportError(
+            "The old plugin data folder overlaps the current data folder; choose another data "
+            "folder before importing."
+        )
 
 
 def _prepare(
@@ -348,7 +351,9 @@ async def stage_legacy_import(
     _guard_directories(install, data_dir)
     root = state_dir(data_dir)
     if (root / PENDING_FILE).exists() or (root / APPLIED_FILE).exists():
-        raise LegacyImportError("已有一份导入正在等待应用，请先重启服务完成它。")
+        raise LegacyImportError(
+            "An import is already waiting to be applied; restart the service to finish it first."
+        )
     import_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
     stage_root = root / STAGING_DIR / import_id
     config = _load_config(install)
@@ -371,20 +376,22 @@ async def stage_legacy_import(
         raise
     except Exception as exc:  # noqa: BLE001 - 任何失败都回滚 staging，并给出可读原因
         shutil.rmtree(stage_root, ignore_errors=True)
-        raise LegacyImportError(f"准备导入时出错：{exc}") from exc
+        raise LegacyImportError(f"Preparing the import failed: {exc}") from exc
 
     attention = list(translation.attention)
     if stats["secrets_found"] and len(secrets) < stats["secrets_found"]:
         attention.append(
-            f"有 {stats['secrets_found'] - len(secrets)} 个旧版密钥无法解密，需要在对应节点重新填写"
+            f"{stats['secrets_found'] - len(secrets)} old secret(s) could not be decrypted; enter "
+            "them again in their nodes"
         )
     if stats["missing_originals"]:
         attention.append(
-            f"{stats['missing_originals']} 篇文档的原件不在旧版插件数据目录里"
-            "（多为 Zotero 链接模式），请确认这些文件在本机仍可访问"
+            f"The originals of {stats['missing_originals']} document(s) are not in the old plugin "
+            "data folder (usually Zotero linked mode); make sure these files are still available "
+            "on this computer"
         )
     if install.config_file is None:
-        attention.append("没有找到旧版插件的配置文件，设置保持新版默认值")
+        attention.append("No old plugin settings file was found; settings keep the new defaults")
     summary = {
         "import_id": import_id,
         "source": str(install.data_dir),

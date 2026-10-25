@@ -126,7 +126,7 @@ class R2BackupManager:
                 coro.close()  # type: ignore[attr-defined]
             return {
                 "status": "busy",
-                "message": "已有 R2 备份/恢复任务正在运行",
+                "message": "An R2 backup/restore task is already running",
                 "job": self.active_job,
             }
         self._job = R2BackupJob(job_id=uuid.uuid4().hex, action=action)
@@ -134,7 +134,7 @@ class R2BackupManager:
             category="sync",
             operation="r2_backup_restore",
             operation_id=self._job.job_id,
-            msg="R2 备份/恢复任务开始",
+            msg="R2 backup/restore task started",
             metadata={"action": action},
         )
         self._task = asyncio.create_task(self._run_job(coro))
@@ -148,7 +148,7 @@ class R2BackupManager:
                 operation="r2_backup_restore",
                 phase=job.stage,
                 percent=job.progress,
-                msg=f"R2 任务进度：{job.stage}",
+                msg=f"R2 task progress: {job.stage}",
                 metadata={
                     "job_id": job.job_id,
                     "action": job.action,
@@ -199,7 +199,7 @@ class R2BackupManager:
                     operation_id=job.job_id,
                     category="sync",
                     operation="r2_backup_restore",
-                    msg="R2 备份/恢复任务完成",
+                    msg="R2 backup/restore task finished",
                     metadata=metadata,
                 )
             else:
@@ -207,7 +207,7 @@ class R2BackupManager:
                     operation_id=job.job_id,
                     category="sync",
                     operation="r2_backup_restore",
-                    msg="R2 备份/恢复任务失败或取消",
+                    msg="R2 backup/restore task failed or was cancelled",
                     error=job.error or job.status,
                     metadata=metadata,
                 )
@@ -258,8 +258,8 @@ class R2BackupManager:
                         missing_bytes += entry.size
                 if bucket_used + missing_bytes > self._r2_config.free_tier_bytes:
                     raise RuntimeError(
-                        "R2 备份将超出配置的 10 GiB 安全上限："
-                        f"当前 {bucket_used} B，净新增 {missing_bytes} B"
+                        "The R2 backup would exceed the configured 10 GiB safety limit: currently "
+                        f"{bucket_used} B, {missing_bytes} B new"
                     )
 
                 job.stage, job.progress = "upload", 10
@@ -349,7 +349,7 @@ class R2BackupManager:
             free = shutil.disk_usage(self._data_dir).free
             if free < job.bytes_total:
                 exc = RuntimeError(
-                    f"本地空间不足：需要至少 {job.bytes_total} B，可用 {free} B"
+                    f"Not enough local space: need at least {job.bytes_total} B, {free} B available"
                 )
                 job.finish("error", error=str(exc))
                 raise exc
@@ -368,7 +368,7 @@ class R2BackupManager:
                     )
                     actual = await asyncio.to_thread(sha256_file, target_path)
                     if actual != entry.sha256 or target_path.stat().st_size != entry.size:
-                        raise ValueError(f"备份对象校验失败：{entry.path}")
+                        raise ValueError(f"Backup object check failed: {entry.path}")
                     job.files_done += 1
                     job.bytes_done += entry.size
                     job.progress = 5 + int(80 * job.files_done / max(job.files_total, 1))
@@ -376,7 +376,7 @@ class R2BackupManager:
                 job.stage, job.progress = "verify", 88
                 db_path = payload_root / "database" / "knowledge_repository.db"
                 if not db_path.exists():
-                    raise ValueError("备份缺少 knowledge_repository.db")
+                    raise ValueError("The backup has no knowledge_repository.db")
                 await asyncio.to_thread(check_sqlite_integrity, db_path)
                 marker = {
                     "snapshot_id": snapshot_id,
@@ -391,7 +391,9 @@ class R2BackupManager:
                     "snapshot_id": snapshot_id,
                     "restart_required": True,
                     "auto_restart": auto_restart,
-                    "message": "完整快照已下载并验证，等待重启应用。",
+                    "message": (
+                        "The full snapshot was downloaded and verified; restart the app to finish."
+                    ),
                 }
                 job.finish("success")
                 return result
@@ -497,29 +499,29 @@ class R2BackupManager:
         try:
             latest_bytes = await self._target.pull_backup(_LATEST_KEY)
         except Exception as exc:
-            raise FileNotFoundError("R2 中没有可恢复的 v1 快照") from exc
+            raise FileNotFoundError("There is no v1 snapshot in R2 to restore") from exc
         latest = json.loads(latest_bytes.decode("utf-8"))
         if not isinstance(latest, dict):
-            raise ValueError("latest.json 内容非法")
+            raise ValueError("latest.json is invalid")
         manifest_key = str(latest.get("manifest_key") or "")
         if not manifest_key.startswith(f"{_PREFIX}/snapshots/"):
-            raise ValueError("latest.json manifest_key 非法")
+            raise ValueError("latest.json has an invalid manifest_key")
         manifest_bytes = await self._target.pull_backup(manifest_key)
         expected = str(latest.get("manifest_sha256") or "")
         if hashlib.sha256(manifest_bytes).hexdigest() != expected:
-            raise ValueError("manifest 哈希校验失败")
+            raise ValueError("manifest hash check failed")
         manifest = json.loads(manifest_bytes.decode("utf-8"))
         if not isinstance(manifest, dict):
-            raise ValueError("manifest 内容非法")
+            raise ValueError("manifest is invalid")
         if int(manifest.get("schema_version") or 0) != _SCHEMA_VERSION:
-            raise ValueError("不支持的 R2 manifest schema")
+            raise ValueError("unsupported R2 manifest schema")
         if str(manifest.get("snapshot_id") or "") != str(latest.get("snapshot_id") or ""):
-            raise ValueError("latest 与 manifest snapshot_id 不一致")
+            raise ValueError("snapshot_id differs between latest and manifest")
         entries = parse_entries(manifest)
         if int(manifest.get("file_count") or 0) != len(entries):
-            raise ValueError("manifest file_count 不一致")
+            raise ValueError("manifest file_count mismatch")
         if int(manifest.get("logical_bytes") or 0) != sum(entry.size for entry in entries):
-            raise ValueError("manifest logical_bytes 不一致")
+            raise ValueError("manifest logical_bytes mismatch")
         return latest, manifest
 
     async def _garbage_collect(self, manifest_key: str, digests: set[str]) -> None:

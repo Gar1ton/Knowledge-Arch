@@ -64,7 +64,7 @@ def _apply_settings(stage_root: Path, settings: SettingsStore) -> int:
             settings.secrets.set_secret(name, value)
             imported += 1
         except ValueError:
-            logger.warning("跳过无法写入的旧版机密：%s", name)
+            logger.warning("Skipping an old secret that cannot be written: %s", name)
     apply_translation(settings, translate(merged))
     return imported
 
@@ -80,7 +80,9 @@ def apply_pending_legacy_import(data_dir: Path, settings: SettingsStore) -> bool
     payload = stage_root / PAYLOAD_DIR
     if not import_id or not payload.is_dir():
         (root / PENDING_FILE).unlink(missing_ok=True)
-        write_json(root / RESULT_FILE, {**marker, "status": "failed", "error": "staging 已丢失"})
+        write_json(root / RESULT_FILE, {**marker, (
+            "status"
+        ): "failed", "error": "staging is missing"})
         return False
 
     rollback = root / _ROLLBACK_DIR / import_id
@@ -111,7 +113,7 @@ def apply_pending_legacy_import(data_dir: Path, settings: SettingsStore) -> bool
             applied.append({"target": str(target), "old": ""})
         secrets_imported = _apply_settings(stage_root, settings)
     except Exception:
-        logger.error("旧版数据换入失败，撤回已换入的部分", exc_info=True)
+        logger.error("Swapping in old data failed; rolling back what was swapped in", exc_info=True)
         _restore(Path(data_dir), applied, rollback, had_settings, had_secrets)
         shutil.rmtree(rollback, ignore_errors=True)
         raise
@@ -128,7 +130,9 @@ def apply_pending_legacy_import(data_dir: Path, settings: SettingsStore) -> bool
         },
     )
     (root / PENDING_FILE).unlink(missing_ok=True)
-    logger.info("旧版插件数据已换入数据目录（%s），等待初始化确认", import_id)
+    logger.info((
+        "Old plugin data swapped into the data folder (%s); waiting for startup to confirm"
+    ), import_id)
     return True
 
 
@@ -186,7 +190,7 @@ def commit_applied_legacy_import(data_dir: Path) -> bool:
         },
     )
     (root / APPLIED_FILE).unlink(missing_ok=True)
-    logger.info("旧版插件数据导入完成（%s）", applied.get("import_id"))
+    logger.info("Old plugin data import finished (%s)", applied.get("import_id"))
     return True
 
 
@@ -212,14 +216,17 @@ def rollback_applied_legacy_import(data_dir: Path, *, error: str = "") -> bool:
             "status": "failed",
             "import_id": applied.get("import_id"),
             "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-            "error": error or "导入后服务初始化失败，已恢复导入前的数据。",
+            "error": error or (
+                "The service failed to start after the import; the data from before the import was "
+                "restored."
+            ),
             "summary": applied.get("summary") or {},
             "attention": applied.get("attention") or [],
             "dropped": applied.get("dropped") or [],
         },
     )
     (root / APPLIED_FILE).unlink(missing_ok=True)
-    logger.warning("旧版插件数据导入已回滚（%s）", applied.get("import_id"))
+    logger.warning("Old plugin data import rolled back (%s)", applied.get("import_id"))
     return True
 
 

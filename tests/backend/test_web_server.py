@@ -613,7 +613,7 @@ async def test_graph_endpoints_return_200(tmp_path: Path) -> None:
         estimate = await client.post("/api/graph/build/estimate", json={"collection": "papers"})
         assert estimate.status == 200
         estimate_body = await estimate.json()
-        assert "LRAG chunk" in estimate_body["estimate_notice"]
+        assert "LightRAG chunks" in estimate_body["estimate_notice"]
         assert "estimated_lrag_chunks" in estimate_body
 
         resp1 = await client.post("/api/graph/build", json={"collection": "papers"})
@@ -1549,7 +1549,7 @@ async def test_config_update_route(tmp_path: Path) -> None:
         assert resp_secret.status == 400
         secret_data = await resp_secret.json()
         assert secret_data["status"] == "error"
-        assert "机密字段" in secret_data["message"]
+        assert "is a secret" in secret_data["message"]
 
         resp_deep_secret = await client.post(
             "/api/config/update",

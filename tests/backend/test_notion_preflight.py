@@ -118,7 +118,7 @@ async def test_database_404_identifies_target_without_writes(field: str, role: s
     assert error.value.__cause__ is original
     assert f"Notion {role}" in str(error.value)
     assert f"notion_sync.{field}=missing-id" in str(error.value)
-    assert "分享" in str(error.value)
+    assert "shared" in str(error.value)
     adapter.create_database.assert_not_awaited()
     assert getattr(target.config, field) == "missing-id"
 

@@ -55,8 +55,8 @@ async def test_quota_level_warn_above_80_percent(r2_config: R2SyncConfig) -> Non
     # 加上待同步增量共 8.1GB
     warning = await manager.check_quota("r2", pending_bytes=100 * 1024 * 1024)
     assert warning.level == QuotaLevel.WARN
-    assert "接近配额上限" in warning.message
-    assert "预计用量达 81.0%" in warning.message
+    assert "close to the quota" in warning.message
+    assert "projected 81.0%" in warning.message
     assert "10.00 GB" in warning.message
 
 
@@ -75,4 +75,4 @@ async def test_quota_level_block_above_100_percent(r2_config: R2SyncConfig) -> N
     # 预计用量达到 10.1GB，硬超额阻断
     warning = await manager.check_quota("r2", pending_bytes=200 * 1024 * 1024)
     assert warning.level == QuotaLevel.BLOCK
-    assert "已被硬性安全阻断" in warning.message
+    assert "blocked for safety" in warning.message

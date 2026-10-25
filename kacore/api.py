@@ -250,6 +250,15 @@ def _uses_chinese(text: str) -> bool:
     return any("\u4e00" <= ch <= "\u9fff" for ch in text)
 
 
+def _reference_heading(answer_language: str, question: str) -> str:
+    return "参考文献" if _answers_in_chinese(answer_language, question) else "References"
+
+
+def _answers_in_chinese(answer_language: str, question: str) -> bool:
+    """答案正文里的固定文案（兜底说明、参考文献标题）跟随回答语言；auto 按提问语言判断。"""
+    return answer_language == "zh" or (answer_language == "auto" and _uses_chinese(question))
+
+
 def _est_context_tokens(text: str) -> int:
     """粗估整篇正文送入模型的 token 数，仅用于确认弹窗/preview 的「约 N tokens」展示。
 
@@ -456,8 +465,8 @@ def _assert_doc_writable(doc: SourceDocument) -> None:
     """service 层只读强制：Zotero 同步来源禁止用户侧修改/删除（review #7）。"""
     if doc.read_only or doc.origin is DocumentOrigin.ZOTERO:
         raise ReadOnlyError(
-            f"文档 {doc.doc_id} 来自 Zotero 同步，处于只读状态；"
-            "请在 Zotero 中修改后重新同步，或切换同步模式。"
+            f"Document {doc.doc_id} comes from Zotero sync and is read-only; "
+            "edit it in Zotero and sync again, or change the sync mode."
         )
 
 if TYPE_CHECKING:
@@ -797,7 +806,7 @@ class KnowledgeRepositoryApi(
                 operation=operation,
                 phase=phase,
                 percent=percent,
-                msg=f"{label}：{snapshot.get('stage_label') or phase}",
+                msg=f"{label}: {snapshot.get('stage_label') or phase}",
                 metadata={
                     "job_id": str(snapshot.get("job_id") or job.job_id),
                     "processed_docs": int(snapshot.get("processed_docs") or 0),
@@ -868,7 +877,7 @@ class KnowledgeRepositoryApi(
         await self._source_store.upsert_collection(
             Collection(
                 name=SYSTEM_COLLECTION_UNCATEGORIZED,
-                description="未归档文档（系统集合，不可删除）",
+                description="Uncategorized documents (system collection, cannot be deleted)",
                 created_at=_now(),
             )
         )
@@ -880,12 +889,14 @@ class KnowledgeRepositoryApi(
         只读保护：Zotero 同步来源的集合（origin=zotero）禁止用户侧删除，仅允许删除手动创建的集合。
         """
         if name == SYSTEM_COLLECTION_UNCATEGORIZED:
-            raise ValueError(f"系统集合 '{SYSTEM_COLLECTION_UNCATEGORIZED}' 不可删除。")
+            raise ValueError(f"The system collection '{SYSTEM_COLLECTION_UNCATEGORIZED}' cannot "
+                "be deleted.")
         existing = {c.name: c for c in await self._source_store.list_collections()}
         target = existing.get(name)
         if target is not None and target.origin is DocumentOrigin.ZOTERO:
             raise ReadOnlyError(
-                f"集合 '{name}' 来自 Zotero 同步，处于只读状态，不能手动删除。"
+                f"Collection '{name}' comes from Zotero sync and is read-only; it cannot be "
+                "deleted manually."
             )
 
         await self._ensure_system_collections()
@@ -937,16 +948,18 @@ class KnowledgeRepositoryApi(
                 and c.name == name
                 and c.coll_key != exclude_key
             ):
-                raise ValueError(f"同级已存在同名集合：{name}")
+                raise ValueError(f"A sibling collection with this name already exists: {name}")
 
     async def _assert_local_editable(self, coll_key: str) -> Collection:
         col = await self._source_store.get_collection(coll_key)
         if col is None:
-            raise ValueError(f"集合不存在：{coll_key}")
+            raise ValueError(f"Collection not found: {coll_key}")
         if col.origin is DocumentOrigin.ZOTERO:
-            raise ReadOnlyError(f"集合 '{col.name}' 来自 Zotero 同步，只读，不能编辑。")
+            raise ReadOnlyError(f"Collection '{col.name}' comes from Zotero sync and is "
+                "read-only; it cannot be edited.")
         if col.name == SYSTEM_COLLECTION_UNCATEGORIZED:
-            raise ValueError(f"系统集合 '{SYSTEM_COLLECTION_UNCATEGORIZED}' 不可编辑。")
+            raise ValueError(f"The system collection '{SYSTEM_COLLECTION_UNCATEGORIZED}' cannot "
+                "be edited.")
         return col
 
     async def create_subcollection(
@@ -955,13 +968,15 @@ class KnowledgeRepositoryApi(
         """新建本地集合（parent_key 为空=顶层）。返回新集合的 coll_key。"""
         name = name.strip()
         if not name:
-            raise ValueError("集合名不能为空。")
+            raise ValueError("The collection name cannot be empty.")
         if parent_key:
             parent = await self._source_store.get_collection(parent_key)
             if parent is None:
-                raise ValueError(f"父集合不存在：{parent_key}")
+                raise ValueError(f"Parent collection not found: {parent_key}")
             if parent.origin is DocumentOrigin.ZOTERO:
-                raise ReadOnlyError("不能在 Zotero 只读集合下创建子集合。")
+                raise ReadOnlyError(
+                    "Sub-collections cannot be created under a read-only Zotero collection."
+                )
         await self._assert_name_unique_under_parent(name, parent_key)
         col = Collection(
             name=name,
@@ -977,7 +992,7 @@ class KnowledgeRepositoryApi(
         """重命名本地集合（同 parent 下唯一）。"""
         new_name = new_name.strip()
         if not new_name:
-            raise ValueError("集合名不能为空。")
+            raise ValueError("The collection name cannot be empty.")
         col = await self._assert_local_editable(coll_key)
         await self._assert_name_unique_under_parent(
             new_name, col.parent_key, exclude_key=coll_key
@@ -990,15 +1005,20 @@ class KnowledgeRepositoryApi(
         col = await self._assert_local_editable(coll_key)
         if new_parent_key:
             if new_parent_key == coll_key:
-                raise ValueError("不能把集合移动到自身下。")
+                raise ValueError("A collection cannot be moved under itself.")
             parent = await self._source_store.get_collection(new_parent_key)
             if parent is None:
-                raise ValueError(f"目标父集合不存在：{new_parent_key}")
+                raise ValueError(f"Target parent collection not found: {new_parent_key}")
             if parent.origin is DocumentOrigin.ZOTERO:
-                raise ReadOnlyError("不能移动到 Zotero 只读集合下。")
+                raise ReadOnlyError(
+                    "Collections cannot be moved under a read-only Zotero collection."
+                )
             descendants = await self._source_store.get_local_collection_descendants(coll_key)
             if new_parent_key in descendants:
-                raise ValueError("不能把集合移动到其自身的后代下（会形成环）。")
+                raise ValueError(
+                    "A collection cannot be moved under its own descendant "
+                    "(that would form a cycle)."
+                )
         await self._assert_name_unique_under_parent(
             col.name, new_parent_key, exclude_key=coll_key
         )
@@ -1549,7 +1569,7 @@ class KnowledgeRepositoryApi(
                 category="ingest",
                 operation="document_ingest",
                 operation_id=job.job_id,
-                msg="文档摄入开始",
+                msg="Document ingest started",
                 metadata={"collection": collection, "size_bytes": size_bytes},
             )
             self._runtime_events.progress(
@@ -1558,7 +1578,7 @@ class KnowledgeRepositoryApi(
                 operation="document_ingest",
                 phase=INGEST_STAGE_PARSING,
                 percent=job.progress_percent(),
-                msg="正在解析文档并生成结构化制品",
+                msg="Parsing the document and building structured artifacts",
             )
             logger.info("Document ingest start: title=%r collection=%r", title, collection)
             try:
@@ -1578,7 +1598,7 @@ class KnowledgeRepositoryApi(
                     operation_id=job.job_id,
                     category="ingest",
                     operation="document_ingest",
-                    msg="文档摄入失败",
+                    msg="Document ingest failed",
                     error=exc,
                 )
                 raise
@@ -1590,7 +1610,7 @@ class KnowledgeRepositoryApi(
                 operation="document_ingest",
                 phase=INGEST_STAGE_INDEXING,
                 percent=job.progress_percent(),
-                msg="文档解析完成，正在更新检索索引",
+                msg="Document parsed; updating the search index",
                 metadata={"doc_id": doc_id},
             )
             # 同步写入 Milvus 向量库（仅在 auto_index_enabled=True 时执行）
@@ -1615,7 +1635,7 @@ class KnowledgeRepositoryApi(
                             operation="document_ingest",
                             status="error",
                             level="ERROR",
-                            msg="文档已摄入，但 Milvus 自动索引失败",
+                            msg="Document ingested, but automatic Milvus indexing failed",
                             metadata={
                                 "operation_id": job.job_id,
                                 "doc_id": doc_id,
@@ -1635,7 +1655,7 @@ class KnowledgeRepositoryApi(
                 operation_id=job.job_id,
                 category="ingest",
                 operation="document_ingest",
-                msg="文档摄入完成",
+                msg="Document ingest finished",
                 metadata={"doc_id": doc_id, "collection": collection},
             )
             logger.info("Document ingest done: doc_id=%s title=%r", doc_id, title)
@@ -2133,7 +2153,7 @@ class KnowledgeRepositoryApi(
         """
         if not self._vector_store or not self._embedding_provider:
             raise RuntimeError(
-                self.vector_store_unavailable_reason() or "VectorStore 未配置"
+                self.vector_store_unavailable_reason() or "VectorStore is not configured"
             )
 
         if (
@@ -2163,7 +2183,7 @@ class KnowledgeRepositoryApi(
             self._record_milvus_progress(job, force=True)
         total_chunks = 0
         rebuilt_docs = 0
-        logger.info("rebuild_index_pending: %d 个文档待重建", len(docs))
+        logger.info("rebuild_index_pending: %d document(s) to rebuild", len(docs))
 
         for doc in index_docs:
             try:
@@ -2208,7 +2228,7 @@ class KnowledgeRepositoryApi(
             self._record_milvus_progress(job, force=True)
 
         logger.info(
-            "rebuild_index_pending 完成: %d docs, %d chunks, %d failed",
+            "rebuild_index_pending done: %d docs, %d chunks, %d failed",
             rebuilt_docs,
             total_chunks,
             len(errors),
@@ -2248,7 +2268,8 @@ class KnowledgeRepositoryApi(
                 logger.error("Failed to mark stale document %s for reindex: %s", doc.doc_id, exc)
         if marked:
             logger.info(
-                "检测到 %d 个文档由旧清洗/分块逻辑处理（processing_version != %s），已标记待重建。",
+                "%d document(s) were processed by an older cleaning/chunking version "
+            "(processing_version != %s) and are marked for rebuild.",
                 marked, PROCESSING_VERSION,
             )
             self._notify_auto_reindex()
@@ -2265,7 +2286,7 @@ class KnowledgeRepositoryApi(
         """
         if not self._vector_store or not self._embedding_provider:
             raise RuntimeError(
-                self.vector_store_unavailable_reason() or "VectorStore 未配置"
+                self.vector_store_unavailable_reason() or "VectorStore is not configured"
             )
         current = self._milvus_build_job
         if current is not None and current.status == MILVUS_BUILD_RUNNING:
@@ -2281,7 +2302,7 @@ class KnowledgeRepositoryApi(
             category="retrieval",
             operation="milvus_rebuild",
             operation_id=job.job_id,
-            msg="Milvus 索引重建开始",
+            msg="Milvus index rebuild started",
             metadata={"mode": job.mode},
         )
         self._record_milvus_progress(job, force=True)
@@ -2313,7 +2334,7 @@ class KnowledgeRepositoryApi(
             operation="milvus_rebuild",
             phase=str(snapshot["stage"]),
             percent=int(snapshot["progress_percent"]),
-            msg=f"Milvus 重建进度：{snapshot['stage_label']}",
+            msg=f"Milvus rebuild progress: {snapshot['stage_label']}",
             force=force,
             metadata={
                 "mode": snapshot["mode"],
@@ -2336,7 +2357,7 @@ class KnowledgeRepositoryApi(
             job.recent_error = "cancelled"
             raise
         except Exception as exc:  # noqa: BLE001 - 终态统一兜底，后台任务不应抛出
-            logger.error("Milvus 后台重建失败: %s", exc, exc_info=True)
+            logger.error("Milvus background rebuild failed: %s", exc, exc_info=True)
             job.status = MILVUS_BUILD_ERROR
             job.recent_error = str(exc)
         finally:
@@ -2355,7 +2376,7 @@ class KnowledgeRepositoryApi(
                     operation_id=job.job_id,
                     category="retrieval",
                     operation="milvus_rebuild",
-                    msg="Milvus 索引重建失败",
+                    msg="Milvus index rebuild failed",
                     error=job.recent_error or "unknown error",
                     metadata=metadata,
                 )
@@ -2364,7 +2385,7 @@ class KnowledgeRepositoryApi(
                     operation_id=job.job_id,
                     category="retrieval",
                     operation="milvus_rebuild",
-                    msg="Milvus 索引重建完成",
+                    msg="Milvus index rebuild finished",
                     status="warning" if job.failed_docs else "ok",
                     level="WARNING" if job.failed_docs else "INFO",
                     metadata=metadata,
@@ -2458,7 +2479,7 @@ class KnowledgeRepositoryApi(
         exc = task.exception()
         if exc is not None:
             logger.error(
-                "后台 ask 任务（超过 task_timeout_seconds 后台继续运行）最终失败："
+                "Background ask task (still running after task_timeout_seconds) finally failed: "
                 "conversation_id=%s mode=%s: %s",
                 cid,
                 retrieval_mode,
@@ -2466,8 +2487,9 @@ class KnowledgeRepositoryApi(
             )
             return
         logger.info(
-            "后台 ask 任务（超过 task_timeout_seconds 后台继续运行）已完成并写入 chat_history："
-            "conversation_id=%s mode=%s；前端可通过 /api/chat/history 找回该答案。",
+            "Background ask task (still running after task_timeout_seconds) finished and was "
+            "saved to chat_history: conversation_id=%s mode=%s; the frontend can recover it "
+            "via /api/chat/history.",
             cid,
             retrieval_mode,
         )
@@ -2501,7 +2523,12 @@ class KnowledgeRepositoryApi(
         generation_status = ""
         if self._llm_adapter is None:
             # 明确告知无法作答，绝不把整篇正文当答案倒回去（那既没回答问题，又会撑爆存库）。
-            answer = "⚠️ LLM 暂不可用，无法基于全文作答。请检查 LLM 配置后重试。"
+            answer = (
+                "⚠️ LLM 暂不可用，无法基于全文作答。请检查 LLM 配置后重试。"
+                if _answers_in_chinese(answer_language, question)
+                else "⚠️ The LLM is unavailable, so the full text could not be answered. "
+                "Check the LLM settings and try again."
+            )
             citable = False
         else:
             try:
@@ -2534,7 +2561,9 @@ class KnowledgeRepositoryApi(
         sources[0]["text"] = clip_at_sentence(content, 300)
         references: list[str] = []
         if citable:
-            answer, references = render_answer_with_references(answer, sources)
+            answer, references = render_answer_with_references(
+                answer, sources, heading=_reference_heading(answer_language, question)
+            )
         else:
             annotate_sources(sources)
         answer_notice = _compute_answer_notice(None, answer_language, question, generation_status)
@@ -2543,7 +2572,7 @@ class KnowledgeRepositoryApi(
         record("ask_total", ask_start, sources=1)
         progress("done", 100)
         logger.info(
-            "ask 完成 mode=fulltext doc_id=%s 正文=%d 字符 生成 %.1fs",
+            "ask done mode=fulltext doc_id=%s text=%d chars generation %.1fs",
             doc_id,
             len(content),
             time.monotonic() - t_llm,
@@ -2562,7 +2591,7 @@ class KnowledgeRepositoryApi(
             operation_id=cid,
             category="llm",
             operation="ask",
-            msg="Ask 问答完成",
+            msg="Ask finished",
             metadata={
                 "conversation_id": cid,
                 "mode": MODE_FULLTEXT,
@@ -2660,7 +2689,7 @@ class KnowledgeRepositoryApi(
             category="llm",
             operation="ask",
             operation_id=cid,
-            msg="Ask 问答开始",
+            msg="Ask started",
             metadata={
                 "conversation_id": cid,
                 "collection": collection or "all",
@@ -2685,7 +2714,7 @@ class KnowledgeRepositoryApi(
                 operation="ask",
                 phase=stage,
                 percent=pct,
-                msg=f"Ask 阶段：{stage}",
+                msg=f"Ask stage: {stage}",
                 metadata={
                     "conversation_id": cid,
                     "collection": collection or "all",
@@ -2809,7 +2838,11 @@ class KnowledgeRepositoryApi(
                         user_prompt, system_prompt=system_prompt
                     )
                 else:
-                    answer = lightrag_context or "未在知识图谱中找到与该问题相关的内容。"
+                    answer = lightrag_context or (
+                        "未在知识图谱中找到与该问题相关的内容。"
+                        if _answers_in_chinese(answer_language, question)
+                        else "Nothing related to this question was found in the knowledge graph."
+                    )
                 _record("llm_generate", t_llm)
                 _record("ask_total", ask_start, sources=0)
                 _progress("done", 100)
@@ -2824,7 +2857,7 @@ class KnowledgeRepositoryApi(
                     operation_id=cid,
                     category="llm",
                     operation="ask",
-                    msg="Ask 问答完成",
+                    msg="Ask finished",
                     metadata={
                         "conversation_id": cid,
                         "mode": retrieval_mode,
@@ -3065,26 +3098,36 @@ class KnowledgeRepositoryApi(
                 excerpts = []
                 for s in sources:
                     meta = s.get("metadata") or {}
-                    page_info = f"（Page {meta['page_number']}）" if meta.get("page_number") else ""
+                    page_info = f" (p. {meta['page_number']})" if meta.get("page_number") else ""
                     excerpts.append(
                         f"**[{s['n']}] {s['title']}**{page_info}\n"
                         f"{clip_at_sentence(s['text'], 300)}"
                     )
-                answer = (
+                lead = (
                     f"⚠️ LLM 暂不可用，未能合成回答。以下为检索到的 {len(sources)} 段原文摘录：\n\n"
-                    + "\n\n".join(excerpts)
+                    if _answers_in_chinese(answer_language, question)
+                    else f"⚠️ The LLM is unavailable, so no answer could be written. Here are "
+                    f"{len(sources)} retrieved passages:\n\n"
                 )
+                answer = lead + "\n\n".join(excerpts)
             elif lightrag_context:
                 answer = lightrag_context
             else:
-                answer = "未在知识库中找到与该问题相关的内容。请尝试其他关键词或上传相关文档。"
+                answer = (
+                    "未在知识库中找到与该问题相关的内容。请尝试其他关键词或上传相关文档。"
+                    if _answers_in_chinese(answer_language, question)
+                    else "Nothing related to this question was found in the knowledge base. "
+                    "Try other keywords or upload related documents."
+                )
 
             # v1.1.0：把 LLM 写的 [n] 确定性改写为 Harvard in-text 短引（带页码）并追加参考
             # 文献表。放在这里是唯一应用点——所有分支的 answer 都已定稿，且 sources 已就地补上
             # harvard_* 字段供前端还原点击态。引用由代码而非模型生成，杜绝编造作者与年份。
             references: list[str] = []
             if citable and sources:
-                answer, references = render_answer_with_references(answer, sources)
+                answer, references = render_answer_with_references(
+                    answer, sources, heading=_reference_heading(answer_language, question)
+                )
             else:
                 annotate_sources(sources)
 
@@ -3102,7 +3145,8 @@ class KnowledgeRepositoryApi(
             # 一次 ask 的收尾摘要：检索/生成各花多久、命中多少、走了哪些引擎。
             # 排查「问答变慢/超时」时，这一行就能区分是检索慢还是 LLM 慢。
             logger.info(
-                "ask 完成 mode=%s 引擎=%s 命中=%d 检索 %.1fs + 生成 %.1fs = 总计 %.1fs",
+                "ask done mode=%s engine=%s hits=%d "
+                "retrieval %.1fs + generation %.1fs = total %.1fs",
                 retrieval_mode,
                 ",".join(dict.fromkeys(engines)) or "none",
                 len(sources),
@@ -3111,7 +3155,7 @@ class KnowledgeRepositoryApi(
                 time.monotonic() - ask_start,
             )
             if fallback_reason:
-                logger.warning("ask 发生受控降级：%s", fallback_reason)
+                logger.warning("ask fell back in a controlled way: %s", fallback_reason)
 
             engines = list(dict.fromkeys(engines))
             if retrieval_mode in {"deep_thinking", "enhanced"} and deep_outcome is not None:
@@ -3154,7 +3198,7 @@ class KnowledgeRepositoryApi(
                 operation_id=cid,
                 category="llm",
                 operation="ask",
-                msg="Ask 问答完成",
+                msg="Ask finished",
                 status="warning" if fallback_reason else "ok",
                 level="WARNING" if fallback_reason else "INFO",
                 metadata={
@@ -3193,9 +3237,10 @@ class KnowledgeRepositoryApi(
         )
         elapsed = time.monotonic() - ask_start
         logger.warning(
-            "ask 任务超过总超时 %ss（已耗时 %.1fs，mode=%s，conversation_id=%s）："
-            "放弃等待但不取消任务，任务在后台继续运行，完成后会正常写入 chat_history；"
-            "前端可继续轮询 /api/ask/progress 与 /api/chat/history 找回迟到的答案。",
+            "ask task exceeded the overall timeout of %ss "
+            "(elapsed %.1fs, mode=%s, conversation_id=%s): stopped waiting without cancelling; "
+            "the task keeps running and will be saved to chat_history. The frontend can keep "
+            "polling /api/ask/progress and /api/chat/history for the late answer.",
             timeout_seconds,
             elapsed,
             retrieval_mode,
@@ -3207,7 +3252,7 @@ class KnowledgeRepositoryApi(
             operation="ask",
             phase="task_timeout",
             percent=0,
-            msg="Ask 任务超过总超时，已放弃等待（后台继续运行）",
+            msg="Ask task exceeded the overall timeout; still running in the background",
             metadata={
                 "conversation_id": cid,
                 "mode": retrieval_mode,
@@ -3369,7 +3414,7 @@ class KnowledgeRepositoryApi(
             try:
                 kind = SyncTargetKind(target)
             except ValueError:
-                return {"status": "error", "message": f"未知的同步目标: {target}"}
+                return {"status": "error", "message": f"Unknown sync target: {target}"}
             return await self._sync_pipeline.sync(kind, doc_ids, force=force)
 
         raise NotImplementedError("sync_documents: available in v0.3.0 (r2) / v0.4.0 (notion)")
@@ -3390,7 +3435,7 @@ class KnowledgeRepositoryApi(
         `_run_notion_push` 写回。手动按钮与周期自动推送共用本入口，进而统一进度可视。
         """
         if self._notion_sync_pipeline is None:
-            return {"status": "error", "message": "Notion 同步管线未装配。"}
+            return {"status": "error", "message": "The Notion sync pipeline is not set up."}
         current = self._notion_sync_job
         if current is not None and current.status == NOTION_SYNC_RUNNING:
             return current.to_dict()
@@ -3407,12 +3452,12 @@ class KnowledgeRepositoryApi(
             category="sync",
             operation="notion_push",
             operation_id=job.job_id,
-            msg="Notion 推送开始",
+            msg="Notion push started",
             metadata={"force": force},
         )
         observer = asyncio.create_task(
             self._observe_runtime_job(
-                job, category="sync", operation="notion_push", label="Notion 推送进度"
+                job, category="sync", operation="notion_push", label="Notion push progress"
             )
         )
         try:
@@ -3458,7 +3503,7 @@ class KnowledgeRepositoryApi(
                     operation_id=job.job_id,
                     category="sync",
                     operation="notion_push",
-                    msg="Notion 推送失败",
+                    msg="Notion push failed",
                     error=job.errors[0] if job.errors else "unknown error",
                     metadata=metadata,
                 )
@@ -3467,7 +3512,7 @@ class KnowledgeRepositoryApi(
                     operation_id=job.job_id,
                     category="sync",
                     operation="notion_push",
-                    msg="Notion 推送完成",
+                    msg="Notion push finished",
                     status="warning" if job.status == NOTION_SYNC_PARTIAL else "ok",
                     level="WARNING" if job.status == NOTION_SYNC_PARTIAL else "INFO",
                     metadata=metadata,
@@ -3500,7 +3545,10 @@ class KnowledgeRepositoryApi(
         if self._notion_sync_pipeline is None:
             return {
                 "status": "unavailable",
-                "message": "Notion 同步管线未装配；请确认插件已加载当前版本并完成初始化。",
+                "message": (
+                    "The Notion sync pipeline is not set up; "
+                    "make sure the service finished starting."
+                ),
             }
 
         result = await self._notion_sync_pipeline.initialize_databases(
@@ -3537,15 +3585,21 @@ class KnowledgeRepositoryApi(
         if self._notion_sync_pipeline is None or self._config is None:
             return {
                 "status": "unavailable",
-                "message": "Notion 同步管线未装配；请确认插件已加载当前版本并完成初始化。",
+                "message": (
+                    "The Notion sync pipeline is not set up; "
+                    "make sure the service finished starting."
+                ),
             }
         notion_cfg = self._config.get_notion_sync_config()
         if not notion_cfg.enabled:
-            return {"status": "disabled", "message": "Notion 同步未启用，无法推送。"}
+            return {
+                "status": "disabled",
+                "message": "Notion sync is turned off, so nothing can be pushed.",
+            }
 
         body = (content or "").strip()
         if not body:
-            return {"status": "error", "message": "推送内容为空。"}
+            return {"status": "error", "message": "There is nothing to push."}
         tag_list = [t.strip() for t in (tags or []) if t.strip()]
         citation_list = [c.strip() for c in (citations or []) if c.strip()]
 
@@ -3570,7 +3624,10 @@ class KnowledgeRepositoryApi(
         if note is None:
             return {
                 "status": "error",
-                "message": f"默认集合 {default_collection} 不存在，无法落地笔记。",
+                "message": (
+                    f"The default collection {default_collection} does not exist, "
+                    "so the note cannot be saved."
+                ),
             }
         note_id = note.get("id", "")
         push = await self._notion_sync_pipeline.push_qa_record(
@@ -3585,14 +3642,16 @@ class KnowledgeRepositoryApi(
             return {
                 "status": "partial",
                 "note_id": note_id,
-                "message": f"本地笔记已保存，但 Notion 推送失败：{push.get('message')}",
+                "message": (
+                    f"The local note was saved, but the Notion push failed: {push.get('message')}"
+                ),
             }
         return {
             "status": "success",
             "note_id": note_id,
             "page_id": push.get("page_id"),
             "kept_local": True,
-            "message": "已保存为本地笔记并推送到 Notion。",
+            "message": "Saved as a local note and pushed to Notion.",
         }
 
     async def _push_note_outbox(
@@ -3622,12 +3681,12 @@ class KnowledgeRepositoryApi(
                 "status": "success",
                 "page_id": result.get("page_id"),
                 "outbox_id": item_id,
-                "message": "已推送到 Notion 问答库。",
+                "message": "Pushed to the Notion Q&A database.",
             }
         return {
             "status": "partial",
             "outbox_id": item_id,
-            "message": f"已暂存，将在下次同步补推：{result.get('message')}",
+            "message": f"Queued; it will be pushed on the next sync: {result.get('message')}",
         }
 
     async def get_notion_push_status(self) -> dict:
@@ -3635,7 +3694,7 @@ class KnowledgeRepositoryApi(
         from kacore.notion_status import failure_summary
 
         if self._config is None:
-            return {"status": "error", "message": "配置未加载。"}
+            return {"status": "error", "message": "Settings are not loaded."}
         notion_cfg = self._config.get_notion_sync_config()
         entities = await self._source_store.list_notion_entities(
             NOTION_ENTITY_DOCUMENT
@@ -3690,10 +3749,10 @@ class KnowledgeRepositoryApi(
                 "rerank": (
                     "noop" if rerank.provider == "noop" else f"{rerank.provider}:{rerank.model}"
                 ),
-                "chat_llm": models.chat or "未分配",
-                "deep_thinking_llm": models.research or models.chat or "未分配",
+                "chat_llm": models.chat or "unassigned",
+                "deep_thinking_llm": models.research or models.chat or "unassigned",
                 "lightrag_llm": (
-                    (models.graph or models.chat or "未分配") if graph.enabled else "未启用"
+                    (models.graph or models.chat or "unassigned") if graph.enabled else "off"
                 ),
             },
             "services": {
@@ -3732,10 +3791,10 @@ class KnowledgeRepositoryApi(
         if duplicates["total_duplicate_groups"] <= 0:
             return
         raise ValueError(
-            "检测到 Zotero 条目在多个 library_id 命名空间下重复（通常是此前切换过"
-            "同步源、未清理导致）。请先用 preview_zotero_account_merge/"
-            "confirm_zotero_account_merge 确认并清理重复，再切换同步源，"
-            "避免重复继续累积。"
+            "Zotero items are duplicated across several library_id namespaces (usually from an "
+            "earlier sync-source switch that was not cleaned up). Use "
+            "preview_zotero_account_merge / confirm_zotero_account_merge to review and clean them "
+            "up before switching the sync source, so the duplicates stop growing."
         )
 
     def _legacy_embedding_setting(self, key: str, value: Any) -> tuple[str, Any]:
@@ -3749,13 +3808,17 @@ class KnowledgeRepositoryApi(
             if ref is not None:
                 return "flow.embedding.source", ref.to_dict()
             raise ValueError(
-                "请先在「模型供应商」添加连接，再在 Embedding 节点选择该连接上的模型。"
+                "Add a connection in “Model providers” first, then pick a model on that "
+                "connection in the Embedding node."
             )
         if key == "model":
             if ref is None:
                 return "flow.embedding.local_model", value
             return "flow.embedding.source", {"provider_id": ref.provider_id, "model": value}
-        raise ValueError("Embedding 的地址属于连接：请在「模型供应商」节点修改。")
+        raise ValueError(
+            "The embedding address belongs to the connection: "
+            "change it in the “Model providers” node."
+        )
 
     async def update_config_value(self, section: str, key: str, value: Any) -> dict[str, Any]:
         """旧 (section, key) 写入口（当前前端仍在用）：映射到 SettingSpec 后写入。
@@ -3770,7 +3833,8 @@ class KnowledgeRepositoryApi(
                 raise ValueError(f"Section '{section}' is write-protected or read-only.")
             raise ValueError(f"runtime config key is not allowed: {section}.{key}")
         if spec is not None and spec.kind == "secret":
-            raise ValueError(f"'{key}' 为机密字段，请在对应节点的密钥框中填写，不可经此接口写入。")
+            raise ValueError(f"'{key}' is a secret; enter it in the key field of its node. It "
+                "cannot be written through this API.")
         if section == "embedding" and key == "provider" and value not in EMBEDDING_PROVIDERS:
             raise ValueError("embedding.provider must be 'local' or 'external'.")
         if section == "vector_db" and key == "backend" and value not in {
@@ -3778,8 +3842,10 @@ class KnowledgeRepositoryApi(
             VECTOR_BACKEND_LEXICAL,
         }:
             raise ValueError("vector_db.backend must be 'milvus' or 'lexical'.")
-        if section == "rerank" and key == "provider" and value not in {"cross_encoder", "noop"}:
-            raise ValueError("rerank.provider must be 'cross_encoder' or 'noop'.")
+        if section == "rerank" and key == "provider" and value not in {
+            "auto", "cross_encoder", "remote", "noop",
+        }:
+            raise ValueError("rerank.provider must be 'auto', 'cross_encoder', 'remote' or 'noop'.")
         if section == "notion_sync" and key == "sync_mode" and value not in {
             "preserve",
             "strict",
@@ -3827,13 +3893,16 @@ class KnowledgeRepositoryApi(
         if self._reload_callback is None:
             return {
                 "status": "unsupported",
-                "message": "当前环境不支持程序化重启，请手动重启服务。",
+                "message": (
+                    "This environment cannot restart the service automatically; "
+                    "please restart it manually."
+                ),
             }
 
         operation_id = self._runtime_events.start(
             category="system",
             operation="plugin_restart",
-            msg="服务软重启已排队",
+            msg="Service soft restart queued",
         )
 
         async def _deferred_reload() -> None:
@@ -3844,7 +3913,7 @@ class KnowledgeRepositoryApi(
                     operation_id=operation_id,
                     category="system",
                     operation="plugin_restart",
-                    msg="服务软重启完成",
+                    msg="Service soft restart finished",
                 )
             except Exception as exc:  # noqa: BLE001 - 后台任务需吞掉异常并记录
                 logger.error("plugin soft restart failed: %s", exc, exc_info=True)
@@ -3852,7 +3921,7 @@ class KnowledgeRepositoryApi(
                     operation_id=operation_id,
                     category="system",
                     operation="plugin_restart",
-                    msg="服务软重启失败",
+                    msg="Service soft restart failed",
                     error=exc,
                 )
 
@@ -3862,7 +3931,10 @@ class KnowledgeRepositoryApi(
             lambda _t: setattr(self, "_deferred_reload_task", None)
         )
         logger.info("plugin soft restart scheduled")
-        return {"status": "restarting", "message": "服务正在重启，稍后将自动重连。"}
+        return {
+            "status": "restarting",
+            "message": "The service is restarting and will reconnect automatically.",
+        }
 
     async def clear_milvus_lock(self) -> dict[str, Any]:
         """清除 Milvus 数据目录残留的 LOCK 标记（仅在已探测到锁定问题时可用）。
@@ -3871,7 +3943,10 @@ class KnowledgeRepositoryApi(
         （backend 是否 milvus、是否真的检测到锁定问题）都在那里做；这里只是薄委派。
         """
         if self._clear_milvus_lock_callback is None:
-            return {"status": "unsupported", "message": "当前环境不支持清除锁定，请手动处理。"}
+            return {
+                "status": "unsupported",
+                "message": "This environment cannot clear the lock; please handle it manually.",
+            }
         return await self._clear_milvus_lock_callback()
 
     async def test_embedding_connection(self, base_url: str, model_name: str) -> dict:
@@ -3883,7 +3958,10 @@ class KnowledgeRepositoryApi(
             or not isinstance(model_name, str)
             or not model_name.strip()
         ):
-            return {"status": "error", "message": "Embedding 测试需要有效的地址和模型名"}
+            return {
+                "status": "error",
+                "message": "Testing embedding needs a valid address and model name",
+            }
         try:
             provider = ExternalEmbeddingProvider(base_url=base_url, model_name=model_name)
             vec = await provider.embed_query("ping")
@@ -3939,7 +4017,7 @@ class KnowledgeRepositoryApi(
     async def get_r2_status(self) -> dict[str, Any]:
         """返回 Bucket/插件双口径容量、latest 快照与当前任务。"""
         if self._r2_backup_manager is None:
-            return {"status": "unavailable", "message": "R2 backup manager 未装配"}
+            return {"status": "unavailable", "message": "The R2 backup manager is not set up"}
         try:
             return await self._r2_backup_manager.storage_status()
         except Exception as exc:
@@ -3996,14 +4074,15 @@ class KnowledgeRepositoryApi(
         if self._lightrag_registry is None:
             raise RuntimeError("LightRAG Core registry is not configured")
         if self._embedding_provider is None:
-            raise RuntimeError("Embedding provider 未配置，无法开始构建。")
+            raise RuntimeError("No embedding provider is configured, so the build cannot start.")
         try:
             await asyncio.wait_for(
                 self._embedding_provider.embed_query("ping"),
                 timeout=LIGHTRAG_PREFLIGHT_PROBE_TIMEOUT_SECONDS,
             )
         except Exception as exc:
-            raise RuntimeError(f"Embedding 服务未就绪，无法开始构建：{exc}") from exc
+            raise RuntimeError("The embedding service is not ready, so the build cannot start: "
+                f"{exc}") from exc
         if not require_llm:
             return
         try:
@@ -4015,7 +4094,8 @@ class KnowledgeRepositoryApi(
                 timeout=LIGHTRAG_PREFLIGHT_PROBE_TIMEOUT_SECONDS,
             )
         except Exception as exc:
-            raise RuntimeError(f"图谱构建 LLM Provider 未就绪，无法开始构建：{exc}") from exc
+            raise RuntimeError("The graph-building LLM provider is not ready, so the build "
+                f"cannot start: {exc}") from exc
 
     async def build_graph(self, collection: str | None = None, *, confirmed: bool = False) -> dict:
         """Start a manually confirmed LightRAG Core build job."""
@@ -4032,7 +4112,8 @@ class KnowledgeRepositoryApi(
         for job in self._graph_build_jobs.values():
             if job.status in ACTIVE_BUILD_STATUSES:
                 raise RuntimeError(
-                    f"已有构建任务正在进行中（collection={job.collection!r}, job_id={job.job_id}）"
+                    f"A build is already running (collection={job.collection!r}, "
+                    f"job_id={job.job_id})"
                 )
 
         await self._preflight_lightrag_build_ready()
@@ -4070,8 +4151,8 @@ class KnowledgeRepositoryApi(
         for active in self._graph_build_jobs.values():
             if active.status in ACTIVE_BUILD_STATUSES:
                 raise RuntimeError(
-                    f"已有构建任务正在进行中（collection={active.collection!r}, "
-                    f"job_id={active.job_id}）"
+                    f"A build is already running (collection={active.collection!r}, "
+                    f"job_id={active.job_id})"
                 )
 
         await self._preflight_lightrag_build_ready(require_llm=False)
@@ -4611,12 +4692,12 @@ class KnowledgeRepositoryApi(
             category="graph",
             operation="lightrag_build",
             operation_id=job.job_id,
-            msg="LightRAG 图谱构建开始或恢复",
+            msg="LightRAG graph build started or resumed",
             metadata={"collection": job.collection},
         )
         observer = asyncio.create_task(
             self._observe_runtime_job(
-                job, category="graph", operation="lightrag_build", label="LightRAG 构建进度"
+                job, category="graph", operation="lightrag_build", label="LightRAG build progress"
             )
         )
         try:
@@ -4786,7 +4867,7 @@ class KnowledgeRepositoryApi(
                         operation="lightrag_build",
                         status="error",
                         level="ERROR",
-                        msg="LightRAG 单文档构建失败",
+                        msg="LightRAG build failed for one document",
                         metadata={
                             "operation_id": job.job_id,
                             "job_id": job.job_id,
@@ -4798,12 +4879,13 @@ class KnowledgeRepositoryApi(
                     if consecutive_failures >= LIGHTRAG_BUILD_CIRCUIT_BREAKER_THRESHOLD:
                         circuit_broken = True
                         job.recent_error = (
-                            f"连续 {consecutive_failures} 篇文档失败，疑似 LLM/Embedding "
-                            f"provider 未就绪或已掉线，提前终止本次构建：{exc}"
+                            f"{consecutive_failures} documents in a row failed; the LLM/embedding "
+                            "provider may be "
+                            f"unavailable, so this build stopped early: {exc}"
                         )
                         logger.error(
-                            "LightRAG build job %s: 连续 %d 篇文档失败，提前终止"
-                            "（最后一次错误：%s）",
+                            "LightRAG build job %s: %d documents in a row failed, stopping early "
+                            "(last error: %s)",
                             job.job_id,
                             consecutive_failures,
                             exc,
@@ -4869,7 +4951,7 @@ class KnowledgeRepositoryApi(
                         operation_id=job.job_id,
                         category="graph",
                         operation="lightrag_build",
-                        msg="LightRAG 图谱构建失败或中断",
+                        msg="LightRAG graph build failed or was interrupted",
                         error=job.recent_error or job.status,
                         metadata=metadata,
                     )
@@ -4878,7 +4960,7 @@ class KnowledgeRepositoryApi(
                         operation_id=job.job_id,
                         category="graph",
                         operation="lightrag_build",
-                        msg="LightRAG 图谱构建完成",
+                        msg="LightRAG graph build finished",
                         status="warning" if job.failed_docs else "ok",
                         level="WARNING" if job.failed_docs else "INFO",
                         metadata=metadata,
@@ -5145,6 +5227,8 @@ class KnowledgeRepositoryApi(
             device=rerank_cfg.device,
             batch_size=rerank_cfg.batch_size,
             max_candidates=rerank_cfg.max_candidates,
+            base_url=rerank_cfg.base_url,
+            api_key=rerank_cfg.api_key,
         )
         # 同一实例同时供 default 研究路径与 deep_thinking 使用，热切换后两处都指向新实例。
         self._reranker = reranker
@@ -5243,7 +5327,7 @@ class KnowledgeRepositoryApi(
         try:
             self._auto_reindex.notify()
         except Exception as exc:  # noqa: BLE001 - 打信号失败不得影响主流程
-            logger.warning("自动重建信号发送失败：%s", exc)
+            logger.warning("Failed to send the auto-rebuild signal: %s", exc)
 
     async def _clear_document_needs_reindex(self, doc_id: str) -> None:
         doc = await self._source_store.get_document(doc_id)
@@ -5317,7 +5401,7 @@ class KnowledgeRepositoryApi(
                     operation="milvus_rebuild",
                     status="error",
                     level="ERROR",
-                    msg="Milvus 数据清洗失败，已跳过该文档",
+                    msg="Milvus data cleanup failed; skipped this document",
                     metadata={
                         "operation_id": job.job_id,
                         "doc_id": doc.doc_id,
@@ -5545,12 +5629,15 @@ class KnowledgeRepositoryApi(
         if self._config is None:
             return {
                 "connection": {"connected": False},
-                "read": {"available": False, "reason": "未初始化"},
+                "read": {"available": False, "reason": "not initialized"},
             }
         cfg = self._config.get_zotero_sync_config()
         connection = await asyncio.to_thread(local_api.probe_connection, cfg.api_port)
         if self._zotero_pipeline is None:
-            read: dict[str, Any] = {"available": False, "reason": "Zotero 同步未启用或未装配"}
+            read: dict[str, Any] = {
+                "available": False,
+                "reason": "Zotero sync is off or not set up",
+            }
         else:
             read = await asyncio.to_thread(self._zotero_pipeline.probe_local_read)
         return {"connection": connection, "read": read}
@@ -5588,7 +5675,7 @@ class KnowledgeRepositoryApi(
             elif existing_ids and identity["user_id"] not in existing_ids:
                 binding = {
                     "account_id": ",".join(sorted(existing_ids)),
-                    "account_name": "现有 Zotero 镜像",
+                    "account_name": "existing Zotero mirror",
                 }
         if binding and binding.get("account_id") != identity["user_id"]:
             return self._arm_zotero_account_change(cleaned, identity, binding)
@@ -5634,7 +5721,9 @@ class KnowledgeRepositoryApi(
             or time.monotonic() > float(pending.get("expires_at") or 0)
         ):
             self._pending_zotero_account_change = None
-            raise ValueError("Zotero 账号变更确认已失效，请重新保存 token")
+            raise ValueError(
+                "The Zotero account change confirmation has expired; save the token again"
+            )
         if action == "cancel":
             self._pending_zotero_account_change = None
             return {"status": "cancelled", "config": await self.get_zotero_config()}
@@ -5698,7 +5787,8 @@ class KnowledgeRepositoryApi(
                     cleanup_errors.append(f"LightRAG {doc.doc_id}: {exc}")
         if cleanup_errors:
             raise RuntimeError(
-                "Zotero 本地索引清理失败，账号未切换：" + "; ".join(cleanup_errors[:5])
+                "Failed to clean the local Zotero index; the account was not switched: "
+                + "; ".join(cleanup_errors[:5])
             )
         for doc in docs:
             self._unlink_managed_document(doc.file_path, doc.doc_id)
@@ -5905,7 +5995,7 @@ class KnowledgeRepositoryApi(
         前端经 `get_active_zotero_sync_job` 轮询；终态与错误由 `_run_zotero_pull` 写回。
         """
         if self._zotero_pipeline is None:
-            return {"status": "error", "message": "Zotero 同步未启用或未装配"}
+            return {"status": "error", "message": "Zotero sync is off or not set up"}
         if not _skip_account_guard and self._config is not None:
             from kacore.config import ZOTERO_ACCESS_SERVER
 
@@ -5948,12 +6038,12 @@ class KnowledgeRepositoryApi(
             category="sync",
             operation="zotero_pull",
             operation_id=job.job_id,
-            msg="Zotero 拉取开始",
+            msg="Zotero pull started",
             metadata={"incremental": incremental},
         )
         observer = asyncio.create_task(
             self._observe_runtime_job(
-                job, category="sync", operation="zotero_pull", label="Zotero 拉取进度"
+                job, category="sync", operation="zotero_pull", label="Zotero pull progress"
             )
         )
         try:
@@ -6012,7 +6102,7 @@ class KnowledgeRepositoryApi(
                     operation_id=job.job_id,
                     category="sync",
                     operation="zotero_pull",
-                    msg="Zotero 拉取失败",
+                    msg="Zotero pull failed",
                     error=job.errors[0] if job.errors else "unknown error",
                     metadata=metadata,
                 )
@@ -6021,7 +6111,7 @@ class KnowledgeRepositoryApi(
                     operation_id=job.job_id,
                     category="sync",
                     operation="zotero_pull",
-                    msg="Zotero 拉取完成",
+                    msg="Zotero pull finished",
                     status="warning" if job.status == ZOTERO_SYNC_PARTIAL else "ok",
                     level="WARNING" if job.status == ZOTERO_SYNC_PARTIAL else "INFO",
                     metadata=metadata,

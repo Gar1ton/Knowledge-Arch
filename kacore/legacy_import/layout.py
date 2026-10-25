@@ -38,7 +38,7 @@ def locate(selected: str | Path) -> LegacyInstall:
     """从用户选的目录找到旧插件数据目录与配置文件；找不到抛 LegacyImportError。"""
     root = Path(selected).expanduser()
     if not root.is_dir():
-        raise LegacyImportError("所选位置不是一个文件夹。")
+        raise LegacyImportError("The selected location is not a folder.")
     root = root.resolve()
     candidates = [
         root.joinpath(*PLUGIN_DATA_PARTS),
@@ -48,8 +48,8 @@ def locate(selected: str | Path) -> LegacyInstall:
     data_dir = next((c for c in candidates if c is not None and c.is_dir()), None)
     if data_dir is None:
         raise LegacyImportError(
-            "没有在所选文件夹里找到旧版插件数据：请选择旧版程序的安装根目录"
-            "（其中应有 data/plugin_data/ 子目录）。"
+            "No old plugin data was found in the selected folder: choose the root folder of the "
+            "old installation (it should contain data/plugin_data/)."
         )
     host_root = data_dir.parent.parent.parent
     config = host_root.joinpath(*PLUGIN_CONFIG_PARTS)

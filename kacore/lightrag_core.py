@@ -95,7 +95,7 @@ class BuildJob:
             "paused": self.paused,
             "pause_requested": self.pause_requested,
             "pause_message": (
-                "等待当前 LLM 调用完成后暂停" if self.pause_requested else ""
+                "Pausing after the current LLM call finishes" if self.pause_requested else ""
             ),
             "processed_docs": self.processed_docs,
             "failed_docs": self.failed_docs,
@@ -655,7 +655,8 @@ def estimate_lightrag_build(
         "seconds_per_chunk": per_chunk,
         "runtime_profile": runtime,
         "estimate_notice": (
-            "这是基于 LRAG chunk 的估算，不是倒计时；实际耗时会按运行中速度动态修正。"
+            "This is an estimate based on LightRAG chunks, not a countdown; the actual time "
+            "adjusts to the running speed."
         ),
     }
 

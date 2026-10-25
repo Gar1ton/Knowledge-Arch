@@ -106,11 +106,11 @@ pub fn bundled_uv(resources: &Path) -> PathBuf {
 fn friendly_exit(code: Option<i32>) -> String {
     match code {
         Some(EXIT_DATA_DIR_LOCKED) => {
-            "数据目录正被另一个 Knowledge Arch 进程使用：请先完全退出它（含托盘），再重启服务。"
+            "The data folder is in use by another Knowledge Arch process: quit it completely (including the tray), then restart the service."
                 .into()
         }
-        Some(c) => format!("服务意外退出（退出码 {c}）"),
-        None => "服务意外退出".into(),
+        Some(c) => format!("The service exited unexpectedly (exit code {c})"),
+        None => "The service exited unexpectedly".into(),
     }
 }
 
@@ -205,7 +205,7 @@ impl Sidecar {
             Ok(child) => child,
             Err(err) => {
                 inner.phase = Phase::Crashed {
-                    error: format!("无法启动后端（{}）：{err}", spec.python.display()),
+                    error: format!("Cannot start the backend ({}): {err}", spec.python.display()),
                     exit_code: None,
                 };
                 cvar.notify_all();
@@ -310,7 +310,7 @@ impl Sidecar {
                     let _ = child.wait();
                 }
                 inner.phase = Phase::Crashed {
-                    error: format!("服务 {} 秒内没有就绪", READY_TIMEOUT.as_secs()),
+                    error: format!("Service not ready within {} s", READY_TIMEOUT.as_secs()),
                     exit_code: None,
                 };
                 cvar.notify_all();
@@ -339,12 +339,12 @@ impl Sidecar {
                     })
                 }
                 Phase::Crashed { error, .. } => return Err(error.clone()),
-                Phase::Stopped => return Err("服务未运行".into()),
+                Phase::Stopped => return Err("The service is not running".into()),
                 Phase::Starting => {}
             }
             let now = Instant::now();
             if now >= deadline {
-                return Err("等待服务就绪超时".into());
+                return Err("Timed out waiting for the service to be ready".into());
             }
             inner = cvar.wait_timeout(inner, deadline - now).unwrap().0;
         }
@@ -446,7 +446,7 @@ mod tests {
 
     #[test]
     fn locked_data_dir_has_a_specific_message() {
-        assert!(friendly_exit(Some(EXIT_DATA_DIR_LOCKED)).contains("另一个"));
+        assert!(friendly_exit(Some(EXIT_DATA_DIR_LOCKED)).contains("another"));
         assert!(friendly_exit(Some(1)).contains("1"));
     }
 }

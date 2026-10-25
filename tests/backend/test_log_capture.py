@@ -262,4 +262,4 @@ def test_milvus_data_dir_lock_gets_actionable_diagnostic():
     assert line["metadata"]["exception_type"] == "DataDirLockedError"
     assert line["metadata"]["root_cause_type"] == "PermissionError"
     assert line["metadata"]["diagnostic_code"] == "milvus_data_dir_locked"
-    assert "不要直接删除锁文件" in line["metadata"]["hint"]
+    assert "Do not delete the lock file" in line["metadata"]["hint"]

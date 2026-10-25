@@ -111,19 +111,19 @@ def migrate_legacy_runtime_config(paths: AppPaths, settings: SettingsStore) -> b
     try:
         raw = json.loads(legacy.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("旧版 runtime_config.json 无法读取，跳过迁移：%s", exc)
+        logger.warning("Cannot read the old runtime_config.json; skipping migration: %s", exc)
         return False
     translation = translate(raw if isinstance(raw, dict) else {})
     apply_translation(settings, translation)
     settings.save()
     logger.info(
-        "已从旧版 runtime_config.json 迁移 %d 项设置；丢弃 %d 项：%s",
+        "Migrated %d setting(s) from the old runtime_config.json; dropped %d: %s",
         len(translation.values),
         len(translation.dropped),
-        ", ".join(translation.dropped) or "无",
+        ", ".join(translation.dropped) or "none",
     )
     for note in translation.attention:
-        logger.warning("迁移提示：%s", note)
+        logger.warning("Migration note: %s", note)
     return True
 
 

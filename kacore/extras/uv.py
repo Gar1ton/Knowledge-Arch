@@ -52,7 +52,7 @@ class UvInstaller(ExtrasInstaller):
         return bool(self._uv_path) and Path(str(self._uv_path)).is_file()
 
     def describe(self) -> str:
-        return self._uv_path or "未找到 uv"
+        return self._uv_path or "uv not found"
 
     def command(
         self,
@@ -85,11 +85,11 @@ class UvInstaller(ExtrasInstaller):
     ) -> int:
         if not self.available:
             raise ExtrasUnavailableError(
-                "未找到 uv，无法安装组件：请重新安装 Knowledge Arch，"
-                f"或用环境变量 {ENV_UV_PATH} 指定 uv 的位置。"
+                "uv not found, so components cannot be installed: reinstall Knowledge Arch, or "
+                f"point the {ENV_UV_PATH} environment variable at uv."
             )
         cmd = self.command(specs, target, extra_args=extra_args)
-        logger.info("安装组件：%s", " ".join(cmd))
+        logger.info("installing component: %s", " ".join(cmd))
         env = {**os.environ, "UV_NO_PROGRESS": "1", "PYTHONNOUSERSITE": "1"}
         proc = await asyncio.create_subprocess_exec(
             *cmd,

@@ -292,7 +292,7 @@ async def test_critical_unmet_returns_partial_evidence_without_degrade():
     assert result.actual_mode == "milvus_deep"
     assert [c.chunk_id for c in result.evidence] == ["c1", "c2", "c3"]
     assert result.verified is False
-    assert result.verify_missing == ["关键检查项未满足：必需"]
+    assert result.verify_missing == ["Critical checklist item not satisfied: 必需"]
     assert result.degraded_reason == ""
 
 
@@ -533,7 +533,7 @@ async def test_verify_ok_is_overruled_by_soft_missing():
 
     assert result.answer == "答案A [1]"
     assert result.verified is False
-    assert result.verify_missing == ["关键检查项未满足：必需"]
+    assert result.verify_missing == ["Critical checklist item not satisfied: 必需"]
 
 
 @pytest.mark.asyncio
@@ -689,7 +689,7 @@ async def test_verify_failure_after_critical_gap_keeps_partial_evidence():
     assert result.degraded is False
     assert result.answer is None
     assert [chunk.chunk_id for chunk in result.evidence] == ["c1", "c2"]
-    assert result.verify_missing == ["关键检查项未满足：必需"]
+    assert result.verify_missing == ["Critical checklist item not satisfied: 必需"]
 
 
 # ── v0.25.9：开放式发现 / per-aspect 排序 / clip / deep 合成 / 全局预算 ──────

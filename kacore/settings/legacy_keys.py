@@ -27,6 +27,8 @@ from kacore.config import (
     ENV_EMBEDDING_API_KEY,
     ENV_LIGHTRAG_LLM_API_KEY,
     ENV_R2_SECRET_ACCESS_KEY,
+    VECTOR_BACKEND_LEXICAL,
+    VECTOR_BACKEND_MILVUS,
     Config,
 )
 from kacore.providers.anthropic import DEFAULT_BASE_URL as ANTHROPIC_BASE_URL
@@ -38,7 +40,7 @@ from kacore.providers.base import (
 )
 from kacore.providers.presets import PRESETS
 from kacore.settings.base import SettingsValidationError
-from kacore.settings.schema import SPECS_BY_TARGET, spec_for
+from kacore.settings.schema import EMBEDDING_SOURCE_LOCAL, SPECS_BY_TARGET, spec_for
 from kacore.settings.store import normalize_value
 
 if TYPE_CHECKING:
@@ -133,8 +135,8 @@ class _ProviderCollector:
             self._result.secrets[api_key_ref_for(provider_id)] = api_key
         elif api_key_ref_for(provider_id) not in self._result.secrets:
             self._result.attention.append(
-                f"{purpose}：连接「{provider_id}」（{url}）需要在「模型供应商」里填写 API Key"
-                "（本机服务可留空）"
+                f"{purpose}: the connection “{provider_id}” ({url}) needs an API key in “Model "
+                "providers” (local services can leave it empty)"
             )
         return {"provider_id": provider_id, "model": model.strip()}
 
@@ -163,8 +165,19 @@ def translate(raw: Mapping[str, Any]) -> LegacyTranslation:
                 result.values[spec.key] = normalize_value(spec, value)
                 consumed.add((section, key))
             except SettingsValidationError:
-                result.attention.append(f"{section}.{key} 的旧值 {raw_value!r} 无效，已恢复默认")
+                result.attention.append(
+                    f"The old value {raw_value!r} of {section}.{key} is invalid; reset to the "
+                    "default"
+                )
                 consumed.add((section, key))
+
+    # ── 向量库：v2 只提供 Milvus Lite，旧「仅 SQLite 词法召回」改回 Milvus ──────
+    if result.values.get("flow.vector_store.backend") == VECTOR_BACKEND_LEXICAL:
+        result.values["flow.vector_store.backend"] = VECTOR_BACKEND_MILVUS
+        result.attention.append(
+            "The old vector store was set to “SQLite keyword recall only”: the new version always "
+            "uses the built-in Milvus Lite and builds the vector index once embedding is set up"
+        )
 
     # ── embedding 来源 ─────────────────────────────────────────────
     emb_raw = sections.get("embedding", {})
@@ -186,12 +199,16 @@ def translate(raw: Mapping[str, Any]) -> LegacyTranslation:
             result.values["flow.embedding.local_model"] = emb.model
         else:
             result.attention.append(
-                f"原 Embedding 来源 {raw_provider!r} 已移除：改用本地模型，向量索引将重建"
+                f"The old embedding source {raw_provider!r} was removed: using the local model, "
+                "and the vector index will be rebuilt"
             )
         consumed.update(("embedding", k) for k in embedding_keys)
         consumed.update(
             ("vector_db", k) for k in ("embedding_provider", "embedding_model", "base_url")
         )
+    if "flow.embedding.source" not in result.values:
+        # 旧版插件默认本地模型；新版默认线上。迁移时保持旧行为（含配置里没写 embedding 的情况）。
+        result.values["flow.embedding.source"] = EMBEDDING_SOURCE_LOCAL
     if "max_token_size" not in emb_raw and "max_token_size" in sections.get("graph", {}):
         result.values["flow.embedding.max_token_size"] = cfg.get_embedding_config().max_token_size
         consumed.add(("graph", "max_token_size"))
@@ -210,14 +227,14 @@ def translate(raw: Mapping[str, Any]) -> LegacyTranslation:
                 spec_for("prefs.local_models.device"), normalized
             )
         except SettingsValidationError:
-            result.attention.append(f"{section}.device={device!r} 无法识别，已恢复 auto")
+            result.attention.append(f"{section}.device={device!r} is not recognized; reset to auto")
 
     # ── TO_PROVIDER：研究与图谱的独立端点 ─────────────────────────────
     deep = sections.get("deep_thinking", {})
     if str(deep.get("llm_base_url") or "").strip() and str(deep.get("llm_model") or "").strip():
         key = os.environ.get(ENV_DEEP_THINKING_LLM_API_KEY) or str(deep.get("llm_api_key") or "")
         result.values["flow.models.research"] = collector.ref(
-            str(deep["llm_base_url"]), str(deep["llm_model"]), key, purpose="研究模型"
+            str(deep["llm_base_url"]), str(deep["llm_model"]), key, purpose="Research model"
         )
     consumed.update(("deep_thinking", k) for k in ("llm_base_url", "llm_model", "llm_api_key"))
 
@@ -233,7 +250,7 @@ def translate(raw: Mapping[str, Any]) -> LegacyTranslation:
             graph_url,
             graph_model,
             os.environ.get(ENV_LIGHTRAG_LLM_API_KEY, ""),
-            purpose="图谱模型",
+            purpose="Graph model",
         )
     if graph:
         consumed.update(

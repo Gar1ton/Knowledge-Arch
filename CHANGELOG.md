@@ -4,6 +4,69 @@
 
 ## [Unreleased]
 
+### 改进 (Changed) — P12 全英文输出
+
+- **后端日志与界面消息改英文**：`kacore/`、`ka_server/`、`web/server.py` 约 490 条日志、报错、提示与诊断文案；
+  提示词、中文文本处理正则、Notion 列名与旧版标记不变。
+- **中文回答适配保留**：`kacore/api.py` 深度思考 / 生成状态提示的中文分支原样保留；新增 `_answers_in_chinese`、
+  `_reference_heading`，让「LLM 不可用」「未找到内容」「摘录兜底」与答案末尾参考文献标题跟随回答语言。
+- **桌面壳**：`desktop/src-tauri/src/lib.rs`（菜单 / 托盘）、`sidecar.rs`（崩溃与启动失败提示）、`updater.rs`（更新通知）改英文。
+- **前端**：`components/layout/TopBar.tsx` 字标改用 Bitcount；`lib/api.ts` 请求错误与 mock 数据、`app/layout.tsx` 描述改英文。
+- `kacore/api_capabilities.py`：线上 Embedding 未选连接时，向量库不可用的原因说明改为准确提示。
+
+### 新增 (Added) — P11 线上 Rerank
+
+- **`kacore/repository/reranker/remote.py`**：`RemoteReranker` 调用 OpenAI 兼容连接上的 `/rerank`（Cohere / Jina /
+  SiliconFlow / Voyage 响应格式），失败只对本次回退；`build_reranker` 支持 `provider="remote"`。
+- **设置**：`kacore/settings/schema.py` 新增 `flow.retrieval.rerank.remote`，`rerank.provider` 增加 `remote`；
+  `kacore/settings/bridge.py` 注入连接地址与密钥；`kacore/config.py` 的 `RerankConfig` 增加 `base_url` / `api_key`；
+  `kacore/capabilities.py` 线上 Rerank 不要求本地组件。
+- **前端**：`components/settings/SettingInput.tsx` 抽出 `ConnectionModelInput`（Embedding / Rerank 共用），
+  `components/flow/NodePanel.tsx` 按 Rerank 来源切换显示字段。
+
+### 改进 (Changed)
+
+- **Embedding 与 Rerank 默认线上 API**：未选连接时不做 Embedding 探针、Milvus 等待配置、Rerank 不重排；
+  `kacore/settings/legacy_keys.py` 让旧版插件配置迁移后保持本地 Embedding。
+
+### 改进 (Changed) — P10 安装包瘦身
+
+- **`desktop/scripts/bundle_python.py`**：新增 `prune_runtime`（去字节码、site-packages 的 `tests/` 与 `include/`、
+  pyarrow 的 Flight / S3 / C++ 自测库），不再 `compileall`，构建期解释器带 `-B`；冒烟测试加 Milvus Lite 往返；
+  `ka/.ka_bundle` 标记。本机实测运行时未压缩 729→548 MB，gzip 224→174 MB。
+- **`ka_server/bytecode_cache.py`**：打包产物里把 `sys.pycache_prefix` 指向用户缓存目录（`ka_server/__init__.py`
+  最先调用），应用目录只读也只需首次启动编译。
+- **Windows 安装包改为 NSIS `setup.exe`**：`tauri.conf.json` 的 `bundle.windows.nsis`（当前用户安装、中英文界面），
+  `.github/workflows/desktop-release.yml` 的 Windows 矩阵出 `nsis`；`desktop/scripts/configure_release.py` 签名配置
+  改为合并写入；README / `docs/RELEASE.md` / `desktop/README.md` 同步。
+- 开发环境对齐安装包：pymupdf4llm 0.0.27，不装 pymupdf-layout / onnxruntime。
+- `.github/workflows/desktop-release.yml`：打包步骤设 `NO_STRIP=true`，避免 linuxdeploy 的 strip 处理内置依赖的
+  `.so` 失败导致 AppImage（及同任务的 `.deb`）出不来。
+
+### 新增 (Added) — P9 组件安装失败归类
+
+- **`kacore/extras/failure.py`**：把 uv 输出归为磁盘不足 / 权限 / 网络 / 无适用安装包 / 依赖冲突 / 编译失败 / 未知，
+  `kacore/extras/manager.py` 的失败结果新增 `reason` 与 `detail`（输出末尾 400 行内取最相关的几行）；
+  `kacore/extras/memory.py` 的替身支持模拟输出。
+- **前端**：`lib/settingsApi.ts`（`InstallFailureReason`、`installFailureText`）、`lib/api.ts`（`installResultOf`：
+  后端 500 的结构化失败结果按结果返回）、`components/prefs/PrefsGroups.tsx`（组件行下方显示说明与原始报错）、
+  `components/panels/FlowPageContent.tsx`（数据流页安装失败提示本地化）。
+
+### 修复 (Fixed)
+
+- README 开发命令补 `--dev-origin http://localhost:3000`：缺少时浏览器开发页的写请求被 CORS 拒绝（403）。
+
+### 改进 (Changed) — P8 测试反馈
+
+- **向量库只提供 Milvus Lite**：`kacore/capabilities.py`（向量库节点 candidates 只剩 `milvus`、不可切换，新增
+  `waiting_for_embedding`）；`kacore/settings/legacy_keys.py`（旧插件「仅 SQLite 词法召回」导入时改回 Milvus 并提示）；
+  `kacore/app_initializer.py`（Embedding 未就绪时的日志改为「Milvus Lite 已内置，等待 Embedding」）；前端
+  `components/flow/model.ts`（`hiddenSettingKeys`、「内置」角色标签）、`FlowNode.tsx`（等待提示，等待期间不提示重建）。
+- **Embedding 线上 API 入口**：`components/settings/SettingInput.tsx` 新增 `EmbeddingSourceInput`（本地模型 / 线上 API，
+  只列 OpenAI 兼容连接，embed 类模型优先、可手填）；`components/flow/NodePanel.tsx` 线上模式隐藏本地模型名。
+- **顶栏**：`components/ds/Button.tsx` 的 tab 选中态去掉光圈；`components/layout/TopBar.tsx` 工作台视图不画分界线，
+  `app/(console)/layout.tsx` 工作台四周统一 `--panel-gap`。
+
 ### 改进 (Changed) — P7 界面打磨
 
 - **默认界面语言改为英语**：`web/frontend/app/(console)/layout.tsx`（`kr-lang` 缺省 `en`，`<html lang>` 随语言同步）、

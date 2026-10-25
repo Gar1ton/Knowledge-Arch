@@ -101,8 +101,9 @@ class MilvusLiteVectorStore(VectorStore):
         backup = path.with_name(f"{path.name}.legacy-{int(time.time())}")
         path.rename(backup)
         logger.warning(
-            "检测到 Milvus Lite 2.x 单文件数据库 %s；3.x 改用目录存储，已重命名为 %s 并重建空索引。"
-            "原始分块保存在 SQLite 中，重建索引后检索即可恢复。",
+            "Found a Milvus Lite 2.x single-file database %s; 3.x stores data in a folder, so it "
+            "was renamed to %s and an empty index was created. The original chunks are kept in "
+            "SQLite; search recovers after the index is rebuilt.",
             path.name,
             backup.name,
         )

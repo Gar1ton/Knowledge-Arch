@@ -188,7 +188,7 @@ async def test_local_provider_first_call_times_out_while_model_loads() -> None:
     with pytest.raises(RuntimeError) as excinfo:
         await provider.embed_query("hello")
 
-    assert "加载超时" in str(excinfo.value)
+    assert "timed out" in str(excinfo.value)
     assert "BAAI/bge-large-en-v1.5" in str(excinfo.value)
 
 
@@ -254,7 +254,7 @@ async def test_local_provider_fails_fast_while_another_load_is_in_flight() -> No
 
     with pytest.raises(RuntimeError) as excinfo:
         await provider.embed_query("hello")
-    assert "仍在后台加载" in str(excinfo.value)
+    assert "still loading" in str(excinfo.value)
 
 
 # ── 加载超时闸 / encode 阶段解耦 + 设备选择（v1.0.11）──────────────────
@@ -302,7 +302,7 @@ async def test_local_provider_never_loads_still_times_out() -> None:
     with pytest.raises(RuntimeError) as excinfo:
         await provider.embed_documents(["a", "b"])
 
-    assert "加载超时" in str(excinfo.value)
+    assert "timed out" in str(excinfo.value)
 
 
 def test_local_provider_device_auto_resolves_to_none() -> None:

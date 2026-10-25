@@ -75,6 +75,8 @@ export function TopBar() {
         padding: "0 14px",
         position: "relative",
         zIndex: Z.raised,
+        // 工作台三个面板自带边框，顶栏分界线会和面板上沿挤在一起。
+        ...(view === "workspace" ? { borderBottomColor: "transparent" } : null),
       }}
     >
       {/* Brand */}
@@ -85,16 +87,19 @@ export function TopBar() {
         height={28}
         style={{ borderRadius: "var(--radius-md)", flexShrink: 0 }}
       />
+      {/* 字标与落地页一致：Bitcount 点阵字体、全大写。 */}
       <span
         style={{
-          fontSize: 13,
-          fontWeight: 700,
+          fontFamily: "var(--font-bitcount), var(--font-mono)",
+          fontSize: 17,
+          fontWeight: 400,
           color: "var(--heading)",
-          letterSpacing: "-.01em",
+          letterSpacing: 0,
+          lineHeight: 1,
           flexShrink: 0,
         }}
       >
-        Knowledge Arch
+        KNOWLEDGE ARCH
       </span>
 
       {/* 主窗口页面：工作台 / 数据流（数据流按钮保留健康呼吸光效）。 */}

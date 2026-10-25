@@ -96,7 +96,7 @@ class AutoReindexScheduler:
 
     async def run(self) -> None:
         """长驻循环：等信号 → 防抖 → 门禁 → 重建 → 判成败。"""
-        logger.info("Milvus 索引自动重建调度器已启动。")
+        logger.info("Milvus auto-rebuild scheduler started.")
         try:
             while True:
                 await self._wait_for_trigger()
@@ -104,10 +104,10 @@ class AutoReindexScheduler:
                 try:
                     await self._maybe_rebuild()
                 except Exception as exc:  # noqa: BLE001 - 单轮失败不得打崩调度循环
-                    logger.error("自动重建轮次异常：%s", exc, exc_info=True)
+                    logger.error("Auto-rebuild round raised: %s", exc, exc_info=True)
                     self._note_failure(str(exc))
         except asyncio.CancelledError:
-            logger.info("Milvus 索引自动重建调度器已取消。")
+            logger.info("Milvus auto-rebuild scheduler cancelled.")
             raise
 
     async def _wait_for_trigger(self) -> None:
@@ -150,7 +150,7 @@ class AutoReindexScheduler:
             self._note_success()
             return
 
-        logger.info("自动重建触发：%d 个文档待重建。", pending)
+        logger.info("Auto-rebuild triggered: %d document(s) to rebuild.", pending)
         self._rebuilding = True
         try:
             snapshot = await self._run_rebuild()
@@ -165,7 +165,9 @@ class AutoReindexScheduler:
             self._note_success()
             remaining = await self._pending_count()
             if remaining > 0:
-                logger.info("自动重建仍余 %d 个待重建文档，安排下一轮。", remaining)
+                logger.info((
+                    "Auto-rebuild still has %d document(s) left; scheduling another round."
+                ), remaining)
                 self._signal.set()
             return
 
@@ -182,7 +184,8 @@ class AutoReindexScheduler:
         if self.parked:
             self._retry_after = 0.0
             logger.error(
-                "自动重建连续 %d 次零进展，暂停定时重试（等待新文档或手动重建）。最近原因：%s",
+                "Auto-rebuild made no progress %d times in a row; pausing timed retries (waiting "
+                "for new documents or a manual rebuild). Last reason: %s",
                 self._failure_streak,
                 reason,
             )
@@ -190,7 +193,7 @@ class AutoReindexScheduler:
         delay = min(self._retry_max, self._retry_base * (2 ** (self._failure_streak - 1)))
         self._retry_after = time.monotonic() + delay
         logger.warning(
-            "自动重建未取得进展（第 %d 次），%.0fs 后重试。原因：%s",
+            "Auto-rebuild made no progress (attempt %d); retrying in %.0fs. Reason: %s",
             self._failure_streak,
             delay,
             reason,

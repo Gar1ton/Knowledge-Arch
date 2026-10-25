@@ -59,7 +59,9 @@ class ModelRouter:
             return None
         if self._registry.get(ref.provider_id) is None:
             raise ProviderError(
-                ERROR_NOT_FOUND, f"「模型分配」引用的连接 {ref.provider_id} 已不存在"
+                ERROR_NOT_FOUND, (
+                    f"The connection {ref.provider_id} used by “Model assignment” no longer exists"
+                )
             )
         return self._registry.client(
             ref.provider_id, ref.model, timeout_sec=timeout_sec, max_retries=max_retries
@@ -108,7 +110,7 @@ class RoleClient:
         client = self._client()
         if client is None:
             if not allow_mock:
-                raise ProviderError(ERROR_NOT_FOUND, f"还没有为「{self._role}」分配模型")
+                raise ProviderError(ERROR_NOT_FOUND, f"No model is assigned to “{self._role}” yet")
             return GenerationResult(text="", status=STATUS_EMPTY)
         return await client.generate_result(prompt, system_prompt, allow_mock=allow_mock)
 

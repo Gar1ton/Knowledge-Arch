@@ -186,3 +186,60 @@
   - 落点调整：
     - 不用 CSS `zoom`：会让 PDF.js 与数据流图的指针坐标错位；浏览器开发期交给浏览器自带缩放。
     - PT Sans 只有 400 / 700，界面中的 500 / 600 字重由浏览器就近取档。
+- [x] P8 · 测试反馈：Milvus 唯一向量库、线上 Embedding 入口、顶栏选中态与分界线。
+  - [x] P8.1 向量库只提供 Milvus Lite（内置）：数据流节点不再可切换（`capabilities` candidates 只剩 milvus、
+    `switchable=False`，前端隐藏 backend 键），旧插件 lexical 设置导入时改回 Milvus 并提示；Embedding 未就绪时
+    节点显示「等待 Embedding」，检索兜底 SQLite 词法召回（方案 A）。内部 `vector_db.backend=lexical` 保留给测试装配。
+  - [x] P8.2 Embedding 来源改为「本地模型 / 线上 API」二选一（`EmbeddingSourceInput`）：只列 OpenAI 兼容连接，
+    名字含 embed 的模型优先，可手填；无连接时提示先添加；线上模式隐藏本地模型名。
+  - [x] P8.3 顶栏 tab 选中态去掉 3px 光圈；工作台视图顶栏不画分界线，面板四周统一 `--panel-gap`。
+  - 验证：`pytest` 1294 passed / 4 skipped（新增 lexical→Milvus 迁移、线上 Embedding 解锁 Milvus 两项）；ruff /
+    mypy；前端 lint / tsc / build；Playwright 截图核对 Embedding / 向量库节点与工作台顶栏。
+- [x] P9 · 组件安装失败归类（参考旧宿主框架的 pip 失败分类）。
+  - [x] P9.1 `kacore/extras/failure.py`：uv 输出 → disk_full / permission / network / no_wheel / conflict / build /
+    unknown，附最相关的几行原文；`ExtrasManager.install` 失败结果带 `reason` 与 `detail`。
+  - [x] P9.2 前端按 `reason` 显示本地化说明（`installFailureText`），偏好设置 › 组件在该行下方给出说明与可展开的原始
+    报错；`installResultOf` 把后端 500 的结构化失败结果当作结果返回，不再丢成通用异常。
+  - [x] P9.3 README 开发命令补 `--dev-origin http://localhost:3000`（缺少时浏览器开发页的写请求被 CORS 拒为 403）。
+  - 验证：`pytest` 新增 `test_extras_failure.py`（9 项，覆盖六类典型 uv 报错、优先级、未知回退、manager 结果）；
+    ruff / mypy；前端 lint / tsc；假 uv 模拟网络失败，Playwright 截图确认说明与原始报错显示。
+
+- [x] P10 · 安装包瘦身（对齐旧宿主桌面版的打包方式）+ 开发环境对齐。
+  - [x] P10.1 不再预编译 `.pyc`：`prune_runtime` 清掉字节码，构建期解释器一律 `-B`；`ka_server/bytecode_cache.py`
+    在打包产物（`ka/.ka_bundle` 标记）里把 `sys.pycache_prefix` 指到用户缓存目录，首次启动编译一次。
+  - [x] P10.2 删去 site-packages 里的 `tests/`、`include/`（解释器自身的 include/ 保留）。
+  - [x] P10.3 裁掉 pyarrow 的 Flight / S3 扩展与 `_pyarrow_cpp_tests`；substrait 被核心 lib 直接链接，保留。
+    打包冒烟测试新增 Milvus Lite 建库-写入-flush-带过滤检索。
+  - [x] P10.4 Windows 改出 NSIS `setup.exe`（`installMode: currentUser`，中英文安装界面）；`configure_release.py`
+    合并而非覆盖 `bundle.windows`。
+  - [x] P10.5 开发 `.venv` 回到 pymupdf4llm 0.0.27，移除 pymupdf-layout / onnxruntime（PolyForm 非商用许可）。
+  - [x] P10.6 Linux AppImage：发布流水线设 `NO_STRIP=true`（rc.1 的 linuxdeploy 失败连带 `.deb` 未上传）；
+    rc.2 仍失败则改为只出 `.deb`。
+  - 验证：本机（Linux）完整打包：未压缩 729→548 MB、gzip 224→174 MB，冒烟（含 Milvus 往返）通过，产物无 `.pyc`；
+    运行时字节码写入用户缓存（首次导入 2.2 s，之后 0.9 s）；`pytest` 1308 passed / 4 skipped；ruff / mypy。
+  - 未验证（需 CI）：NSIS 实际产物与体积；Windows / macOS 上 pyarrow 文件名的裁剪命中情况；AppImage 修复。
+- [x] P11 · 线上 Rerank + Embedding / Rerank 默认线上 API。
+  - [x] P11.1 `kacore/repository/reranker/remote.py`（`RemoteReranker`）：OpenAI 兼容连接的 `/rerank`，兼容
+    `results`（Cohere / Jina / SiliconFlow）与 `data`（Voyage）；只发 model / query / documents；部分返回时缺失项
+    按原序排后；失败只对本次按序回退并记录原因（不泄露 URL），下次照常请求；20 s 超时不重试。
+  - [x] P11.2 设置：`rerank.provider` 增加 `remote`，新增 `flow.retrieval.rerank.remote`（连接 + 模型），设置桥注入
+    地址与密钥；没选连接按 noop。数据流快照里线上 Rerank 不要求本地组件。
+  - [x] P11.3 前端：`ConnectionModelInput`（Embedding / Rerank 共用，只列 OpenAI 兼容连接，embed / rerank 类模型
+    优先，可手填）；选 remote 才显示连接，线上时隐藏本地模型名。
+  - [x] P11.4 默认线上：`flow.embedding.source` 默认「线上、未选连接」，`rerank.provider` 默认 `remote`；未选连接时
+    启动不做 Embedding 探针、节点提示先添加连接。旧版插件配置（含没写 embedding 的）迁移后保持本地。
+  - 验证：`pytest` 1330 passed / 4 skipped（新增 `test_remote_reranker.py` 21 项、默认值 1 项）；ruff / mypy；
+    前端 lint / tsc；Playwright 截图核对默认态与选择连接流程（临时连接测后已删除）。
+  - 已知限制：只改连接的 API Key 不会热切换已建好的线上 Rerank，需重启服务（与线上 Embedding 一致）。
+- [x] P12 · 全英文输出（保留界面中文选项）+ 顶栏字标。
+  - [x] P12.1 顶栏字标改用 Bitcount、全大写（与落地页一致）。
+  - [x] P12.2 后端日志改英文：Terminal 与日志文件启动后零中文行。
+  - [x] P12.3 后端返回界面的文字改英文（约 490 条：报错、安装失败、导入确认项、诊断提示、Notion / R2 / Zotero 消息，
+    含全角标点拼接）。不改：LLM 提示词、中文文本处理用的正则 / 关键词、Notion 列名「已做笔记」与旧版标记、离线占位里
+    匹配「问题」的逻辑。随回答语言的文案保持中英两套：深度思考提示、生成状态提示原样保留；LLM 不可用 / 未找到内容 /
+    摘录兜底、答案末尾「参考文献 / References」改为按回答语言选择（新增 `_answers_in_chinese`）。
+  - [x] P12.4 桌面壳菜单、托盘、更新通知、后端崩溃 / 启动失败提示改英文（注释保持中文）。
+  - [x] P12.5 前端去掉写死的中文（页面描述、两条请求错误、mock 数据）；`model.ts` 的中文词条表属中文选项，保留。
+  - 验证：`pytest` 1330 passed / 4 skipped（约 70 处断言随文案更新，中文回答相关断言保持中文）；ruff / mypy；
+    前端 lint / tsc；重启后端日志零中文；顶栏截图。
+  - 未验证（本机无 Rust）：壳的 `cargo fmt --check` / `clippy` / `cargo test`，待 CI。

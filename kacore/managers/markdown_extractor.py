@@ -268,8 +268,8 @@ def extract_pdf_markdown(pdf_path: str) -> MarkdownArtifact:
         import pymupdf4llm
     except ImportError as exc:  # 缺 pinned 依赖：给出安装指引（沿用可选依赖懒加载范式）。
         raise RuntimeError(
-            "PDF 清洗需要 PyMuPDF4LLM，请安装："
-            "pip install 'pymupdf4llm>=0.0.17,<0.1.0' 'PyMuPDF>=1.24,<2.0'"
+            "PDF cleaning needs PyMuPDF4LLM; install it with: pip install "
+            "'pymupdf4llm>=0.0.17,<0.1.0' 'PyMuPDF>=1.24,<2.0'"
         ) from exc
 
     page_dicts = pymupdf4llm.to_markdown(

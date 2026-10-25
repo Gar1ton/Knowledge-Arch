@@ -262,14 +262,14 @@ class DeepThinkingOrchestrator:
             return self._degraded(
                 baseline_floor, trace, est_tokens,
                 checklist=checklist,
-                reason="无最终证据",
+                reason="no final evidence",
             )
         # 关键检查项未满足是硬缺失（代表回答必需的信息点真缺）——计入正文告警。
         hard_notes: list[str] = []
         for item in checklist.items:
             if item.critical and not item.satisfied:
                 text = item.why_missing or item.text
-                msg = f"关键检查项未满足：{text}"
+                msg = f"Critical checklist item not satisfied: {text}"
                 if msg not in hard_notes:
                     hard_notes.append(msg)
 

@@ -85,14 +85,14 @@ class LLMAdapter:
                 # 具体原因（未配置 / 超时 / 异常 / 空响应 / reasoning-only）已由
                 # _call_client_result 记进日志；这里指路而不复述。
                 raise RuntimeError(
-                    "No real LLM response (未配置模型/超时/异常/空响应，"
-                    "详见日志中 LLMAdapter 的上一条 ERROR/WARNING)；"
-                    "mock fallback is disabled"
+                    "No real LLM response (no model, timeout, error or empty response; see the "
+                    "previous LLMAdapter ERROR/WARNING in the log); mock fallback is disabled"
                 )
             # 降级到离线占位答案是「回答看起来正常、内容其实是假的」，必须是 WARNING 级。
             logger.warning(
-                "主 LLM 未返回内容，本次回答使用离线占位文本（非真实回答）；"
-                "请在数据流「模型分配」中配置对话模型并检查上方错误日志。"
+                "The main LLM returned nothing, so this answer uses offline placeholder text (not "
+                "a real answer); assign a chat model under “Model assignment” and check the errors "
+                "above."
             )
             return replace(result, text=self._mock_generate(prompt).strip())
 
@@ -111,7 +111,9 @@ class LLMAdapter:
         调用方拿到非 ok 状态后会据此分流（重试/降级/直接失败），日志是唯一线索。
         """
         if not self.configured:
-            logger.warning("LLMAdapter 未配置对话模型，无法调用主 LLM。")
+            logger.warning(
+                "LLMAdapter has no chat model assigned, so the main LLM cannot be called."
+            )
             return GenerationResult(text="", status=STATUS_EMPTY)
 
         started = time.monotonic()
@@ -122,7 +124,7 @@ class LLMAdapter:
                 result = await self._await_client(prompt, retry_system)
             if result.text:
                 logger.info(
-                    "主 LLM 调用完成 耗时 %.1fs prompt=%d 字符 response=%d 字符",
+                    "main LLM call done in %.1fs prompt=%d chars response=%d chars",
                     time.monotonic() - started,
                     len(prompt),
                     len(result.text),
@@ -130,15 +132,16 @@ class LLMAdapter:
                 return result
         except TimeoutError:
             logger.error(
-                "主 LLM 调用超时（%ss，prompt %d 字符）：本次回答放弃等待。"
-                "请检查模型端点的可达性与并发限制，或调大 ask.llm_timeout_seconds。",
+                "Main LLM call timed out (%ss, prompt %d chars): stopped waiting for this answer. "
+                "Check that the model endpoint is reachable and its concurrency limits, or raise "
+                "ask.llm_timeout_seconds.",
                 self._timeout_seconds,
                 len(prompt),
             )
             return GenerationResult(text="", status=STATUS_TIMEOUT)
         except Exception as e:
             logger.error(
-                "主 LLM 调用失败（耗时 %.1fs）：%s: %s",
+                "Main LLM call failed (%.1fs): %s: %s",
                 time.monotonic() - started,
                 type(e).__name__,
                 e,
@@ -148,16 +151,16 @@ class LLMAdapter:
 
         if result.status == STATUS_REASONING_ONLY or result.reasoning_present:
             logger.warning(
-                "主 LLM 连续两次只有 reasoning_content、未给出最终答案"
-                "（耗时 %.1fs，prompt %d 字符，finish_reason=%s）。",
+                "The main LLM returned only reasoning_content twice without a final answer (%.1fs, "
+                "prompt %d chars, finish_reason=%s).",
                 time.monotonic() - started,
                 len(prompt),
                 result.finish_reason or "unknown",
             )
             return replace(result, status=STATUS_REASONING_ONLY)
         logger.warning(
-            "主 LLM 返回空响应（耗时 %.1fs，prompt %d 字符，status=%s）："
-            "模型可能被限流或输出被过滤。",
+            "The main LLM returned an empty response (%.1fs, prompt %d chars, status=%s): the "
+            "model may be rate limited or the output filtered.",
             time.monotonic() - started,
             len(prompt),
             result.status,
@@ -177,8 +180,9 @@ class LLMAdapter:
         lines = [ln.strip() for ln in prompt.splitlines() if ln.strip()]
         question = next((ln for ln in lines if ln.startswith("问题")), lines[0] if lines else "")
         return (
-            f"根据知识库中的相关资料，对于「{question[:60]}」的问答如下：\n\n"
-            "这是一个离线测试占位答案。请在数据流「模型分配」中配置对话模型以获得真实回答。"
+            f"Based on the knowledge base, here is the answer to “{question[:60]}”:\n\nThis is "
+            "an offline placeholder answer. Assign a chat model under “Model assignment” in "
+            "the data flow to get real answers."
         )
 
     async def extract_graph(

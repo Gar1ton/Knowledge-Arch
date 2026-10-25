@@ -51,20 +51,20 @@ def _probe_dir(root: str, unset_reason: str) -> dict[str, object]:
         return {"valid": False, "reason": unset_reason, "resolved": ""}
     p = Path(root).expanduser()
     if not p.exists():
-        return {"valid": False, "reason": f"目录不存在: {p}", "resolved": str(p)}
+        return {"valid": False, "reason": f"Folder not found: {p}", "resolved": str(p)}
     if not p.is_dir():
-        return {"valid": False, "reason": f"不是目录: {p}", "resolved": str(p)}
+        return {"valid": False, "reason": f"Not a folder: {p}", "resolved": str(p)}
     return {"valid": True, "reason": "", "resolved": str(p)}
 
 
 def probe_linked_root(root: str) -> dict[str, object]:
     """校验 linked 模式的 Zotero storage 根目录是否 valid，供前端在设置后即时反馈。"""
-    return _probe_dir(root, "linked_root 未配置")
+    return _probe_dir(root, "linked_root is not configured")
 
 
 def probe_zotmoov_root(root: str) -> dict[str, object]:
     """校验 zotmoov 模式的 ZotMoov 附件目录是否 valid，供前端在设置后即时反馈。"""
-    return _probe_dir(root, "zotmoov_root 未配置")
+    return _probe_dir(root, "zotmoov_root is not configured")
 
 
 __all__ = [

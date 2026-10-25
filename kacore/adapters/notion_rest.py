@@ -100,31 +100,40 @@ def classify_http_error(method: str, path: str, status: int, payload: Any) -> No
     detail = detail.strip()[:500]
     where = f"{method} {path}"
     if status == 401:
-        hint = "Notion token 无效或已被撤销：请在数据流「Notion」节点重新填写集成 token。"
-        return NotionMCPError(f"{hint}（{where}）", code=code or CODE_UNAUTHORIZED, status=status)
+        hint = (
+            "The Notion token is invalid or was revoked: enter the integration token again in the "
+            "“Notion” node of the data flow."
+        )
+        return NotionMCPError(f"{hint} ({where})", code=code or CODE_UNAUTHORIZED, status=status)
     if status == 403:
-        hint = "当前集成没有该页面或数据库的访问权限：请在 Notion 里把目标页面分享给该集成。"
+        hint = (
+            "This integration cannot access the page or database: share the target page with the "
+            "integration in Notion."
+        )
         return NotionMCPError(
-            f"{hint}（{where}：{detail or code}）", code=code or CODE_RESTRICTED, status=status
+            f"{hint} ({where}: {detail or code})", code=code or CODE_RESTRICTED, status=status
         )
     if status == 404:
-        hint = "Notion 对象不存在或未分享给当前集成（object_not_found，404 不能区分两者）。"
-        return NotionMCPError(f"{hint}（{where}）", code=code or CODE_NOT_FOUND, status=status)
+        hint = (
+            "The Notion object does not exist or is not shared with this integration "
+            "(object_not_found; a 404 cannot tell the two apart)."
+        )
+        return NotionMCPError(f"{hint} ({where})", code=code or CODE_NOT_FOUND, status=status)
     if status == 429:
         return NotionMCPError(
-            f"Notion 请求过于频繁（HTTP 429），已重试仍被限流，请稍后再试（{where}）。",
+            f"Notion is rate limiting (HTTP 429) even after retries; try again later ({where}).",
             code=code or CODE_RATE_LIMITED,
             status=status,
         )
     if status >= 500:
         return NotionMCPError(
-            f"Notion 服务端错误（HTTP {status}），请稍后重试（{where}）。",
+            f"Notion server error (HTTP {status}); try again later ({where}).",
             code=code or CODE_SERVER_ERROR,
             status=status,
         )
-    label = f"{code}: {detail}" if code and detail else (detail or code or "（无错误详情）")
+    label = f"{code}: {detail}" if code and detail else (detail or code or "(no error details)")
     return NotionMCPError(
-        f"Notion 拒绝了请求（HTTP {status}，{where}）：{label}", code=code, status=status
+        f"Notion rejected the request (HTTP {status}, {where}): {label}", code=code, status=status
     )
 
 
@@ -187,11 +196,12 @@ class NotionRestClient:
         try:
             token = str(self._token_provider() or "").strip()
         except Exception as exc:  # noqa: BLE001 - 机密库读取失败等同未配置
-            logger.warning("读取 Notion token 失败：%s", type(exc).__name__)
+            logger.warning("Failed to read the Notion token: %s", type(exc).__name__)
             token = ""
         if not token:
             raise NotionMCPError(
-                "Notion 未连接：请先在数据流「Notion」节点填写集成 token。",
+                "Notion is not connected: enter the integration token in the “Notion” node of the "
+                "data flow first.",
                 code=CODE_NOT_CONFIGURED,
             )
         return token
@@ -256,10 +266,12 @@ class NotionRestClient:
                     await self._sleep(_DEFAULT_BACKOFF_SECONDS * (2**attempt))
                     attempt += 1
                     continue
-                kind = "请求超时" if isinstance(exc, asyncio.TimeoutError) else "网络错误"
+                kind = (
+                    "request timed out"
+                ) if isinstance(exc, asyncio.TimeoutError) else "network error"
                 raise NotionMCPError(
-                    f"无法连接 Notion（{kind}：{type(exc).__name__}，{method} {path}）。"
-                    "请检查网络或代理设置。",
+                    f"Cannot reach Notion ({kind}: {type(exc).__name__}, {method} {path}). Check "
+                    "the network or proxy settings.",
                     code=CODE_NETWORK,
                 ) from exc
             if 200 <= status < 300:
@@ -270,7 +282,9 @@ class NotionRestClient:
                     if status == 429
                     else _DEFAULT_BACKOFF_SECONDS * (2**attempt)
                 )
-                logger.info("Notion HTTP %s，%.1fs 后重试（%s %s）", status, delay, method, path)
+                logger.info((
+                    "Notion HTTP %s, retrying in %.1fs (%s %s)"
+                ), status, delay, method, path)
                 await self._sleep(delay)
                 attempt += 1
                 continue
@@ -285,7 +299,9 @@ class NotionRestClient:
         self._data_sources.clear()  # 每轮重新验证目标，避免沿用旧 token / 旧容器结果。
         data = await self._request("GET", "/users/me")
         if not isinstance(data, dict) or not data.get("id"):
-            raise NotionMCPError("Notion /users/me 响应形状异常。", code=CODE_INCOMPATIBLE)
+            raise NotionMCPError((
+                "Unexpected shape of the Notion /users/me response."
+            ), code=CODE_INCOMPATIBLE)
 
     @staticmethod
     def _require_id(data: Any, operation: str) -> str:
@@ -293,7 +309,7 @@ class NotionRestClient:
             value = data.get("id")
             if value:
                 return str(value)
-        raise NotionMCPError(f"Notion {operation} 返回结果缺少 id 字段。")
+        raise NotionMCPError(f"Notion {operation} returned a result without an id field.")
 
     async def _paged_results(
         self,
@@ -319,19 +335,22 @@ class NotionRestClient:
                     page_query = {**(page_query or {}), "start_cursor": start_cursor}
             data = await self._request(method, path, body=page_body, query=page_query)
             if not isinstance(data, dict):
-                raise NotionMCPError(f"Notion {method} {path} 返回结果形状异常。")
+                raise NotionMCPError(f"Unexpected shape of the Notion {method} {path} result.")
             results = data.get("results")
             if not isinstance(results, list):
-                raise NotionMCPError(f"Notion {method} {path} 返回结果缺少 results。")
+                raise NotionMCPError(f"Notion {method} {path} returned no results.")
             if any(not isinstance(r, dict) for r in results):
-                raise NotionMCPError(f"Notion {method} {path} 返回无效分页条目。")
+                raise NotionMCPError(f"Notion {method} {path} returned an invalid page entry.")
             all_results.extend(results)
             start_cursor = data.get("next_cursor")
             if data.get("has_more") and not start_cursor:
-                raise NotionMCPError(f"Notion {method} {path} 分页缺少 next_cursor。")
+                raise NotionMCPError(f"Notion {method} {path} pagination has no next_cursor.")
             if not (data.get("has_more") and start_cursor):
                 return all_results
-        raise NotionMCPError(f"Notion {method} {path} 超过分页上限，拒绝将部分结果视为完整。")
+        raise NotionMCPError(
+            f"Notion {method} {path} exceeded the page limit; partial results are not treated as "
+            "complete."
+        )
 
     # ── data source 解析 ────────────────────────────────────────
 
@@ -349,7 +368,8 @@ class NotionRestClient:
         data = await self.retrieve_database(database_id)
         if "data_sources" not in data:
             raise NotionMCPError(
-                "Notion database 响应缺少 data_sources：目标可能不是数据库，或 API 版本不兼容。",
+                "The Notion database response has no data_sources: the target may not be a "
+                "database, or the API version is incompatible.",
                 code=CODE_INCOMPATIBLE,
             )
         sources = data.get("data_sources")
@@ -357,15 +377,20 @@ class NotionRestClient:
             not isinstance(s, dict) or not isinstance(s.get("id"), str) or not s["id"].strip()
             for s in sources
         ):
-            raise NotionMCPError("Notion data_sources 字段形状异常。", code="invalid_response")
+            raise NotionMCPError((
+                "Unexpected shape of the Notion data_sources field."
+            ), code="invalid_response")
         ids = [s["id"] for s in sources]
         if not ids:
-            raise NotionMCPError("目标 database 没有数据源，请检查目标库。", code="no_data_source")
+            raise NotionMCPError((
+                "The target database has no data source; check the target database."
+            ), code="no_data_source")
         configured = self._configured_sources.get(database_id, "")
         if configured:
             if configured not in ids:
                 raise NotionMCPError(
-                    "配置的 data_source_id 不属于目标 database，请检查配置。",
+                    "The configured data_source_id does not belong to the target database; check "
+                    "the settings.",
                     code="data_source_mismatch",
                 )
             source_id = configured
@@ -373,7 +398,7 @@ class NotionRestClient:
             source_id = ids[0]
         else:
             raise NotionMCPError(
-                "目标 database 有多个数据源，请明确配置 data_source_id。",
+                "The target database has several data sources; set data_source_id explicitly.",
                 code="ambiguous_data_source",
             )
         self._data_sources[database_id] = source_id
@@ -384,7 +409,7 @@ class NotionRestClient:
         source_id = await self.resolve_data_source(database_id)
         data = await self._request("GET", f"/data_sources/{source_id}")
         if not isinstance(data, dict) or not isinstance(data.get("properties"), dict):
-            raise NotionMCPError("Notion data source 返回结果缺少 properties。")
+            raise NotionMCPError("The Notion data source result has no properties.")
         return data
 
     # ── Database 操作 ───────────────────────────────────────────
@@ -408,7 +433,7 @@ class NotionRestClient:
         """读取 database 容器（含 data_sources，不含属性 schema）。"""
         data = await self._request("GET", f"/databases/{database_id}")
         if not isinstance(data, dict):
-            raise NotionMCPError("Notion retrieve database 返回结果形状异常。")
+            raise NotionMCPError("Unexpected shape of the Notion retrieve-database result.")
         return data
 
     async def update_database(self, database_id: str, properties: dict[str, Any]) -> dict[str, Any]:

@@ -284,7 +284,9 @@ def text_to_paragraph_blocks(
     truncated = len(pieces) > max_blocks
     blocks = [paragraph_block(p) for p in pieces[: max_blocks - 1 if truncated else max_blocks]]
     if truncated:
-        blocks.append(paragraph_block("…（正文过长，其余内容已截断，完整内容见本地）"))
+        blocks.append(paragraph_block(
+            "…(body too long; the rest was truncated, see the local copy for the full text)"
+        ))
     return blocks
 
 

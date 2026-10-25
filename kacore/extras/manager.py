@@ -20,16 +20,19 @@ import shutil
 import site
 import sys
 import time
+from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from kacore.capabilities import OPTIONAL_DEPENDENCIES, OptionalDependency, resolve_dependency
 from kacore.extras.base import ExtrasInstaller, ExtrasUnavailableError, LineSink
+from kacore.extras.failure import classify_install_failure
 
 logger = logging.getLogger("ExtrasManager")
 
 MARKER_FILE = ".ka_extras.json"
+_OUTPUT_TAIL_LINES = 400  # 失败归类只看输出末尾；torch 的下载日志很长
 
 STATE_INSTALLED = "installed"
 STATE_MISSING = "missing"
@@ -152,7 +155,8 @@ class ExtrasManager:
             state = self.state(dep.key)
             if state == STATE_STALE:
                 logger.warning(
-                    "组件 %s 是为其他 Python 版本安装的，已跳过；请在组件页重新安装", dep.key
+                    "Component %s was installed for another Python version and was skipped; "
+                    "reinstall it on the Components page", dep.key
                 )
                 continue
             if state != STATE_INSTALLED:
@@ -164,7 +168,7 @@ class ExtrasManager:
             activated.append(dep.key)
         if activated:
             importlib.invalidate_caches()
-            logger.info("已激活组件：%s", ", ".join(activated))
+            logger.info("activated components: %s", ", ".join(activated))
         return activated
 
     # ── 安装 / 卸载 ──────────────────────────────────────────────
@@ -172,32 +176,44 @@ class ExtrasManager:
     async def install(self, package: str, *, on_line: LineSink | None = None) -> dict[str, Any]:
         """安装一个组件（package 为依赖 key 或主规格，须在白名单内，否则抛 ValueError）。
 
-        返回 {status, package, returncode, restart_required, message}；失败不改动已装版本。
+        返回 {status, package, returncode, restart_required, message}；失败时另有
+        reason（见 kacore.extras.failure）与 detail（最相关的几行原文）。失败不改动已装版本。
         """
         dep = resolve_dependency(package)
         self._root.mkdir(parents=True, exist_ok=True)
         staging = self._root / f".{dep.key}.partial"
         _remove(staging)
         staging.mkdir(parents=True)
+        tail: deque[str] = deque(maxlen=_OUTPUT_TAIL_LINES)
+
+        def record(line: str) -> None:
+            tail.append(line)
+            if on_line is not None:
+                on_line(line)
+
         try:
             returncode = await self._installer.install(
                 dep.install_specs,
                 staging,
                 extra_args=dep.installer_args,
-                on_line=on_line,
+                on_line=record,
             )
         except ExtrasUnavailableError as exc:
             _remove(staging)
             return self._result(dep, "error", None, str(exc))
         except Exception as exc:  # noqa: BLE001 - 子进程启动失败等，统一回滚并报告
             _remove(staging)
-            logger.error("组件 %s 安装异常：%s", dep.key, exc, exc_info=True)
-            return self._result(dep, "error", None, f"安装失败：{exc}")
+            logger.error("component %s install raised: %s", dep.key, exc, exc_info=True)
+            return self._result(dep, "error", None, f"Installation failed: {exc}")
         if returncode != 0:
             _remove(staging)
-            return self._result(
-                dep, "error", returncode, f"安装失败（退出码 {returncode}），详见日志。"
-            )
+            failure = classify_install_failure(list(tail), returncode)
+            logger.error("component %s install failed (%s)", dep.key, failure.reason)
+            return {
+                **self._result(dep, "error", returncode, failure.message),
+                "reason": failure.reason,
+                "detail": list(failure.detail),
+            }
         (staging / MARKER_FILE).write_text(
             json.dumps(
                 {
@@ -214,16 +230,17 @@ class ExtrasManager:
             self._swap_in(dep.key, staging)
         except OSError as exc:
             _remove(staging)
-            logger.error("组件 %s 换入失败：%s", dep.key, exc)
+            logger.error("component %s swap-in failed: %s", dep.key, exc)
             return self._result(
                 dep,
                 "error",
                 returncode,
-                f"组件目录正被占用，未能替换旧版本：{exc}。请重启服务后再试。",
+                f"The component folder is in use, so the old version could not be replaced: {exc}. "
+                "Restart the service and try again.",
             )
         self.activate()
-        logger.info("组件 %s 安装完成", dep.key)
-        return self._result(dep, "ok", returncode, "已安装，重启服务后生效。")
+        logger.info("component %s installed", dep.key)
+        return self._result(dep, "ok", returncode, "Installed; restart the service to use it.")
 
     def _swap_in(self, key: str, staging: Path) -> None:
         final = self.pack_dir(key)
@@ -246,12 +263,14 @@ class ExtrasManager:
         dep = resolve_dependency(package)
         target = self.pack_dir(dep.key)
         if not target.exists():
-            return self._result(dep, "ok", None, "组件未安装。", restart=False)
+            return self._result(dep, "ok", None, "The component is not installed.", restart=False)
         try:
             shutil.rmtree(target)
         except OSError as exc:
-            return self._result(dep, "error", None, f"无法删除组件目录：{exc}。请重启服务后再试。")
-        return self._result(dep, "ok", None, "已卸载，重启服务后生效。")
+            return self._result(dep, "error", None, (
+                f"Cannot delete the component folder: {exc}. Restart the service and try again."
+            ))
+        return self._result(dep, "ok", None, "Uninstalled; restart the service to apply.")
 
     @staticmethod
     def _result(

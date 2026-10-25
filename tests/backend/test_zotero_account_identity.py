@@ -211,7 +211,7 @@ async def test_access_mode_switch_blocked_when_unresolved_duplicates_exist() -> 
         )
     )
 
-    with pytest.raises(ValueError, match="重复"):
+    with pytest.raises(ValueError, match="duplicated"):
         await api.update_config_value("zotero_sync", "access_mode", "server")
 
 

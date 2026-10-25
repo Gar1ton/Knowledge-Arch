@@ -25,7 +25,7 @@ _MAX_DEPTH = 20
 def _text(block: dict[str, Any]) -> str:
     data = block.get(str(block.get("type", "")), {})
     if not isinstance(data, dict):
-        raise NotionMCPError("Notion 正文块结构无效。")
+        raise NotionMCPError("Invalid Notion body block structure.")
     return "".join(
         str(t.get("plain_text") or t.get("text", {}).get("content", ""))
         for t in data.get("rich_text", [])
@@ -68,7 +68,9 @@ class NotionNotesScanner:
             # 防御 fake/异常服务端过滤失效：只处理本库带 DocID 的文章。
             properties = page.get("properties")
             if not isinstance(properties, dict):
-                raise NotionMCPError("笔记检查需要完整页面属性，请使用 response_mode=full。")
+                raise NotionMCPError(
+                    "The note check needs full page properties; use response_mode=full."
+                )
             doc_property = properties.get(PROP_DOC_ID, {})
             if not doc_property.get("rich_text"):
                 continue
@@ -76,12 +78,14 @@ class NotionNotesScanner:
             if not isinstance(note_property, dict) or not isinstance(
                 note_property.get("checkbox"), bool
             ):
-                raise NotionMCPError("Articles 缺少“已做笔记”checkbox，请先执行同步初始化。")
+                raise NotionMCPError(
+                    "Articles has no “已做笔记” checkbox; run the sync setup first."
+                )
             if page.get("in_trash") or note_property["checkbox"]:
                 continue
             page_id = page.get("id")
             if not isinstance(page_id, str) or not page_id:
-                raise NotionMCPError("笔记检查页面缺少 id。")
+                raise NotionMCPError("The note check page has no id.")
             stats["scanned"] += 1
             if await self.has_notes(page_id):
                 await self._adapter.update_page_properties(
@@ -97,15 +101,21 @@ class NotionNotesScanner:
 
         async def visit(parent: str, depth: int) -> bool:
             if depth > _MAX_DEPTH:
-                raise NotionMCPError("笔记检查超过嵌套上限，保留原标记。")
+                raise NotionMCPError(
+                    "The note check exceeded the nesting limit; keeping the existing mark."
+                )
             blocks = await self._adapter.list_block_children(parent)
             remaining[0] -= len(blocks)
             if remaining[0] < 0:
-                raise NotionMCPError("笔记检查超过块数上限，保留原标记。")
+                raise NotionMCPError(
+                    "The note check exceeded the block limit; keeping the existing mark."
+                )
             for block in blocks:
                 kind = block.get("type")
                 if not isinstance(kind, str) or not kind:
-                    raise NotionMCPError("Notion 正文块缺少 type，无法检查笔记。")
+                    raise NotionMCPError(
+                        "A Notion body block has no type, so notes cannot be checked."
+                    )
                 text = _text(block)
                 if kind == "toggle" and text == _LEGACY_PREVIEW:
                     continue
@@ -116,7 +126,7 @@ class NotionNotesScanner:
                 if block.get("has_children"):
                     block_id = block.get("id")
                     if not isinstance(block_id, str) or not block_id:
-                        raise NotionMCPError("嵌套正文块缺少 id。")
+                        raise NotionMCPError("A nested body block has no id.")
                     if await visit(block_id, depth + 1):
                         return True
                 elif kind not in {

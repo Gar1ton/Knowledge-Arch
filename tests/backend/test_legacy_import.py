@@ -143,7 +143,7 @@ def test_locate_accepts_host_root_data_dir_or_plugin_dir(old_install: Path) -> N
 
 
 def test_locate_rejects_unrelated_folder(tmp_path: Path) -> None:
-    with pytest.raises(LegacyImportError, match="旧版插件数据"):
+    with pytest.raises(LegacyImportError, match="old plugin data"):
         locate(tmp_path)
     with pytest.raises(LegacyImportError):
         locate(tmp_path / "missing")
@@ -197,8 +197,8 @@ async def test_stage_copies_rewrites_migrates_and_translates(
     assert summary["document_count"] == 2 and summary["paths_rewritten"] == 1
     assert summary["missing_originals"] == 1 and summary["migrations_applied"] == 1
     assert summary["secrets_imported"] == 1
-    assert any("Embedding" in note for note in marker["attention"])
-    assert any("链接模式" in note for note in marker["attention"])
+    assert any("embedding" in note.lower() for note in marker["attention"])
+    assert any("linked mode" in note for note in marker["attention"])
     assert "notion_sync.mcp_server_name" in marker["dropped"]
     assert {"copying", "rewriting", "migrating"} <= set(stages)
     assert legacy_import_state(data_dir)["pending"]["import_id"] == marker["import_id"]
@@ -207,7 +207,7 @@ async def test_stage_copies_rewrites_migrates_and_translates(
 async def test_stage_refuses_second_pending_import(old_install: Path, tmp_path: Path) -> None:
     data_dir = tmp_path / "new-data"
     await stage_legacy_import(old_install, data_dir)
-    with pytest.raises(LegacyImportError, match="等待应用"):
+    with pytest.raises(LegacyImportError, match="waiting to be applied"):
         await stage_legacy_import(old_install, data_dir)
     assert discard_pending_legacy_import(data_dir) is True
     assert legacy_import_state(data_dir)["pending"] is None
@@ -218,7 +218,7 @@ async def test_stage_failure_removes_staging(old_install: Path, tmp_path: Path) 
     db = old_install.joinpath(*PLUGIN_DATA_PARTS) / "knowledge_repository.db"
     db.write_bytes(b"not a database")
     data_dir = tmp_path / "new-data"
-    with pytest.raises(LegacyImportError, match="准备导入时出错"):
+    with pytest.raises(LegacyImportError, match="Preparing the import failed"):
         await stage_legacy_import(old_install, data_dir)
     assert legacy_import_state(data_dir)["pending"] is None
     assert not list((state_dir(data_dir) / "staging").iterdir())
@@ -226,7 +226,7 @@ async def test_stage_failure_removes_staging(old_install: Path, tmp_path: Path) 
 
 async def test_stage_rejects_overlapping_directories(old_install: Path) -> None:
     plugin_dir = old_install.joinpath(*PLUGIN_DATA_PARTS)
-    with pytest.raises(LegacyImportError, match="重叠"):
+    with pytest.raises(LegacyImportError, match="overlaps"):
         await stage_legacy_import(old_install, plugin_dir / "inner")
 
 
@@ -243,7 +243,7 @@ async def test_apply_then_commit(old_install: Path, tmp_path: Path) -> None:
     with closing(sqlite3.connect(data_dir / "knowledge_repository.db")) as db:
         assert db.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 2
     assert (data_dir / "library" / "d1" / "original.pdf").read_bytes() == b"%PDF-1.4 old"
-    assert settings.get("flow.vector_store.backend") == "lexical"
+    assert settings.get("flow.vector_store.backend") == "milvus"  # v2 只提供 Milvus Lite
     assert settings.get("flow.graph.query_mode") == "local"  # runtime_config 覆盖插件配置
     assert settings.get("flow.zotero.server_api_key") == "zot-key-1234"
     assert legacy_import_state(data_dir)["pending"] is not None  # 已换入、待确认
@@ -324,7 +324,7 @@ async def test_api_import_end_to_end_through_soft_restart(
 
         from kacore.api_legacy_import import LegacyImportConflictError
 
-        with pytest.raises(LegacyImportConflictError, match="空库"):
+        with pytest.raises(LegacyImportConflictError, match="empty library"):
             await new_api.start_legacy_import(str(old_install))
     finally:
         await init.teardown()
@@ -361,7 +361,7 @@ async def test_http_routes(old_install: Path, tmp_path: Path) -> None:
     try:
         assert (await client.post("/api/legacy-import/inspect", json={})).status == 400
         bad = await client.post("/api/legacy-import/inspect", json={"path": str(tmp_path)})
-        assert bad.status == 400 and "旧版插件数据" in (await bad.json())["message"]
+        assert bad.status == 400 and "old plugin data" in (await bad.json())["message"]
         ok = await client.post("/api/legacy-import/inspect", json={"path": str(old_install)})
         assert ok.status == 200 and (await ok.json())["document_count"] == 2
         status = await (await client.get("/api/legacy-import")).json()

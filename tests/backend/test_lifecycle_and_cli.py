@@ -183,7 +183,10 @@ async def test_default_initializer_starts_without_optional_feature_packages(
         "sentence_transformers": None,
     }
     with patch.dict(sys.modules, blocked_modules):
-        initializer = AppInitializer(legacy_settings({}), temp_dir)
+        # 显式本地 Embedding：新版默认线上，这里验证的是本地组件缺失时的指引。
+        initializer = AppInitializer(
+            legacy_settings({"embedding": {"provider": "local"}}), temp_dir
+        )
         await initializer.initialize()
 
         assert initializer.api is not None
@@ -270,7 +273,7 @@ async def test_initializer_probe_timeout_keeps_startup_moving(
         assert initializer.vector_store is None
         assert initializer.api is not None
         diagnostics = initializer.config.get_diagnostics()
-        assert any("加载超时" in item and "重启服务" in item for item in diagnostics)
+        assert any("timed out" in item and "Restart service" in item for item in diagnostics)
         # 探针任务留在后台（下载继续），teardown 才收走。
         assert initializer._pending_probe_task is not None
         await initializer.teardown()
@@ -434,7 +437,7 @@ async def test_clear_stale_milvus_lock_rejects_when_not_lock_issue(
     result = await initializer.clear_stale_milvus_lock()
 
     assert result["status"] == "error"
-    assert "未检测到" in result["message"]
+    assert "No Milvus data folder lock" in result["message"]
 
 
 async def test_clear_stale_milvus_lock_rejects_when_vector_store_ready(
@@ -449,7 +452,7 @@ async def test_clear_stale_milvus_lock_rejects_when_vector_store_ready(
     result = await initializer.clear_stale_milvus_lock()
 
     assert result["status"] == "error"
-    assert "无需清除" in result["message"]
+    assert "no lock to clear" in result["message"]
 
 
 async def test_clear_stale_milvus_lock_refuses_to_delete_os_lock_file(
@@ -474,7 +477,7 @@ async def test_clear_stale_milvus_lock_refuses_to_delete_os_lock_file(
     result = await initializer.clear_stale_milvus_lock()
 
     assert result["status"] == "error"
-    assert "完整退出应用" in result["message"]
+    assert "Quit the app completely" in result["message"]
     assert (db_dir / "LOCK").exists()
     assert (collections_dir / "kb_chunks.marker").read_text() == "real data, do not touch"
     assert initializer._vector_store_init_error is not None

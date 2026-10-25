@@ -41,7 +41,7 @@ def _append_notes(source, root, note_ids, parts, sources, edges, token_budget, c
         )
         if key in note_ids:
             continue
-        addition = f"\n[PDF p.{note['page']}, 注 {note['marker']}] {note['text']}"
+        addition = f"\n[PDF p.{note['page']}, note {note['marker']}] {note['text']}"
         cost = counter.count(addition) + 1
         if cost > min(token_budget, context_budget):
             edges.append({"source": root.chunk_id, "kind": "footnote", "status": "token_budget"})

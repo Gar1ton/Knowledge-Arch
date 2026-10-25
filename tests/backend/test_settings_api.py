@@ -57,9 +57,9 @@ async def test_update_setting_reports_consequence_and_refreshes_config(tmp_path:
     assert hot["consequence"] == "none"
     assert api._config.get_ask_agent_config().answer_language == "en"
     assert compat.is_milvus_compatible("fp")
-    with pytest.raises(ValueError, match="未知设置项"):
+    with pytest.raises(ValueError, match="Unknown setting"):
         await api.update_setting("flow.nope", 1)
-    with pytest.raises(ValueError, match="只能是"):
+    with pytest.raises(ValueError, match="must be one of"):
         await api.update_setting("flow.graph.query_mode", "bogus")
 
 
@@ -78,9 +78,9 @@ async def test_embedding_source_change_invalidates_indexes(tmp_path: Path) -> No
 
     api.create_provider({"label": "Claude", "base_url": "https://api.anthropic.com",
                          "kind": "anthropic", "id": "claude"})
-    with pytest.raises(ValueError, match="OpenAI 兼容"):
+    with pytest.raises(ValueError, match="OpenAI-compatible"):
         await api.update_setting("flow.embedding.source", {"provider_id": "claude", "model": "x"})
-    with pytest.raises(ValueError, match="不存在"):
+    with pytest.raises(ValueError, match="does not exist"):
         await api.update_setting("flow.models.chat", {"provider_id": "ghost", "model": "x"})
 
 
@@ -105,9 +105,9 @@ async def test_legacy_config_update_maps_onto_settings(tmp_path: Path) -> None:
     assert settings.get("flow.graph.query_mode") == "naive"
     await api.update_config_value("embedding", "model", "BAAI/bge-m3")
     assert settings.get("flow.embedding.local_model") == "BAAI/bge-m3"
-    with pytest.raises(ValueError, match="模型供应商"):
+    with pytest.raises(ValueError, match="Model providers"):
         await api.update_config_value("embedding", "provider", "external")
-    with pytest.raises(ValueError, match="机密字段"):
+    with pytest.raises(ValueError, match="is a secret"):
         await api.update_config_value("r2_sync", "secret_access_key", "x")
     with pytest.raises(ValueError, match="not allowed"):
         await api.update_config_value("graph", "working_dir", "x")
