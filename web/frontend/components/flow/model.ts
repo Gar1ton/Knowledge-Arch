@@ -63,7 +63,7 @@ export const STAGE_META: Record<FlowStageId, FlowStageMeta> = {
     idx: 3,
     titleKey: "flow_stage_vector_store",
     descKey: "flow_stage_vector_store_desc",
-    roleKey: "flow_role_switchable",
+    roleKey: "flow_role_builtin",
     icon: "db",
     kind: "pipe",
   },
@@ -141,11 +141,18 @@ export const FIELD_LABEL_KEYS: Partial<Record<FlowStageId, I18nKey>> = {
 /** 节点头部开关（Segmented）写入的设置键；toBool 时 on/off ↔ true/false。 */
 export const SWITCH_MAP: Partial<Record<FlowStageId, { key: string; toBool?: boolean }>> = {
   zotero: { key: "flow.zotero.enabled", toBool: true },
-  vector_store: { key: "flow.vector_store.backend" },
   graph: { key: "flow.graph.enabled", toBool: true },
   notion: { key: "flow.notion.enabled", toBool: true },
   r2: { key: "flow.r2.enabled", toBool: true },
 };
+
+/** 节点面板里不显示的设置键：节点头部开关已覆盖的键，以及不再让用户选的键。 */
+export function hiddenSettingKeys(id: FlowStageId): string[] {
+  const keys = SWITCH_MAP[id] ? [SWITCH_MAP[id]!.key] : [];
+  // 向量库只提供 Milvus Lite；backend 只留作内部装配开关。
+  if (id === "vector_store") keys.push("flow.vector_store.backend");
+  return keys;
+}
 
 /** 节点 → 设置分组（`GET /api/settings/schema?home=`）。providers 是连接列表，不在此表。 */
 export const STAGE_HOME: Partial<Record<FlowStageId, string>> = {
@@ -200,6 +207,7 @@ const BACKEND_LABEL_ZH: Record<string, string> = {
   on: "开启",
   off: "关闭",
   cross_encoder: "本地 Rerank",
+  remote: "线上 Rerank",
   noop: "关闭 Rerank",
   idle: "待首次使用",
   loading: "加载中",
@@ -228,6 +236,7 @@ const BACKEND_LABEL_EN: Record<string, string> = {
   on: "On",
   off: "Off",
   cross_encoder: "Local Rerank",
+  remote: "Online Rerank",
   noop: "Rerank Off",
   idle: "Idle",
   loading: "Loading",

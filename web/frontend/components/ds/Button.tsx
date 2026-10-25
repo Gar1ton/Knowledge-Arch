@@ -38,10 +38,11 @@ export function Button({
     ghost: { background: "transparent", color: "var(--fg-muted)", border: "1px solid transparent" },
     danger: { background: "var(--danger)", color: "var(--danger-fg)", border: "1px solid transparent" },
     tab: {
-      background: "var(--surface)",
       color: active ? "var(--accent)" : "var(--fg)",
       border: `1px solid ${active ? "var(--accent-border)" : "var(--border-strong)"}`,
-      boxShadow: active ? "0 0 0 3px var(--ring)" : "var(--shadow-card)",
+      // 选中态只换颜色，不加光圈（深色主题下光圈像一圈白框）。
+      background: active ? "var(--accent-softer)" : "var(--surface)",
+      boxShadow: "var(--shadow-card)",
     },
   };
 

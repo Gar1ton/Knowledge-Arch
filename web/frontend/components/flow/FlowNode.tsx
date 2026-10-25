@@ -8,6 +8,7 @@ import {
   backendLabel,
   buildDetailParts,
   FIELD_LABEL_KEYS,
+  hiddenSettingKeys,
   isFlowStageId,
   STAGE_META,
   SWITCH_MAP,
@@ -235,9 +236,11 @@ export function FlowNode({
       Boolean(dep && (!dep.installed || dep.runtime_ready === false)),
     );
   const fieldKey = FIELD_LABEL_KEYS[id] ?? "flow_current";
+  // 还在等 Embedding 时没有可重建的东西，只显示等待提示。
   const needsMilvusRebuild =
     id === "vector_store" &&
     stage.current === "milvus" &&
+    stage.detail.waiting_for_embedding !== true &&
     (stage.detail.rebuild_required === true ||
       Number(stage.detail.pending_reindex_count ?? 0) > 0);
   const milvusReason =
@@ -311,6 +314,10 @@ export function FlowNode({
           </div>
         )}
 
+        {id === "vector_store" && stage.detail.waiting_for_embedding === true && (
+          <div className="flow-consequence">{t("flow_vector_waiting_embedding")}</div>
+        )}
+
         {canSwitch && stage.consequence !== "none" && (
           <div className={`flow-consequence ${stage.consequence === "rebuild" ? "flow-consequence--warn" : ""}`}>
             {stage.consequence === "rebuild" ? t("flow_consequence_rebuild") : t("flow_consequence_restart")}
@@ -324,7 +331,7 @@ export function FlowNode({
           settingsItems={settingsItems}
           providers={providers}
           presets={presets}
-          hiddenKeys={SWITCH_MAP[id] ? [SWITCH_MAP[id]!.key] : []}
+          hiddenKeys={hiddenSettingKeys(id)}
           onNotify={onNotify}
           lang={lang}
           t={t}

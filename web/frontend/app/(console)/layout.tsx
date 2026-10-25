@@ -149,7 +149,8 @@ function ConsoleCanvas() {
           flex: 1,
           minHeight: 0,
           display: "flex",
-          padding: "0 var(--panel-gap) var(--panel-gap)",
+          // 顶部也留出面板间距：工作台下顶栏不画分界线，面板浮在同一间距里。
+          padding: "var(--panel-gap)",
           overflow: "hidden",
         }}
       >
