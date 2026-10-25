@@ -23,7 +23,6 @@ import argparse
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -94,9 +93,9 @@ def install_python(uv: str, out: Path) -> Path:
 
 def python_output(python: Path, code: str) -> str:
     # -B：构建期不写字节码，产物保持「不带 .pyc」。
-    out = subprocess.run(
-        [str(python), "-I", "-B", "-c", code], check=True, capture_output=True, text=True
-    )
+    out = subprocess.run([str(python), "-I", "-B", "-c", code], capture_output=True, text=True)
+    if out.returncode != 0:  # 冒烟失败时把解释器的报错带进 CI 日志
+        raise SystemExit(f"bundled python failed ({out.returncode}):\n{out.stderr.strip()}")
     return out.stdout.strip()
 
 
@@ -176,27 +175,6 @@ def slim_interpreter(python_dir: Path) -> int:
     if b"libpython3" not in exe.read_bytes():
         for lib in sorted((python_dir / "lib").glob("libpython3*")):
             freed += _delete(lib)
-    return freed
-
-
-def strip_extensions(sp: Path) -> int:
-    """Linux：strip site-packages 里的 .so，返回释放的字节数。
-
-    wheel 里的扩展多数没 strip；解释器本身不能 strip（python-build-standalone 的解释器
-    strip 后无法启动，这也是 AppImage 要设 NO_STRIP 的原因）。没有 strip 或单个文件失败时跳过，
-    由冒烟测试兜底。
-    """
-    strip = shutil.which("strip")
-    if not sys.platform.startswith("linux") or not strip:
-        return 0
-    freed = 0
-    for lib in sorted(sp.rglob("*.so*")):
-        if not lib.is_file() or lib.is_symlink() or not (lib.suffix == ".so" or ".so." in lib.name):
-            continue
-        before = lib.stat().st_size
-        result = subprocess.run([strip, "--strip-unneeded", str(lib)], capture_output=True)
-        if result.returncode == 0:
-            freed += before - lib.stat().st_size
     return freed
 
 
@@ -296,9 +274,6 @@ def main(argv: list[str] | None = None) -> int:
     log(f"pruned {freed / 1048576:.0f} MiB (bytecode, tests, headers, unused pyarrow extensions)")
     freed = slim_interpreter(python_dir)
     log(f"slimmed interpreter by {freed / 1048576:.0f} MiB (aliases, libpython, Tk, idle)")
-    freed = strip_extensions(sp)
-    if freed:
-        log(f"stripped extension modules, {freed / 1048576:.0f} MiB")
     ka_dir = copy_sources(out)
     pth = write_pth(python, ka_dir)
     log(f"wrote {pth}")

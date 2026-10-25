@@ -66,9 +66,10 @@ pandas、PyMuPDF。torch / sentence-transformers、lightrag、boto3 不进安装
 - 删去 pyarrow 的 Flight / S3 扩展与 C++ 自测库（`libarrow_substrait` 被核心库直接链接，必须保留）；
   打包冒烟测试会真实跑一遍 Milvus Lite 建库-写入-检索。
 
-解释器的裁剪（`slim_interpreter` / `strip_extensions`）：
+解释器的裁剪（`slim_interpreter`）：
 - POSIX 的 `bin/` 只留一个实体 `python3`：Tauri 复制资源时会把 `python` / `python3` / `python3.12` 符号链接
   展开成三份完整解释器（Linux 每份约 30 MB）；其余入口脚本的 shebang 指向构建机，装好后也不能用；
 - 解释器静态链接 libpython，不引用时删去 `libpython3.*` 共享库；删去 tkinter / Tcl / Tk、idlelib、
   ensurepip、lib2to3、turtledemo 与 `config-3.*`（uv 装组件不依赖它们，已实测）；
-- Linux 上 strip site-packages 里的 `.so`（约 40 MB）。解释器本身不能 strip，strip 后无法启动。
+- 不 strip：解释器 strip 后无法启动；site-packages 的 `.so` 在本机（binutils 2.42）strip 正常，但在 CI 的
+  ubuntu-22.04（binutils 2.38）上 strip 后导入失败，压缩后也只省约 6 MB，因此不做。

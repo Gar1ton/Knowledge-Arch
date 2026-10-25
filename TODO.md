@@ -247,7 +247,8 @@
   （zlib；同一 .app 用 xz 只有 83 MB），Linux AppImage 失败（linuxdeploy 解析不了 auditwheel 改名的 `.so`）。
   - [x] P13.1 `bundle_python.py`：POSIX 只留一个实体 `bin/python3`（Tauri 复制资源会把符号链接展开成三份）、
     删去未用的 `libpython` 共享库、tkinter / tcl / tk、idlelib、ensurepip、lib2to3、turtledemo、`*-config` 与
-    idle / pydoc / 2to3 脚本；Linux 再 strip site-packages 的 `.so`（解释器本身不能 strip）。
+    idle / pydoc / 2to3 脚本。曾在 Linux strip site-packages 的 `.so`，CI（ubuntu-22.04）上导致导入失败，已撤回；
+    Windows 的 glob 不区分大小写，POSIX 的 `lib/thread*` 误删 `Lib/threading.py`，已按平台拆分。
   - [ ] P13.2（代码已落地，待 CI 验证）macOS：出包后 `hdiutil convert -format ULMO` 把 DMG 改为 LZMA 压缩并替换 Release 资产。
   - [ ] P13.3（代码已落地，待 CI 验证）Linux AppImage 后注入：tauri 出 AppImage 时不带 python，之后解包注入、appimagetool 重打包、
     按需重签 updater `.sig`。

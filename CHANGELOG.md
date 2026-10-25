@@ -19,8 +19,8 @@
 ### 改进 (Changed) — P13 安装包体积与 Linux AppImage
 
 - **`desktop/scripts/bundle_python.py`**：新增 `slim_interpreter`（POSIX 只留一个实体 `bin/python3`，Tauri 复制资源会把
-  符号链接展开成三份解释器；删去未引用的 `libpython`、Tk、idlelib、ensurepip、lib2to3、turtledemo、`config-3.*`）与
-  `strip_extensions`（Linux strip site-packages 的 `.so`）。本机 Linux 运行时约 605→461 MB。
+  符号链接展开成三份解释器；删去未引用的 `libpython`、Tk、idlelib、ensurepip、lib2to3、turtledemo、`config-3.*`，
+  POSIX 与 Windows 分开匹配）。冒烟失败时输出解释器的 stderr。本机 Linux 运行时约 605→461 MB。
 - **macOS DMG 改为 LZMA（ULMO）**：出包后 `hdiutil convert` 并替换 Release 资产，有签名身份时重签。
 - **Linux AppImage 后注入 Python**：`desktop/src-tauri/tauri.appimage.conf.json` 让 AppImage 那一遍不带 python，
   `desktop/scripts/appimage_inject_python.sh` 解包注入、冒烟、appimagetool（zstd 19 级）重打包，updater 签名重签；
