@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from kacore.config import DeepThinkingConfig, RerankConfig
+from kacore.config import DeepThinkingConfig
 from kacore.domain.deep_thinking import Checklist, ChecklistItem, EvidenceItem
 from kacore.domain.models import DocumentChunk
 from kacore.pipelines.deep_thinking_evidence import select_final_evidence
@@ -154,7 +154,6 @@ def _make(outcome, responses, **cfg_over):
         reranker=NoopReranker(),
         llm_adapter=ScriptedLLM(responses),
         dt_config=DeepThinkingConfig(**dt_defaults),
-        rerank_config=RerankConfig(provider="noop", keep=5),
     )
 
 
@@ -312,7 +311,6 @@ async def test_sufficient_with_unmet_critical_refines_instead_of_converging():
             json_max_retries=1,
             verify_enabled=False,
         ),
-        rerank_config=RerankConfig(provider="noop", keep=5),
     )
 
     result = await orch.run("papers", "综述问题")
@@ -377,7 +375,6 @@ async def test_sea_json_invalid_retries_then_continues():
         dt_config=DeepThinkingConfig(
             max_rounds=1, json_max_retries=1, wide_top_k=5, verify_enabled=False
         ),
-        rerank_config=RerankConfig(provider="noop", keep=5),
     )
     result = await orch.run("papers", "综述问题")
     # PLAN(1) + SEA 重试 2 次 = 3 次调用；不崩溃、非 critical 不回退。
@@ -416,7 +413,6 @@ async def test_final_evidence_can_exceed_baseline_floor_but_is_capped():
             verify_enabled=False,
             max_final_evidence=8,
         ),
-        rerank_config=RerankConfig(provider="noop", keep=20),
     )
 
     result = await orch.run("papers", "综述问题")
@@ -473,7 +469,6 @@ async def test_sea_coverage_updates_checklist_and_typed_gap_drives_next_round():
             json_max_retries=1,
             verify_enabled=False,
         ),
-        rerank_config=RerankConfig(provider="noop", keep=5),
     )
 
     result = await orch.run("papers", "综述问题")
@@ -506,7 +501,6 @@ def _make_verify(outcome, responses, **cfg_over):
         reranker=NoopReranker(),
         llm_adapter=ScriptedLLM(responses),
         dt_config=DeepThinkingConfig(**cfg),
-        rerank_config=RerankConfig(provider="noop", keep=5),
     )
 
 
@@ -552,7 +546,6 @@ async def test_answer_question_used_for_synthesis_and_verify_not_retrieval_query
             json_max_retries=1,
             verify_enabled=True,
         ),
-        rerank_config=RerankConfig(provider="noop", keep=5),
     )
 
     result = await orch.run(
@@ -602,7 +595,6 @@ async def test_verify_missing_retrieval_adds_new_final_evidence():
             verify_enabled=True,
             max_verify_rounds=1,
         ),
-        rerank_config=RerankConfig(provider="noop", keep=5),
     )
 
     result = await orch.run("papers", "综述")
@@ -731,7 +723,6 @@ async def test_discovered_absorbed_into_checklist_and_drives_next_round_not_warn
         dt_config=DeepThinkingConfig(
             max_rounds=2, max_sub_queries=2, wide_top_k=5, verify_enabled=False
         ),
-        rerank_config=RerankConfig(provider="noop", keep=5),
     )
     result = await orch.run("papers", "综述问题")
     discovered_items = [i for i in result.checklist.items if i.origin == "discovered"]
@@ -753,7 +744,6 @@ async def test_per_aspect_ranking_surfaces_high_rrf_subquery_chunk():
         dt_config=DeepThinkingConfig(
             max_rounds=1, max_sub_queries=1, wide_top_k=5, deep_keep=5, verify_enabled=False
         ),
-        rerank_config=RerankConfig(provider="noop", keep=5),
     )
     result = await orch.run("papers", "big question")
     # 查询池内校准，先覆盖原问题，再保留子问题的最高分 c3；不跨池比原始分数。
@@ -803,7 +793,6 @@ async def test_call_budget_counts_plan_and_sea_not_only_sea():
         dt_config=DeepThinkingConfig(
             max_rounds=3, max_sub_queries=2, wide_top_k=5, call_budget=2, verify_enabled=False
         ),
-        rerank_config=RerankConfig(provider="noop", keep=5),
     )
     result = await orch.run("papers", "综述")
     # PLAN(1)+SEA(1)=2 已达 call_budget=2 → round1 后即停（旧口径只数 SEA=1 不会停）。
@@ -832,7 +821,6 @@ async def test_sea_next_sub_queries_drive_next_round_without_refine_call():
         dt_config=DeepThinkingConfig(
             max_rounds=2, max_sub_queries=2, wide_top_k=5, verify_enabled=False
         ),
-        rerank_config=RerankConfig(provider="noop", keep=5),
     )
     result = await orch.run("papers", "综述问题")
     # SEA 自带补检 query → 直接进入 round2 检索，无独立 REFINE 调用。
@@ -855,7 +843,6 @@ async def test_document_labels_cached_across_rounds():
         dt_config=DeepThinkingConfig(
             max_rounds=2, max_sub_queries=2, wide_top_k=5, verify_enabled=False
         ),
-        rerank_config=RerankConfig(provider="noop", keep=5),
     )
     await orch.run("papers", "综述问题")
     assert retrieval.label_requests == [["doc1"]]

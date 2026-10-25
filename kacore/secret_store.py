@@ -60,10 +60,6 @@ class EncryptedSecretStore:
         self._keyring_user = f"master-key:{digest}"
         self._key: bytes | None = None
 
-    @property
-    def uses_keyring(self) -> bool:
-        return self._keyring is not None and self._load_keyring_key() is not None
-
     def get_secret(self, name: str) -> str:
         path = self._secret_path(name)
         if not path.exists():
@@ -96,9 +92,6 @@ class EncryptedSecretStore:
 
     def has_secret(self, name: str) -> bool:
         return bool(self.get_secret(name))
-
-    def masked_secret(self, name: str) -> str:
-        return _mask(self.get_secret(name))
 
     def _load_keyring_key(self) -> bytes | None:
         if self._keyring is None:

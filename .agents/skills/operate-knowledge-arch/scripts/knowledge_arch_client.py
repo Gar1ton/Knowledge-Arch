@@ -424,14 +424,6 @@ class KnowledgeArchClient:
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ApiError(f"Knowledge Arch returned invalid JSON for {path}") from exc
 
-    def request_text(self, path: str, *, query_params: dict[str, object]) -> str:
-        raw = self._request_bytes(path, query_params=query_params)
-        try:
-            return raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise ApiError(f"Knowledge Arch returned non-UTF-8 text for {path}") from exc
-
-
 def _expect_list(value: Any, endpoint: str) -> list[Any]:
     if not isinstance(value, list):
         raise ApiError(f"Knowledge Arch returned an unexpected payload for {endpoint}")
@@ -855,7 +847,7 @@ def config_options() -> dict[str, Any]:
     return {
         "consequences": {
             "none": "saved without restart or rebuild",
-            "restart": "saved; separately confirmed plugin restart required",
+            "restart": "saved; separately confirmed service restart required",
             "rebuild": (
                 "saved; a separately confirmed restart plus an index rebuild are required "
                 "(see the index-rebuild command)"
@@ -963,7 +955,7 @@ def notion_save_qa(client: KnowledgeArchClient, input_file: str) -> dict[str, An
     if not isinstance(notion, dict):
         raise ApiError("Effective config is missing notion_sync")
     if not bool(notion.get("enabled")):
-        raise UsageError("Notion sync is disabled; enable it and restart the plugin first")
+        raise UsageError("Notion sync is disabled; enable it and restart the service first")
     target_database_id = str(notion.get("qa_database_id", "")).strip()
     if not target_database_id:
         raise UsageError(
@@ -1223,7 +1215,7 @@ def restart(client: KnowledgeArchClient, *, apply: bool) -> dict[str, Any]:
             "requires_explicit_confirmation": True,
             "effect": "Knowledge Arch briefly stops answering while the service restarts",
         }
-    result = client.request_json("/api/plugin/restart", method="POST", body={})
+    result = client.request_json("/api/service/restart", method="POST", body={})
     return {
         "status": "applied",
         "mutation_performed": True,

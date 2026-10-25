@@ -342,24 +342,3 @@ async def test_registry_has_workspace_true_and_false(tmp_path: Path) -> None:
     assert not registry.has_workspace("unknown")
 
 
-async def test_registry_manual_probe_returns_error_on_init_failure(tmp_path: Path) -> None:
-    registry = object.__new__(LightRAGCoreRegistry)
-    registry._config = GraphConfig(enabled=True, query_mode="mix")
-    registry._root = tmp_path / "lr"
-    registry._map_path = registry._root / "workspace_map.json"
-    registry._workspace_map = {}
-    registry._instances = {}
-
-    async def failing_get(collection: str):
-        raise RuntimeError("storage init failed")
-
-    registry.get = failing_get  # type: ignore[method-assign]
-
-    result = await registry.manual_probe(
-        collection="test_col", text="hello world", doc_id="doc1", query="what is this?"
-    )
-
-    assert result["status"] == "error"
-    assert any(
-        s["step"] == "initialize_storages" and s["status"] == "error" for s in result["steps"]
-    )

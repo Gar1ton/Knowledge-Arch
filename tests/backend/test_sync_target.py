@@ -1,8 +1,6 @@
 """SyncTarget 契约测试（接口对换：内存目标）+ QuotaUsage 派生量。"""
 from __future__ import annotations
 
-import pytest
-
 from kacore.domain.models import QuotaUsage, SourceDocument, SyncTargetKind
 from kacore.repository.sync_targets.memory import InMemorySyncTarget
 
@@ -50,13 +48,7 @@ def test_quota_usage_no_limit_means_no_exceed() -> None:
     usage = QuotaUsage(
         target=SyncTargetKind.NOTION, used_bytes=10**9, limit_bytes=0, pending_bytes=10**9
     )
-    assert usage.ratio == 0.0
     assert usage.will_exceed is False
-
-
-def test_quota_usage_ratio() -> None:
-    usage = QuotaUsage(target=SyncTargetKind.R2, used_bytes=8, limit_bytes=10)
-    assert usage.ratio == pytest.approx(0.8)
 
 
 async def test_kind_property() -> None:

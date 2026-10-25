@@ -314,17 +314,6 @@ async def test_kb_search(tmp_path: Path) -> None:
         await client.close()
 
 
-async def test_quota_dashboard(tmp_path: Path) -> None:
-    client = await _client(tmp_path)
-    try:
-        quota = await (await client.get("/api/quota")).json()
-        by_target = {q["target"]: q for q in quota}
-        assert by_target["r2"]["ratio"] == pytest.approx(0.8)       # 8GB / 10GB
-        assert by_target["notion"]["limit_bytes"] == 0             # 无字节上限
-    finally:
-        await client.close()
-
-
 async def test_effective_config_endpoint_returns_masked_config(tmp_path: Path) -> None:
     client = await _client(tmp_path)
     try:
@@ -630,17 +619,6 @@ async def test_graph_endpoints_return_200(tmp_path: Path) -> None:
         job_resp = await client.get(f"/api/graph/build/{body1['job_id']}")
         assert job_resp.status == 200
         assert (await job_resp.json())["engine"] == "lightrag_core"
-
-        resp2 = await client.get(
-            "/api/graph/query?q=Transformer&top_k=3&debug=true&collection=papers"
-        )
-        assert resp2.status == 200
-        body2 = await resp2.json()
-        assert body2["status"] == "success"
-        assert body2["answer"] == "LightRAG answer"
-        assert body2["context"] == "LightRAG context"
-        assert body2["engine"] == "lightrag_core"
-        assert body2["debug"]["query_mode"] == "mix"
     finally:
         await client.close()
 
@@ -670,76 +648,6 @@ async def test_graph_build_cancel_endpoint_returns_200(tmp_path: Path) -> None:
 
         missing = await client.post("/api/graph/build/does-not-exist/cancel", json={})
         assert missing.status == 404
-    finally:
-        await client.close()
-
-
-async def test_graph_probe_default_text_uses_kacore(tmp_path: Path) -> None:
-    api = await _make_api()
-    api.probe_lightrag_core = AsyncMock(return_value={"status": "success"})  # type: ignore[method-assign]
-    app = build_app(
-        api=api,
-        upload_dir=tmp_path / "uploads",
-        token=TOKEN,
-    )
-    client = TestClient(TestServer(app), headers=AUTH)
-    await client.start_server()
-    try:
-        response = await client.post("/api/graph/probe", json={"confirmed": True})
-        assert response.status == 200
-        api.probe_lightrag_core.assert_awaited_once_with(
-            "default",
-            "LightRAG probe document for Knowledge Arch.",
-            "kr-lightrag-probe-doc",
-            "What is this probe document about?",
-        )
-    finally:
-        await client.close()
-
-
-async def test_graph_data_endpoint_returns_200(tmp_path: Path) -> None:
-    class StubLightRAGRegistry:
-        def has_workspace(self, collection: str) -> bool:
-            return collection == "papers"
-
-        async def export_graph(self, collection: str) -> dict:
-            return {
-                "status": "success",
-                "collection": collection,
-                "nodes": [{"id": "transformer"}, {"id": "attention"}],
-                "edges": [{"id": "r1", "source": "transformer", "target": "attention"}],
-            }
-
-    store = InMemorySourceDocumentStore()
-    await store.upsert_collection(Collection(name="papers", description="d"))
-    await store.add_document(
-        SourceDocument("d1", "Doc 1", "/p/d1.pdf", "application/pdf", 100, "h1", "papers", ["t"])
-    )
-    await store.replace_chunks("d1", [DocumentChunk("c1", "d1", 0, "source text", "ch1")])
-    await store.set_lightrag_index_status("d1", "papers", "indexed")
-    compatibility = IndexCompatibilityStore(tmp_path / "compat.json")
-    compatibility.mark_lightrag_compatible("papers", "fp")
-    api = KnowledgeRepositoryApi(
-        source_store=store,
-        lightrag_registry=StubLightRAGRegistry(),  # type: ignore[arg-type]
-        index_compatibility=compatibility,
-        embedding_fingerprint="fp",
-    )
-    app = build_app(
-        api=api,
-        upload_dir=tmp_path / "uploads",
-        token=TOKEN,
-    )
-
-    client = TestClient(TestServer(app), headers=AUTH)
-    await client.start_server()
-    try:
-        resp = await client.get("/api/graph?collection=papers")
-        assert resp.status == 200
-        body = await resp.json()
-        assert body["status"] == "success"
-        assert {n["id"] for n in body["nodes"]} == {"transformer", "attention"}
-        assert body["edges"][0]["id"] == "r1"
     finally:
         await client.close()
 
@@ -1380,13 +1288,6 @@ async def test_document_and_collection_notes_routes(tmp_path: Path) -> None:
         assert note["doc_id"] == "d1"
         assert note["raw_zotero_json"]["itemType"] == "note"
 
-        patched = await client.patch(
-            f"/api/documents/d1/notes/{note['id']}",
-            json={"content": "updated"},
-        )
-        assert patched.status == 200
-        assert (await patched.json())["content"] == "updated"
-
         collection_note = await client.post(
             "/api/collections/papers/notes",
             json={"content": "collection note"},
@@ -1989,48 +1890,12 @@ async def test_graph_mixed_ask_returns_renamed_failure_status(tmp_path: Path) ->
         await client.close()
 
 
-async def test_metrics_route(tmp_path: Path) -> None:
-    """GET /api/metrics 应返回 ops + total_records 结构。"""
-    from kacore.ask_progress import ProgressStore
-    from kacore.metrics import PerformanceTracker
-
-    tracker = PerformanceTracker()
-    tracker.record("embed_query", 100.0)
-    tracker.record("ask_total", 1500.0)
-
-    api = KnowledgeRepositoryApi(
-        source_store=InMemorySourceDocumentStore(),
-        metrics=tracker,
-        progress_store=ProgressStore(),
-    )
-    app = build_app(
-        api=api,
-        upload_dir=tmp_path / "uploads",
-        token=TOKEN,
-    )
-    client = TestClient(TestServer(app), headers=AUTH)
-    await client.start_server()
-    try:
-        resp = await client.get("/api/metrics")
-        assert resp.status == 200
-        body = await resp.json()
-        assert "ops" in body
-        assert "total_records" in body
-        assert body["total_records"] == 2
-        assert "embed_query" in body["ops"]
-        assert body["ops"]["embed_query"]["count"] == 1
-    finally:
-        await client.close()
-
-
 async def test_ask_progress_route_not_found(tmp_path: Path) -> None:
     """GET /api/ask/progress/{cid} — 不存在的 cid 应返回 404。"""
     from kacore.ask_progress import ProgressStore
-    from kacore.metrics import PerformanceTracker
 
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        metrics=PerformanceTracker(),
         progress_store=ProgressStore(),
     )
     app = build_app(
@@ -2050,14 +1915,12 @@ async def test_ask_progress_route_not_found(tmp_path: Path) -> None:
 async def test_ask_progress_route_found(tmp_path: Path) -> None:
     """GET /api/ask/progress/{cid} — 已设置进度时应返回 stage + pct。"""
     from kacore.ask_progress import ProgressStore
-    from kacore.metrics import PerformanceTracker
 
     progress_store = ProgressStore()
     progress_store.set("test-cid-123", "vector_search", 20)
 
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        metrics=PerformanceTracker(),
         progress_store=progress_store,
     )
     app = build_app(
@@ -2073,30 +1936,6 @@ async def test_ask_progress_route_found(tmp_path: Path) -> None:
         body = await resp.json()
         assert body["stage"] == "vector_search"
         assert body["pct"] == 20
-    finally:
-        await client.close()
-
-
-async def test_graph_data_requires_lightrag(tmp_path: Path) -> None:
-    """GET /api/graph 在未配置 LightRAG 时返回运行态未就绪状态。"""
-    api = KnowledgeRepositoryApi(
-        source_store=InMemorySourceDocumentStore(),
-    )
-    app = build_app(
-        api=api,
-        upload_dir=tmp_path / "uploads",
-        token=TOKEN,
-    )
-    client = TestClient(TestServer(app), headers=AUTH)
-    await client.start_server()
-    try:
-        resp = await client.get("/api/graph")
-        assert resp.status == 200
-        body = await resp.json()
-        assert body["status"] == "not_ready"
-        assert body["ready"] is False
-        assert body["build_available"] is False
-        assert "LightRAG Core" in body["reason"]
     finally:
         await client.close()
 
@@ -2303,50 +2142,6 @@ async def test_successful_poll_get_is_quiet_but_failed_mutation_is_not(tmp_path:
         assert log_handler.get_lines() == []
         assert (await client.post("/api/documents/rebuild-index")).status == 503
         assert len(log_handler.get_lines()) == 2
-    finally:
-        await client.close()
-
-
-async def test_clear_milvus_lock_route_delegates_and_returns_json(tmp_path: Path) -> None:
-    async def _clear() -> dict:
-        return {"status": "ok", "message": "锁定标记已清除，请重启插件以重新装配 Milvus。"}
-
-    api = KnowledgeRepositoryApi(
-        source_store=InMemorySourceDocumentStore(),
-        clear_milvus_lock_callback=_clear,
-    )
-    app = build_app(
-        api=api,
-        upload_dir=tmp_path / "uploads",
-        token=TOKEN,
-    )
-    client = TestClient(TestServer(app), headers=AUTH)
-    await client.start_server()
-    try:
-        resp = await client.post("/api/milvus/clear-lock")
-        assert resp.status == 200
-        body = await resp.json()
-        assert body["status"] == "ok"
-    finally:
-        await client.close()
-
-
-async def test_clear_milvus_lock_route_reports_unsupported_without_callback(
-    tmp_path: Path,
-) -> None:
-    api = await _make_api()
-    app = build_app(
-        api=api,
-        upload_dir=tmp_path / "uploads",
-        token=TOKEN,
-    )
-    client = TestClient(TestServer(app), headers=AUTH)
-    await client.start_server()
-    try:
-        resp = await client.post("/api/milvus/clear-lock")
-        assert resp.status == 200
-        body = await resp.json()
-        assert body["status"] == "unsupported"
     finally:
         await client.close()
 

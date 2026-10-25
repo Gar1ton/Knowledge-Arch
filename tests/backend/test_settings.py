@@ -340,7 +340,6 @@ def test_new_master_key_goes_to_the_keyring_not_a_file(tmp_path: Path) -> None:
     assert [service for service, _ in ring.values] == [KEYRING_SERVICE]
     reopened = EncryptedSecretStore(tmp_path / "secrets", keyring_backend=ring)
     assert reopened.get_secret("provider.x.api_key") == "value-1"
-    assert reopened.uses_keyring
 
 
 def test_existing_file_key_migrates_into_the_keyring(tmp_path: Path) -> None:

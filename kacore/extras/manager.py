@@ -107,9 +107,6 @@ class ExtrasManager:
             return STATE_STALE
         return STATE_INSTALLED
 
-    def installed_packs(self) -> list[str]:
-        return [dep.key for dep in OPTIONAL_DEPENDENCIES if self.state(dep.key) == STATE_INSTALLED]
-
     def status(self) -> dict[str, Any]:
         """组件页数据：安装器是否可用 + 每个组件的状态（不含核心依赖）。"""
         from kacore.capabilities import module_available

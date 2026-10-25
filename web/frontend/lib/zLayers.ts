@@ -22,4 +22,3 @@ export const Z = {
   toast: 1400,    // 全局通知，永远最顶
 } as const;
 
-export type ZLayer = keyof typeof Z;

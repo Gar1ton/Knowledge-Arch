@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from kacore.config import EnhancedRecallConfig, RerankConfig
+from kacore.config import EnhancedRecallConfig
 from kacore.domain.models import DocumentChunk
 from kacore.pipelines.deep_thinking_prompts import JsonContractError
 from kacore.pipelines.enhanced_recall_orchestrator import EnhancedRecallOrchestrator
@@ -105,7 +105,6 @@ def _make(outcome, responses, **cfg_over):
         reranker=NoopReranker(),
         llm_adapter=llm,
         er_config=EnhancedRecallConfig(**cfg_over),
-        rerank_config=RerankConfig(provider="noop", keep=5),
     )
     return orch, retrieval, llm
 

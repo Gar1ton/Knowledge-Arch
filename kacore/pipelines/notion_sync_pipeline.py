@@ -270,7 +270,6 @@ class NotionSyncPipeline:
             path=path,
             collection_names=collection_names,
             prior=prior,
-            force_body=force,
         )
         # 正文没写成时不推进 content_hash（保留旧值/置空），使下一轮 rewrite 判定
         # 为「待重写」而非跳过——否则缺正文页会被误标 synced 并永久固化。

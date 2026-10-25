@@ -305,6 +305,3 @@ export async function getLegacyImportState(): Promise<LegacyImportState> {
   return apiFetch<LegacyImportState>("/api/legacy-import", { timeoutMs: 5_000 });
 }
 
-export async function discardLegacyImport(): Promise<void> {
-  await apiFetch("/api/legacy-import", { method: "DELETE" });
-}

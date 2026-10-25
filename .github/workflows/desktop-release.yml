@@ -228,7 +228,7 @@ jobs:
           args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} ${{ steps.release.outputs.features }}
           tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
           releaseName: Knowledge Arch ${{ github.ref_name }}
-          releaseBody: 见 CHANGELOG.md。
+          releaseBody: Release notes to be written before publishing.
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: ${{ steps.release.outputs.updater == 'true' }}

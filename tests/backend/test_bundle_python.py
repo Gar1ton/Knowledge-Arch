@@ -27,6 +27,9 @@ def test_copy_sources_keeps_runtime_files_only(tmp_path: Path) -> None:
     assert sorted(p.name for p in (ka / "migrations").glob("*.sql"))[0].startswith("001_")
     assert not list(ka.rglob("__pycache__"))
     assert not (ka / "web" / "frontend").exists()
+    for rel in bundle._TEST_ONLY:
+        assert (ROOT / rel).is_file() and not (ka / rel).exists(), rel
+    assert (ka / "kacore" / "settings" / "memory.py").is_file()
 
 
 def test_pth_points_from_site_packages_to_ka(tmp_path: Path, monkeypatch) -> None:

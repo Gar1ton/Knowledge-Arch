@@ -16,7 +16,7 @@ import {
   deleteLocalModel,
   getSystemInfo,
   listLocalModels,
-  restartPlugin,
+  restartService as requestServiceRestart,
   type LocalModel,
   type SystemInfo,
 } from "@/lib/api";
@@ -397,7 +397,7 @@ export function DiagnosticsGroup({ onRestart }: { onRestart: () => void }) {
 /** 「重启服务」：软重启后端（进程与端口不变），完成后由各面板自行刷新。 */
 export async function restartService(): Promise<void> {
   try {
-    await restartPlugin();
+    await requestServiceRestart();
   } catch {
     /* 软重启会断开当前请求，网络错误视为已触发 */
   }

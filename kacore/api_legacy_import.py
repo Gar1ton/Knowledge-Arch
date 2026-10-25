@@ -33,7 +33,7 @@ class LegacyImportApiMixin:
     _runtime_events: RuntimeEventRecorder
     _legacy_import_job: dict[str, Any] | None
     _legacy_import_task: asyncio.Task[None] | None
-    # 另依赖 KnowledgeRepositoryApi.restart_plugin（换入发生在软重启的 initialize 里）。
+    # 另依赖 KnowledgeRepositoryApi.restart_service（换入发生在软重启的 initialize 里）。
 
     def _require_data_dir(self) -> Path:
         if self._data_dir is None:
@@ -115,7 +115,7 @@ class LegacyImportApiMixin:
             operation="legacy_import",
             msg="Old plugin data is ready; it will be swapped in after the service restarts",
         )
-        restart = await self.restart_plugin()  # type: ignore[attr-defined]
+        restart = await self.restart_service()  # type: ignore[attr-defined]
         if restart.get("status") != "restarting":
             job.update(
                 status="staged",

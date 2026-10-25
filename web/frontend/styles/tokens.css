@@ -6,16 +6,7 @@
 
 /* ─── 布局变量与响应式面板宽度 ───────────────────────────────── */
 :root {
-  --sidebar-left-w: 198px;
-  --inspector-w: 286px;
   --rail-w: 220px;
-  --rail-w-collapsed: 60px;
-}
-@media (max-width: 1100px) {
-  :root {
-    --sidebar-left-w: 160px;
-    --inspector-w: 240px;
-  }
 }
 @media (max-width: 860px) {
   [data-panel="left"] { display: none !important; }
@@ -24,15 +15,9 @@
 
 /* ─── z-index 量表（与 lib/zLayers.ts 同步，浮层层级单一真源） ─── */
 :root {
-  --z-base: 0;
-  --z-raised: 10;     /* 固定外壳：TopBar、Rail */
-  --z-widget: 100;    /* 常驻小部件 / 登录遮罩 */
   --z-tour: 950;     /* 首次使用引导：低于 dialog */
   --z-dialog: 1000;   /* modal 遮罩 + 对话框 */
-  --z-panel: 1100;    /* 浮动开发面板 */
   --z-dropdown: 1200; /* 下拉 / popover / 菜单（高于 dialog 以支持嵌套） */
-  --z-tooltip: 1300;
-  --z-toast: 1400;
 }
 
 /* ─── 全局视效工具类 ──────────────────────────────────────────── */
@@ -223,7 +208,7 @@
   color: #fff;
   font-size: 10px;
   font-weight: 800;
-  font-family: var(--font-geist-mono);
+  font-family: var(--font-mono);
 }
 
 .flow-spin {
@@ -437,7 +422,7 @@
   font-size: 11px;
   font-weight: 600;
   color: var(--flow-muted);
-  font-family: var(--font-geist-mono);
+  font-family: var(--font-mono);
   min-width: 38px;
   text-align: center;
 }
@@ -538,7 +523,7 @@
   position: absolute;
   z-index: 3;
   transform: translate(-50%, -50%);
-  font-family: var(--font-geist-mono);
+  font-family: var(--font-mono);
   font-size: 11.5px;
   font-weight: 700;
   line-height: 1.2;
@@ -728,7 +713,7 @@
   font-weight: 600;
   letter-spacing: 0.1em;
   color: var(--flow-faint);
-  font-family: var(--font-geist-mono);
+  font-family: var(--font-mono);
 }
 
 .flow-status-chip {
@@ -804,7 +789,7 @@
   font-weight: 600;
   letter-spacing: 0.09em;
   color: var(--flow-faint);
-  font-family: var(--font-geist-mono);
+  font-family: var(--font-mono);
 }
 
 .flow-field-lock {
@@ -876,7 +861,7 @@
 
 .flow-readonly-field {
   align-self: flex-start;
-  font-family: var(--font-geist-mono);
+  font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 600;
   color: var(--flow-muted);
@@ -893,7 +878,7 @@
 }
 
 .flow-meta-chip {
-  font-family: var(--font-geist-mono);
+  font-family: var(--font-mono);
   font-size: 10.5px;
   color: var(--flow-muted);
   background: var(--flow-inset);
@@ -934,7 +919,7 @@
   justify-content: space-between;
   gap: 8px;
   color: var(--flow-faint);
-  font-family: var(--font-geist-mono);
+  font-family: var(--font-mono);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -1032,7 +1017,7 @@
 }
 
 .flow-quick-diag-counts {
-  font-family: var(--font-geist-mono);
+  font-family: var(--font-mono);
   color: var(--flow-ink);
   min-width: 0;
   overflow: hidden;
@@ -1112,7 +1097,7 @@
   white-space: nowrap;
   font-size: 10px;
   color: var(--flow-faint);
-  font-family: var(--font-geist-mono);
+  font-family: var(--font-mono);
 }
 
 .flow-quick-grid {
@@ -1155,7 +1140,7 @@
   border-radius: var(--radius-md);
   background: var(--flow-node);
   color: var(--flow-ink);
-  font-family: var(--font-geist-mono);
+  font-family: var(--font-mono);
   font-size: 11px;
   outline: none;
   padding: 4px 7px;
@@ -1185,7 +1170,7 @@
   border-radius: var(--radius-md);
   background: var(--flow-inset);
   color: var(--flow-muted);
-  font-family: var(--font-geist-mono);
+  font-family: var(--font-mono);
   font-size: 11px;
   padding: 4px 7px;
 }
@@ -1311,7 +1296,7 @@
 
 .flow-zotero-key-head code {
   color: var(--flow-muted);
-  font-family: var(--font-geist-mono);
+  font-family: var(--font-mono);
   font-size: 10px;
 }
 
@@ -1343,7 +1328,7 @@
   border-radius: var(--radius-md);
   background: var(--flow-node);
   color: var(--flow-ink);
-  font-family: var(--font-geist-mono);
+  font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 500;
   cursor: pointer;
@@ -1411,7 +1396,7 @@
   border-radius: 5px;
   background: transparent;
   color: var(--flow-ink);
-  font-family: var(--font-geist-mono);
+  font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 400;
   cursor: pointer;
@@ -1514,7 +1499,7 @@
 }
 
 .dir-picker-title {
-  font-family: var(--font-geist-mono);
+  font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.06em;
@@ -1543,7 +1528,7 @@
 
 .dir-picker-path {
   padding: 8px 14px 7px;
-  font-family: var(--font-geist-mono);
+  font-family: var(--font-mono);
   font-size: 10px;
   color: var(--flow-faint);
   background: var(--flow-inset);
@@ -1565,7 +1550,7 @@
   padding: 12px 10px;
   font-size: 11.5px;
   color: var(--flow-muted);
-  font-family: var(--font-geist-mono);
+  font-family: var(--font-mono);
   text-align: center;
 }
 
@@ -1583,7 +1568,7 @@
   border-radius: var(--radius-md);
   background: transparent;
   color: var(--flow-ink);
-  font-family: var(--font-geist-mono);
+  font-family: var(--font-mono);
   font-size: 11.5px;
   cursor: pointer;
   text-align: left;
@@ -1677,7 +1662,7 @@
 }
 
 .flow-dep-pip {
-  font-family: var(--font-geist-mono);
+  font-family: var(--font-mono);
   font-size: 10px;
   color: var(--flow-faint);
   overflow: hidden;

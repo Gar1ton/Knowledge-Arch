@@ -5,13 +5,14 @@
 
 ```
 desktop/
+  assets/logo.svg            # 应用图标与 README 的 logo 源文件
   scripts/bundle_python.py   # 打包后端：CPython 3.12 + 依赖 + 源码 + uv → src-tauri/resources/
   src-tauri/
     tauri.conf.json          # 窗口、CSP、打包资源（python/、ka/）
     src/lib.rs               # 菜单、托盘、单实例、命令（backend_info / pick_folder / notify …）
     src/sidecar.rs           # 后端进程：token、KA_READY、崩溃检测、有序停止
     src/prefs.rs             # 壳偏好 shell.json 与平台目录
-    icons/                   # 由 ../logo.svg 生成（npm run icons）
+    icons/                   # 由 assets/logo.svg 生成（npm run icons）
 ```
 
 ## 后端 sidecar

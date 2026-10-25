@@ -99,19 +99,6 @@ def test_r2_endpoint_and_free_tier_bytes() -> None:
     assert r2.free_tier_bytes == 10 * 1024**3
 
 
-def test_notion_max_upload_bytes() -> None:
-    n = Config({
-        "notion_sync": {
-            "max_upload_mib": 5,
-            "parent_page_id": "parent-1",
-            "database_title": "KR",
-        }
-    }).get_notion_sync_config()
-    assert n.max_upload_bytes == 5 * 1024 * 1024
-    assert n.parent_page_id == "parent-1"
-    assert n.database_title == "KR"
-
-
 def test_notion_sync_mode_parsing_and_invalid_fallback() -> None:
     strict = Config({"notion_sync": {"sync_mode": " STRICT "}})
     invalid = Config({"notion_sync": {"sync_mode": "mirror"}})

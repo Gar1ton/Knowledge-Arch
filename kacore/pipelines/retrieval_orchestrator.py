@@ -624,10 +624,6 @@ class RetrievalOrchestrator:
                 return True
         return False
 
-    async def _find_local_chunk(self, chunk_id: str) -> DocumentChunk | None:
-        chunks = await self._find_local_chunks([chunk_id])
-        return chunks[0] if chunks else None
-
     async def _find_local_chunks(self, chunk_ids: list[str]) -> list[DocumentChunk]:
         db_conn = getattr(self._source_store, "_db", None)
         ordered_ids = [cid for cid in chunk_ids if cid]

@@ -149,15 +149,8 @@ class NotionSyncConfig:
     max_upload_mib: int = 5
     rate_limit_rps: int = _NOTION_RATE_LIMIT_RPS
 
-    @property
-    def max_upload_bytes(self) -> int:
-        """单文件上传上限的字节数。"""
-        return self.max_upload_mib * 1024 * 1024
-
-
 # LightRAG 图谱构建内部固定参数（不暴露给用户）。
 _GRAPH_LLM_MAX_RETRIES: int = 2
-_GRAPH_LLM_RETRY_BACKOFF_SECONDS: float = 2.0
 _GRAPH_SECONDS_PER_CHUNK_LOCAL: float = 90.0
 _GRAPH_SECONDS_PER_CHUNK_REMOTE: float = 20.0
 
@@ -180,7 +173,6 @@ class GraphConfig:
     lightrag_llm_timeout_seconds: int = 900
     # 内部参数（固定值，不从配置读取）。
     lightrag_llm_max_retries: int = _GRAPH_LLM_MAX_RETRIES
-    lightrag_llm_retry_backoff_seconds: float = _GRAPH_LLM_RETRY_BACKOFF_SECONDS
     # 构建耗时估算参数（固定值，不从配置读取）。
     lightrag_seconds_per_chunk_local: float = _GRAPH_SECONDS_PER_CHUNK_LOCAL
     lightrag_seconds_per_chunk_remote: float = _GRAPH_SECONDS_PER_CHUNK_REMOTE
@@ -379,10 +371,6 @@ class Config:
     raw: dict[str, Any] = field(default_factory=dict)
     runtime_diagnostics: list[str] = field(default_factory=list)
     runtime_embedding_dimension: int | None = None
-
-    def apply_override(self, override: dict[str, Any]) -> None:
-        """合并运行时覆盖配置。用于自动建库后回填 database_id。"""
-        self.raw = merge_config_dicts(self.raw, override)
 
     def set_value(self, section: str, key: str, value: Any) -> None:
         """更新内存中的单个配置值。"""

@@ -103,15 +103,6 @@ export async function authHeaders(): Promise<Record<string, string>> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-/** 浏览器导航 / PDF.js 用：带 `?access_token=` 的完整 URL（仅限 GET）。 */
-export async function authedUrl(path: string): Promise<string> {
-  const { token } = await backendInfo();
-  const url = await apiUrl(path);
-  if (!token) return url;
-  const sep = url.includes("?") ? "&" : "?";
-  return `${url}${sep}access_token=${encodeURIComponent(token)}`;
-}
-
 /** 壳里后端的状态（崩溃页、启动页用）；不在壳里时视为 ready。 */
 export async function backendState(): Promise<BackendState> {
   if (!inDesktopShell()) return { state: "ready" };

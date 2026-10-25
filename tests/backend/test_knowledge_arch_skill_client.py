@@ -350,7 +350,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "rebuild_required": rebuild,
                 },
             )
-        elif parsed.path == "/api/plugin/restart":
+        elif parsed.path == "/api/service/restart":
             self._body()
             self.state.restart_count += 1
             self._json(200, {"status": "restarting"})
