@@ -33,20 +33,29 @@ libayatana-appindicator3-dev librsvg2-dev patchelf`。
 
 ```bash
 cd web/frontend && npm ci && npm run build && cd -     # 1. 界面静态导出
-python desktop/scripts/bundle_python.py                # 2. 后端资源（约 550 MB，未压缩）
-cd desktop && npm ci && npx tauri build                # 3. 出包
+python desktop/scripts/bundle_python.py                # 2. 后端资源（Linux 约 460 MB，未压缩）
+cd desktop && npm ci && npx tauri build                # 3. 出包（Linux 加 --bundles deb，AppImage 见下）
 ```
 
 产物在 `desktop/src-tauri/target/release/bundle/`：macOS `.app` / `.dmg`，Windows NSIS `setup.exe`，
 Linux `.deb` / `.AppImage`。每个平台必须在该平台本机（或对应的 CI runner）上打包——内置的
 CPython 与依赖都是平台专属的二进制。
 
+Linux 的 AppImage 不能直接 `--bundles appimage`：linuxdeploy 会扫描内置 Python 的 `.so` 并在 auditwheel
+改名的库上失败。按 CI 的做法分两步（需要 `desktop-file-utils`）：
+
+```bash
+cd desktop && npx tauri build --bundles appimage --config src-tauri/tauri.appimage.conf.json && cd -
+bash desktop/scripts/appimage_inject_python.sh desktop/src-tauri/target/release/bundle/appimage/*.AppImage \
+  desktop/src-tauri/resources/python
+```
+
 开发期可以 `npx tauri dev`：界面来自 `next dev`（26619 端口，需先在 web/frontend 里启动），
 壳会给后端加上 `--dev-origin http://localhost:26619`。环境变量 `KA_SIDECAR_PYTHON` 可指定别的解释器。
 
 ## 体积
 
-内置运行时约 550 MB（未压缩），大头是核心依赖：milvus-lite 带来的 pyarrow / faiss、pymilvus 带来的
+内置运行时 Linux 约 460 MB（未压缩），大头是核心依赖：milvus-lite 带来的 pyarrow / faiss、pymilvus 带来的
 pandas、PyMuPDF。torch / sentence-transformers、lightrag、boto3 不进安装包，由用户在
 「偏好设置 › 组件」按需安装到数据目录。
 
@@ -56,3 +65,10 @@ pandas、PyMuPDF。torch / sentence-transformers、lightrag、boto3 不进安装
 - 删去 site-packages 里的 `tests/` 与 `include/`；
 - 删去 pyarrow 的 Flight / S3 扩展与 C++ 自测库（`libarrow_substrait` 被核心库直接链接，必须保留）；
   打包冒烟测试会真实跑一遍 Milvus Lite 建库-写入-检索。
+
+解释器的裁剪（`slim_interpreter` / `strip_extensions`）：
+- POSIX 的 `bin/` 只留一个实体 `python3`：Tauri 复制资源时会把 `python` / `python3` / `python3.12` 符号链接
+  展开成三份完整解释器（Linux 每份约 30 MB）；其余入口脚本的 shebang 指向构建机，装好后也不能用；
+- 解释器静态链接 libpython，不引用时删去 `libpython3.*` 共享库；删去 tkinter / Tcl / Tk、idlelib、
+  ensurepip、lib2to3、turtledemo 与 `config-3.*`（uv 装组件不依赖它们，已实测）；
+- Linux 上 strip site-packages 里的 `.so`（约 40 MB）。解释器本身不能 strip，strip 后无法启动。

@@ -86,3 +86,52 @@ def test_prune_runtime_drops_bytecode_tests_headers_and_unused_pyarrow(tmp_path:
     assert freed == 10 * len(drop)
     assert all(p.exists() for p in keep), [p for p in keep if not p.exists()]
     assert not any(p.exists() for p in drop), [p for p in drop if p.exists()]
+
+
+def test_slim_interpreter_keeps_one_real_python3(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(bundle, "IS_WINDOWS", False)
+    python_dir = tmp_path / "python"
+    bin_dir = python_dir / "bin"
+    real = _touch(bin_dir / "python3.12", 20)
+    for alias in ("python", "python3"):
+        (bin_dir / alias).symlink_to("python3.12")
+    _touch(bin_dir / "keyring")  # 带构建机 shebang 的入口脚本
+    stdlib = python_dir / "lib" / "python3.12"
+    keep = [
+        _touch(stdlib / "os.py"),
+        _touch(stdlib / "venv" / "__init__.py"),
+        _touch(stdlib / "lib-dynload" / "_ssl.cpython-312-x86_64-linux-gnu.so"),
+        _touch(python_dir / "include" / "python3.12" / "Python.h"),
+    ]
+    drop = [
+        _touch(python_dir / "lib" / "libpython3.12.so.1.0"),
+        _touch(python_dir / "lib" / "libtcl9.0.so"),
+        _touch(python_dir / "lib" / "tk9.0" / "tk.tcl"),
+        _touch(stdlib / "tkinter" / "__init__.py"),
+        _touch(stdlib / "idlelib" / "idle.py"),
+        _touch(stdlib / "ensurepip" / "__init__.py"),
+        _touch(stdlib / "config-3.12-x86_64-linux-gnu" / "Makefile"),
+        _touch(stdlib / "lib-dynload" / "_tkinter.cpython-312-x86_64-linux-gnu.so"),
+    ]
+
+    bundle.slim_interpreter(python_dir)
+
+    exe = bin_dir / "python3"
+    assert sorted(p.name for p in bin_dir.iterdir()) == ["python3"]
+    assert exe.is_file() and not exe.is_symlink() and exe.stat().st_size == 20
+    assert not real.exists()
+    assert all(p.exists() for p in keep), [p for p in keep if not p.exists()]
+    assert not any(p.exists() for p in drop), [p for p in drop if p.exists()]
+
+
+def test_slim_interpreter_keeps_libpython_when_linked(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(bundle, "IS_WINDOWS", False)
+    python_dir = tmp_path / "python"
+    exe = python_dir / "bin" / "python3"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"\x7fELF ... libpython3.12.so.1.0 ...")
+    lib = _touch(python_dir / "lib" / "libpython3.12.so.1.0")
+
+    bundle.slim_interpreter(python_dir)
+
+    assert lib.exists()

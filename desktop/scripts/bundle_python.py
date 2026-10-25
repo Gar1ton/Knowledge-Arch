@@ -23,6 +23,7 @@ import argparse
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -44,6 +45,14 @@ _SITE_PRUNE_DIRS = frozenset({"tests", "include"})
 # 与 compute；这几个库只被各自的可选模块加载（pyarrow.fs 对 _s3fs 是 try-import）。
 # substrait 不能删：pyarrow 26 的核心 lib 直接链接 libarrow_substrait。
 _PYARROW_UNUSED = ("flight", "s3fs", "arrow_s3", "_pyarrow_cpp_tests")
+# 标准库里后端用不到的部分（GUI、IDE、pip 引导、2to3、示例）；venv / sysconfig 保留给 uv。
+_STDLIB_UNUSED = ("tkinter", "idlelib", "ensurepip", "lib2to3", "turtledemo")
+# 解释器目录里 Tk 运行库（POSIX 在 lib/，Windows 在根目录 tcl/ 与 DLLs/）与编译期文件。
+_RUNTIME_UNUSED_GLOBS = (
+    "lib/libtcl*", "lib/libtk*", "lib/tcl*", "lib/tk*", "lib/itcl*", "lib/thread*",
+    "lib/pkgconfig", "lib/python3.*/config-3.*", "lib/python3.*/lib-dynload/_tkinter*",
+    "tcl", "DLLs/_tkinter*", "DLLs/tcl*", "DLLs/tk*",
+)
 
 
 def log(message: str) -> None:
@@ -134,6 +143,59 @@ def prune_runtime(python_dir: Path, sp: Path) -> int:
         for f in list(pyarrow.iterdir()):
             if any(tag in f.name.lower() for tag in _PYARROW_UNUSED):
                 freed += _delete(f)
+    return freed
+
+
+def slim_interpreter(python_dir: Path) -> int:
+    """裁掉解释器里用不到的部分，返回释放的字节数。
+
+    POSIX 的 bin/ 只留一个实体 python3：Tauri 复制资源时会把 python / python3 / python3.12
+    这组符号链接展开成三份完整解释器；其余是带构建机绝对路径 shebang 的入口脚本，装好后也跑不了。
+    python-build-standalone 的解释器静态链接 libpython，共享库只供嵌入用，解释器不引用它时一并删掉。
+    """
+    freed = 0
+    stdlib = python_dir / ("Lib" if IS_WINDOWS else f"lib/python{PYTHON_VERSION}")
+    for name in _STDLIB_UNUSED:
+        if (stdlib / name).exists():
+            freed += _delete(stdlib / name)
+    for pattern in _RUNTIME_UNUSED_GLOBS:
+        for path in sorted(python_dir.glob(pattern)):
+            freed += _delete(path)
+    if IS_WINDOWS:
+        return freed
+    bin_dir = python_dir / "bin"
+    exe = python_executable(python_dir)
+    real = exe.resolve()
+    if exe.is_symlink():
+        exe.unlink()
+        real.rename(exe)
+    for entry in list(bin_dir.iterdir()):
+        if entry != exe:
+            freed += _delete(entry)
+    if b"libpython3" not in exe.read_bytes():
+        for lib in sorted((python_dir / "lib").glob("libpython3*")):
+            freed += _delete(lib)
+    return freed
+
+
+def strip_extensions(sp: Path) -> int:
+    """Linux：strip site-packages 里的 .so，返回释放的字节数。
+
+    wheel 里的扩展多数没 strip；解释器本身不能 strip（python-build-standalone 的解释器
+    strip 后无法启动，这也是 AppImage 要设 NO_STRIP 的原因）。没有 strip 或单个文件失败时跳过，
+    由冒烟测试兜底。
+    """
+    strip = shutil.which("strip")
+    if not sys.platform.startswith("linux") or not strip:
+        return 0
+    freed = 0
+    for lib in sorted(sp.rglob("*.so*")):
+        if not lib.is_file() or lib.is_symlink() or not (lib.suffix == ".so" or ".so." in lib.name):
+            continue
+        before = lib.stat().st_size
+        result = subprocess.run([strip, "--strip-unneeded", str(lib)], capture_output=True)
+        if result.returncode == 0:
+            freed += before - lib.stat().st_size
     return freed
 
 
@@ -228,8 +290,14 @@ def main(argv: list[str] | None = None) -> int:
     python_dir = install_python(args.uv, out)
     python = python_executable(python_dir)
     install_requirements(args.uv, python)
-    freed = prune_runtime(python_dir, site_packages(python))
+    sp = site_packages(python)
+    freed = prune_runtime(python_dir, sp)
     log(f"pruned {freed / 1048576:.0f} MiB (bytecode, tests, headers, unused pyarrow extensions)")
+    freed = slim_interpreter(python_dir)
+    log(f"slimmed interpreter by {freed / 1048576:.0f} MiB (aliases, libpython, Tk, idle)")
+    freed = strip_extensions(sp)
+    if freed:
+        log(f"stripped extension modules, {freed / 1048576:.0f} MiB")
     ka_dir = copy_sources(out)
     pth = write_pth(python, ka_dir)
     log(f"wrote {pth}")
