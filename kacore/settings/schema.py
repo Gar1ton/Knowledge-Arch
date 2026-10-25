@@ -180,8 +180,9 @@ SPECS: tuple[SettingSpec, ...] = (
     ),
     # ── Embedding（来源 local 或一个连接上的模型）─────────────────────
     SettingSpec(
-        "flow.embedding.source", "model_ref", EMBEDDING_SOURCE_LOCAL, "flow.embedding",
-        consequence=_B, options=(EMBEDDING_SOURCE_LOCAL,),
+        # 默认线上 API（None = 尚未选连接）；"local" 为本地模型。
+        "flow.embedding.source", "model_ref", None, "flow.embedding",
+        consequence=_B, options=(EMBEDDING_SOURCE_LOCAL,), nullable=True,
     ),
     SettingSpec(
         "flow.embedding.local_model", "str", EmbeddingConfig.model, "flow.embedding",
@@ -241,8 +242,13 @@ SPECS: tuple[SettingSpec, ...] = (
     ),
     # ── 检索（rerank / 增强召回 / 深度思考）───────────────────────────
     SettingSpec(
-        "flow.retrieval.rerank.provider", "enum", RerankConfig.provider, "flow.retrieval",
-        options=("auto", "cross_encoder", "noop"), target=_t("rerank", "provider"),
+        # 默认线上 Rerank；没选连接时设置桥按 noop 处理。
+        "flow.retrieval.rerank.provider", "enum", "remote", "flow.retrieval",
+        options=("auto", "cross_encoder", "remote", "noop"), target=_t("rerank", "provider"),
+    ),
+    # provider=remote 时用的连接与模型（地址、密钥由设置桥从连接注入）。
+    SettingSpec(
+        "flow.retrieval.rerank.remote", "model_ref", None, "flow.retrieval", nullable=True,
     ),
     SettingSpec(
         "flow.retrieval.rerank.model", "str", RerankConfig.model, "flow.retrieval",

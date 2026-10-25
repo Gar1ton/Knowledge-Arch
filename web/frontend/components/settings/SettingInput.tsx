@@ -173,9 +173,121 @@ function ModelRefInput({ item, value, onChange, disabled, variant, providers = [
   );
 }
 
+/** 名字匹配 prefer 的模型排前面（embedding 连接上列 embed 类、rerank 连接上列 rerank 类）。 */
+function preferredModelsFirst(models: string[], prefer: RegExp): string[] {
+  return [...models.filter((m) => prefer.test(m)), ...models.filter((m) => !prefer.test(m))];
+}
+
+const EMBED_MODEL = /embed/i;
+const RERANK_MODEL = /rerank/i;
+
+/**
+ * 「连接 + 模型」：只列 OpenAI 兼容连接（Anthropic 没有 embedding / rerank 接口），
+ * 模型可从连接的模型列表里挑（prefer 类排前），也可手填。
+ */
+function ConnectionModelInput({
+  item, value, onChange, disabled, variant, providers = [], t, prefer, placeholder,
+}: Props & { prefer: RegExp; placeholder: string }) {
+  const current = isModelRef(value) ? value : null;
+  const eligible = providers.filter((p) => p.kind === "openai_compatible");
+  const selected = current ? eligible.find((p) => p.id === current.provider_id) : undefined;
+  const listId = `${item.key}-models`;
+  const pick = (id: string) => {
+    if (id === MODEL_NONE) return onChange(null);
+    const p = eligible.find((x) => x.id === id);
+    onChange({ provider_id: id, model: preferredModelsFirst(p?.models ?? [], prefer)[0] ?? "" });
+  };
+  if (eligible.length === 0) {
+    return (
+      <span className="flow-quick-hint">
+        {providers.length > 0 ? t("set_embedding_no_compatible") : t("set_model_no_providers")}
+      </span>
+    );
+  }
+  const ids = eligible.map((p) => p.id);
+  return (
+    <>
+      <Choice
+        variant={variant}
+        value={current?.provider_id ?? MODEL_NONE}
+        options={current
+          ? (ids.includes(current.provider_id) ? ids : [current.provider_id, ...ids])
+          : [MODEL_NONE, ...ids]}
+        disabled={Boolean(disabled)}
+        getLabel={(id) => (id === MODEL_NONE
+          ? t("set_connection_pick")
+          : providers.find((p) => p.id === id)?.label ?? id)}
+        onChange={pick}
+      />
+      {current && (
+        <>
+          <input
+            className={variant === "flow" ? "flow-quick-input" : undefined}
+            style={variant === "ds" ? { ...DS_INPUT_STYLE, width: 320 } : undefined}
+            list={listId}
+            value={current.model}
+            disabled={Boolean(disabled)}
+            placeholder={placeholder}
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(e) => onChange({ provider_id: current.provider_id, model: e.target.value })}
+          />
+          <datalist id={listId}>
+            {preferredModelsFirst(selected?.models ?? [], prefer).map((m) => <option key={m} value={m} />)}
+          </datalist>
+        </>
+      )}
+    </>
+  );
+}
+
+/** Embedding 来源：「本地模型 / 线上 API」二选一；线上走 OpenAI 兼容连接的 /embeddings。 */
+function EmbeddingSourceInput(props: Props) {
+  const { item, value, onChange, disabled, variant, providers = [], t } = props;
+  const local = item.options[0];
+  // 默认线上：只有明确选了本地模型才是 local；未选连接（null）也算线上。
+  const mode = value === local ? "local" : "online";
+
+  const onMode = (m: string) => {
+    if (m === "local") {
+      onChange(local);
+      return;
+    }
+    const first = providers.find((p) => p.kind === "openai_compatible");
+    onChange(first ? { provider_id: first.id, model: preferredModelsFirst(first.models, EMBED_MODEL)[0] ?? "" } : null);
+  };
+
+  return (
+    <div className="setting-model-ref" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <Choice
+        variant={variant}
+        value={mode}
+        options={["local", "online"]}
+        disabled={Boolean(disabled)}
+        getLabel={(m) => (m === "local" ? t("set_model_literal_local") : t("set_embedding_online"))}
+        onChange={onMode}
+      />
+      {mode === "online" && (
+        <ConnectionModelInput {...props} prefer={EMBED_MODEL} placeholder={t("set_embedding_model_placeholder")} />
+      )}
+    </div>
+  );
+}
+
+/** 线上 Rerank 的连接与模型（仅 provider=remote 时由 NodePanel 显示）。 */
+function RerankConnectionInput(props: Props) {
+  return (
+    <div className="setting-model-ref" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <ConnectionModelInput {...props} prefer={RERANK_MODEL} placeholder={props.t("set_rerank_model_placeholder")} />
+    </div>
+  );
+}
+
 export function SettingInput(props: Props) {
   const { item, value, onChange, disabled = false, variant, t, lang, onBrowse } = props;
 
+  if (item.key === "flow.embedding.source") return <EmbeddingSourceInput {...props} />;
+  if (item.key === "flow.retrieval.rerank.remote") return <RerankConnectionInput {...props} />;
   if (item.kind === "model_ref") return <ModelRefInput {...props} />;
 
   if (item.kind === "bool") {

@@ -121,9 +121,22 @@ export const NodePanel = forwardRef<QuickConfigHandle, NodePanelProps>(function 
     setBrowseKey(key);
   }, [setValue]);
 
+  // Embedding 选了线上 API 时，本地模型名无关，不显示。
+  const embeddingSource = visible.find((i) => i.key === "flow.embedding.source");
+  const embeddingOnline = Boolean(embeddingSource && valueOf(embeddingSource) !== "local");
+  // Rerank：线上时隐藏本地模型名，非线上时隐藏连接选择。
+  const rerankProvider = visible.find((i) => i.key === "flow.retrieval.rerank.provider");
+  const rerankRemote = Boolean(rerankProvider && valueOf(rerankProvider) === "remote");
+  const shown = (item: SettingItem) => {
+    if (embeddingOnline && item.key === "flow.embedding.local_model") return false;
+    if (item.key === "flow.retrieval.rerank.remote") return rerankRemote;
+    if (item.key === "flow.retrieval.rerank.model") return !rerankRemote;
+    return true;
+  };
+
   const grid = (list: SettingItem[]) => (
     <div className="flow-quick-grid">
-      {list.map((item) => (
+      {list.filter(shown).map((item) => (
         <label
           key={item.key}
           className={`flow-quick-field ${["text", "path", "model_ref", "secret"].includes(item.kind) ? "flow-quick-field--wide" : ""}`}

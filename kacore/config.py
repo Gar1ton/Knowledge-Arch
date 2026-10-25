@@ -260,6 +260,9 @@ class RerankConfig:
     batch_size: int = 32
     max_candidates: int = 30
     keep: int = 8
+    # 仅 remote：来自「模型供应商」连接（由设置桥注入，密钥不写进任何文件）。
+    base_url: str = ""
+    api_key: str = ""
 
 
 @dataclass
@@ -786,7 +789,10 @@ class Config:
         elif provider == "mmr":
             # 历史值归一：不做 MMR provider，显式旧值保持关闭。
             provider = "noop"
-        if provider not in {"noop", "cross_encoder"}:
+        base_url = str(s.get("base_url", "") or "").strip()
+        if provider == "remote" and not base_url:
+            provider = "noop"  # 选了线上但连接已删除：不重排，而不是报错
+        if provider not in {"noop", "cross_encoder", "remote"}:
             provider = "noop"
         return RerankConfig(
             provider=provider,
@@ -795,6 +801,8 @@ class Config:
             batch_size=max(1, int(s.get("batch_size", RerankConfig.batch_size))),
             max_candidates=max(1, int(s.get("max_candidates", RerankConfig.max_candidates))),
             keep=max(1, int(s.get("keep", RerankConfig.keep))),
+            base_url=base_url,
+            api_key=str(s.get("api_key", "") or ""),
         )
 
     def get_deep_thinking_config(self) -> DeepThinkingConfig:

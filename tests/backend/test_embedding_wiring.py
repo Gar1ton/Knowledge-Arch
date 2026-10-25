@@ -42,7 +42,8 @@ def test_removed_or_unknown_embedding_sources_normalize_to_local(legacy: str) ->
 def test_pipeline_snapshot_lists_only_local_and_external_sources() -> None:
     stages = {stage["id"]: stage for stage in detect_pipeline(Config({}))}
     assert stages["embedding"]["candidates"] == ["local", "external"]
-    assert stages["vector_store"]["candidates"] == ["milvus", "lexical"]
+    assert stages["vector_store"]["candidates"] == ["milvus"]
+    assert stages["vector_store"]["switchable"] is False
 
 
 @pytest.mark.parametrize("legacy", ["astr", " Astr "])
@@ -251,3 +252,20 @@ async def test_legacy_embedding_source_flags_existing_index_for_rebuild(
             )
         finally:
             await initializer.teardown()
+
+
+def test_external_embedding_unblocks_milvus_without_local_component() -> None:
+    """线上 Embedding 不依赖本地组件：探针拿到维度后向量库就绪，不再等 Embedding。"""
+    config = Config({
+        "embedding": {"provider": "external", "model": "text-embedding-3-small",
+                      "base_url": "https://api.openai.com/v1"},
+        "vector_db": {"backend": "milvus"},
+    })
+    waiting = {stage["id"]: stage for stage in detect_pipeline(config)}
+    assert waiting["embedding"]["configured"] is True
+    assert waiting["embedding"]["required_deps"] == []
+    assert waiting["vector_store"]["detail"]["waiting_for_embedding"] is True
+
+    config.runtime_embedding_dimension = 1536
+    ready = {stage["id"]: stage for stage in detect_pipeline(config)}
+    assert ready["vector_store"]["detail"]["waiting_for_embedding"] is False

@@ -58,17 +58,18 @@ def settings_to_config_raw(store: SettingsStore) -> dict[str, Any]:
     embedding = raw.setdefault("embedding", {})
     source = store.get("flow.embedding.source")
     ref = ModelRef.parse(source)
-    if source == EMBEDDING_SOURCE_LOCAL or ref is None:
+    if source == EMBEDDING_SOURCE_LOCAL:
         embedding.update(
             provider="local",
             model=store.get("flow.embedding.local_model"),
             base_url=EmbeddingConfig.base_url,
         )
     else:
-        profile = profiles.get(ref.provider_id)
+        # 默认线上：还没选连接（或连接已删除）时 base_url 为空，节点显示待配置。
+        profile = profiles.get(ref.provider_id) if ref else None
         embedding.update(
             provider="external",
-            model=ref.model,
+            model=ref.model if ref else "",
             base_url=profile.base_url if profile else "",
             api_key=(
                 store.secrets.get_secret(profile.api_key_ref)
@@ -76,6 +77,24 @@ def settings_to_config_raw(store: SettingsStore) -> dict[str, Any]:
                 else ""
             ),
         )
+
+    # 线上 Rerank：地址与密钥来自所选连接；没选连接则不重排。
+    rerank = raw.setdefault("rerank", {})
+    if store.get("flow.retrieval.rerank.provider") == "remote":
+        rerank_ref = resolve_model_ref(store, "flow.retrieval.rerank.remote")
+        rerank_profile = profiles.get(rerank_ref.provider_id) if rerank_ref else None
+        if rerank_ref is None or rerank_profile is None:
+            rerank["provider"] = "noop"
+        else:
+            rerank.update(
+                model=rerank_ref.model,
+                base_url=rerank_profile.base_url,
+                api_key=(
+                    store.secrets.get_secret(rerank_profile.api_key_ref)
+                    if rerank_profile.api_key_ref
+                    else ""
+                ),
+            )
 
     models: dict[str, Any] = {}
     for role in ROLES:
