@@ -311,13 +311,15 @@ async def test_api_import_end_to_end_through_soft_restart(
         assert job["status"] == "running"
 
         await _wait_for(lambda: init.api is not None and init.api is not api)
-        await _wait_for(lambda: init.api is not None)
+        # 门面先于 initialize() 收尾就已发布；导入在初始化末尾才提交，等结果落定。
+        await _wait_for(lambda: (state_dir(data_dir) / "result.json").exists())
         new_api = init.api
         assert new_api is not None
         docs = await new_api.list_documents()
         assert {d.doc_id for d in docs} == {"d1", "d2"}
         status = await new_api.get_legacy_import_status()
         assert status["result"]["status"] == "ok" and status["library_empty"] is False
+        assert status["pending"] is None
         assert settings.get("flow.graph.query_mode") == "local"
 
         from kacore.api_legacy_import import LegacyImportConflictError
