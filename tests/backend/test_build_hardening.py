@@ -189,7 +189,7 @@ async def test_build_graph_rejects_when_embedding_provider_missing() -> None:
     api._embedding_provider = None
 
     with patch.object(api, "_run_lightrag_build_job", new=AsyncMock()):
-        with pytest.raises(RuntimeError, match="Embedding"):
+        with pytest.raises(RuntimeError, match="(?i)embedding"):
             await api.build_graph(collection="papers", confirmed=True)
 
     assert api._graph_build_jobs == {}
@@ -202,7 +202,7 @@ async def test_build_graph_rejects_when_embedding_probe_fails() -> None:
     api._embedding_provider.embed_query = AsyncMock(side_effect=RuntimeError("boom"))
 
     with patch.object(api, "_run_lightrag_build_job", new=AsyncMock()):
-        with pytest.raises(RuntimeError, match="Embedding"):
+        with pytest.raises(RuntimeError, match="(?i)embedding"):
             await api.build_graph(collection="papers", confirmed=True)
 
     assert api._graph_build_jobs == {}
@@ -247,7 +247,7 @@ async def test_build_graph_with_codex_still_rejects_when_embedding_missing() -> 
     api = _make_api()
     api._embedding_provider = None
 
-    with pytest.raises(RuntimeError, match="Embedding"):
+    with pytest.raises(RuntimeError, match="(?i)embedding"):
         await api.build_graph_with_codex(collection="papers", confirmed=True)
 
     assert api._graph_build_jobs == {}
@@ -317,7 +317,7 @@ async def test_circuit_breaker_stops_after_consecutive_failures() -> None:
     assert job.failed_docs == 3
     assert job.processed_docs == 0
     assert job.status == "error"
-    assert "连续" in job.recent_error
+    assert "in a row" in job.recent_error
 
 
 # ─── cancel_build_job (v1.0.11) ────────────────────────────────

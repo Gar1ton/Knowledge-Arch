@@ -2,11 +2,13 @@
 
 产物（默认 `desktop/src-tauri/resources/`，已 gitignore）：
 
-    python/     python-build-standalone 3.12（经 uv 下载）+ requirements.txt 的核心依赖；
+    python/     python-build-standalone 3.12（经 uv 下载）+ requirements.txt 的核心依赖
+                （去掉字节码、测试、C 头文件与 pyarrow 用不到的扩展，见 prune_runtime）；
                 site-packages 里写 `knowledge_arch.pth` 指向 ../ka，使 `python -I -m ka_server`
                 可导入（-I 会忽略 PYTHONPATH，但仍处理 site-packages 里的 .pth）；
                 uv 可执行文件放在解释器旁，供应用内安装可选组件（torch 等大包不进安装包）。
-    ka/         kacore/、ka_server/、web/server.py、web/desktop_routes.py、migrations/。
+    ka/         kacore/、ka_server/、web/server.py、web/desktop_routes.py、migrations/；
+                另有标记文件 `.ka_bundle`，运行时据此把字节码缓存写到用户缓存目录。
     frontend/   web/frontend/out/ 的静态导出（tauri.conf.json 的 frontendDist）。
 
 用法：
@@ -32,6 +34,16 @@ IS_WINDOWS = os.name == "nt"
 SOURCES = ("kacore", "ka_server", "migrations", "web/server.py", "web/desktop_routes.py")
 _IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", ".pytest_cache", "README.md")
 PTH_NAME = "knowledge_arch.pth"
+BUNDLE_MARKER = ".ka_bundle"  # 与 ka_server/bytecode_cache.py 一致
+
+# 体积裁剪（对齐旧宿主桌面版：不带字节码）。字节码由运行时写到用户缓存目录，首启编译一次。
+_BYTECODE_SUFFIXES = (".pyc", ".pyo")
+# 只在 site-packages 里删：测试与 C 头文件运行期用不到（解释器自己的 include/ 留给源码编译的组件）。
+_SITE_PRUNE_DIRS = frozenset({"tests", "include"})
+# pyarrow 里 Milvus Lite 用不到的扩展：Flight RPC、S3 文件系统、C++ 自测库。它只用核心表、parquet
+# 与 compute；这几个库只被各自的可选模块加载（pyarrow.fs 对 _s3fs 是 try-import）。
+# substrait 不能删：pyarrow 26 的核心 lib 直接链接 libarrow_substrait。
+_PYARROW_UNUSED = ("flight", "s3fs", "arrow_s3", "_pyarrow_cpp_tests")
 
 
 def log(message: str) -> None:
@@ -71,8 +83,9 @@ def install_python(uv: str, out: Path) -> Path:
 
 
 def python_output(python: Path, code: str) -> str:
+    # -B：构建期不写字节码，产物保持「不带 .pyc」。
     out = subprocess.run(
-        [str(python), "-I", "-c", code], check=True, capture_output=True, text=True
+        [str(python), "-I", "-B", "-c", code], check=True, capture_output=True, text=True
     )
     return out.stdout.strip()
 
@@ -90,6 +103,40 @@ def install_requirements(uv: str, python: Path) -> None:
     run([uv, "pip", "uninstall", "--no-config", "--python", str(python), "pip"])
 
 
+def _tree_size(path: Path) -> int:
+    return sum(p.stat().st_size for p in path.rglob("*") if p.is_file() and not p.is_symlink())
+
+
+def _delete(path: Path) -> int:
+    if path.is_dir() and not path.is_symlink():
+        size = _tree_size(path)
+        shutil.rmtree(path)
+        return size
+    size = path.stat().st_size if path.exists() else 0
+    path.unlink(missing_ok=True)
+    return size
+
+
+def prune_runtime(python_dir: Path, sp: Path) -> int:
+    """裁掉运行期用不到的文件，返回释放的字节数。"""
+    freed = 0
+    for cache in sorted(python_dir.rglob("__pycache__"), reverse=True):
+        freed += _delete(cache)
+    for f in python_dir.rglob("*"):
+        if f.suffix in _BYTECODE_SUFFIXES and f.is_file():
+            freed += _delete(f)
+    for d in sorted((p for p in sp.rglob("*") if p.is_dir() and p.name in _SITE_PRUNE_DIRS),
+                    key=lambda p: len(p.parts)):
+        if d.exists():
+            freed += _delete(d)
+    pyarrow = sp / "pyarrow"
+    if pyarrow.is_dir():
+        for f in list(pyarrow.iterdir()):
+            if any(tag in f.name.lower() for tag in _PYARROW_UNUSED):
+                freed += _delete(f)
+    return freed
+
+
 def copy_sources(out: Path) -> Path:
     target = out / "ka"
     if target.exists():
@@ -102,6 +149,7 @@ def copy_sources(out: Path) -> Path:
             shutil.copytree(src, dst, ignore=_IGNORE)
         else:
             shutil.copy2(src, dst)
+    (target / BUNDLE_MARKER).write_text("bundled runtime\n", encoding="utf-8")
     return target
 
 
@@ -134,13 +182,36 @@ def copy_frontend(out: Path) -> None:
     shutil.copytree(src, target)
 
 
+# 裁剪 pyarrow 后必须真实跑一遍 Milvus Lite：建库、写入、落盘（parquet）、带过滤检索（compute）。
+_MILVUS_SMOKE = """
+import os, tempfile
+import pyarrow.compute, pyarrow.fs, pyarrow.parquet
+from pymilvus import MilvusClient
+client = MilvusClient(os.path.join(tempfile.mkdtemp(), "smoke.db"))
+client.create_collection("smoke", dimension=4)
+client.insert("smoke", [
+    {"id": i, "vector": [float(i), 1.0, 0.0, 0.5], "tag": "odd" if i % 2 else "even"}
+    for i in range(8)
+])
+client.flush("smoke")
+hits = client.search(
+    "smoke", data=[[3.0, 1.0, 0.0, 0.5]], limit=2, filter='tag == "odd"',
+    output_fields=["tag"],
+)
+assert hits and hits[0] and hits[0][0]["id"] == 3, hits
+client.close()
+print("ok")
+"""
+
+
 def smoke_test(python: Path) -> None:
-    """用 -I 启动打包后的解释器，确认后端可导入、核心依赖齐全。"""
+    """用 -I 启动打包后的解释器，确认后端可导入、核心依赖齐全、Milvus Lite 可用。"""
     code = (
         "import ka_server, kacore.app_initializer, web.server, aiohttp, pymupdf, pymilvus,"
         " milvus_lite; print(ka_server.APP_VERSION)"
     )
     log(f"smoke test ok, backend version {python_output(python, code)}")
+    log(f"milvus lite round trip {python_output(python, _MILVUS_SMOKE)}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -148,7 +219,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--uv", default=shutil.which("uv"), help="uv executable (default: PATH)")
     parser.add_argument("--skip-frontend", action="store_true")
-    parser.add_argument("--no-compile", action="store_true", help="skip .pyc precompilation")
     args = parser.parse_args(argv)
     if not args.uv:
         raise SystemExit("uv not found; install it or pass --uv")
@@ -158,15 +228,14 @@ def main(argv: list[str] | None = None) -> int:
     python_dir = install_python(args.uv, out)
     python = python_executable(python_dir)
     install_requirements(args.uv, python)
+    freed = prune_runtime(python_dir, site_packages(python))
+    log(f"pruned {freed / 1048576:.0f} MiB (bytecode, tests, headers, unused pyarrow extensions)")
     ka_dir = copy_sources(out)
     pth = write_pth(python, ka_dir)
     log(f"wrote {pth}")
     copy_uv(args.uv, python_dir)
     if not args.skip_frontend:
         copy_frontend(out)
-    if not args.no_compile:
-        # 预编译字节码：首启更快；用打包后的解释器编译，保证 magic number 一致。
-        run([str(python), "-I", "-m", "compileall", "-q", str(ka_dir), str(site_packages(python))])
     smoke_test(python)
     log(f"done: {out}")
     return 0

@@ -10,7 +10,7 @@
 |--------|------|------|
 | `macos-15` | `aarch64-apple-darwin` | `.app`、`.dmg` |
 | `macos-15-intel` | `x86_64-apple-darwin` | `.app`、`.dmg` |
-| `windows-latest` | `x86_64-pc-windows-msvc` | `.msi` |
+| `windows-latest` | `x86_64-pc-windows-msvc` | NSIS `setup.exe`（当前用户安装） |
 | `ubuntu-22.04` | `x86_64-unknown-linux-gnu` | `.deb`、`.AppImage` |
 
 每个平台都在本机 runner 上执行：前端静态导出 → `desktop/scripts/bundle_python.py`（内置 CPython 3.12
@@ -49,7 +49,7 @@ tauri 自动提交公证并钉上票据。内置 Python 的每个 Mach-O 由 `de
 | `WINDOWS_CERTIFICATE_PASSWORD` | secret | `.pfx` 密码 |
 
 流水线把证书导入 runner 的用户证书库，取得指纹后由 `desktop/scripts/configure_release.py` 写进
-`bundle.windows`（SHA-256 + DigiCert 时间戳）。未配置时 `.msi` 不签名（SmartScreen 会提示）。
+`bundle.windows`（SHA-256 + DigiCert 时间戳）。未配置时 `setup.exe` 不签名（SmartScreen 会提示）。
 
 ### 自动更新（Tauri updater）
 

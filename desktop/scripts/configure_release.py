@@ -41,11 +41,12 @@ def configure(conf: dict, env: dict[str, str]) -> dict[str, str]:
         outputs.update(features="--features updater", updater="true")
     thumbprint = env.get("WINDOWS_CERTIFICATE_THUMBPRINT", "").strip()
     if thumbprint:
-        conf.setdefault("bundle", {})["windows"] = {
-            "certificateThumbprint": thumbprint,
-            "digestAlgorithm": "sha256",
-            "timestampUrl": TIMESTAMP_URL,
-        }
+        # 合并而非覆盖：bundle.windows 里还有 NSIS 安装器配置。
+        conf.setdefault("bundle", {}).setdefault("windows", {}).update(
+            certificateThumbprint=thumbprint,
+            digestAlgorithm="sha256",
+            timestampUrl=TIMESTAMP_URL,
+        )
         outputs["windows_signing"] = "true"
     return outputs
 

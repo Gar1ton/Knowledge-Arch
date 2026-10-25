@@ -51,6 +51,16 @@
       "resources/python/": "python/",
       "resources/ka/": "ka/"
     },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "English",
+          "SimpChinese"
+        ],
+        "displayLanguageSelector": true
+      }
+    },
     "macOS": {
       "minimumSystemVersion": "11.0",
       "entitlements": "entitlements.plist",

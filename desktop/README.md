@@ -33,11 +33,11 @@ libayatana-appindicator3-dev librsvg2-dev patchelf`。
 
 ```bash
 cd web/frontend && npm ci && npm run build && cd -     # 1. 界面静态导出
-python desktop/scripts/bundle_python.py                # 2. 后端资源（约 720 MB，未压缩）
+python desktop/scripts/bundle_python.py                # 2. 后端资源（约 550 MB，未压缩）
 cd desktop && npm ci && npx tauri build                # 3. 出包
 ```
 
-产物在 `desktop/src-tauri/target/release/bundle/`：macOS `.app` / `.dmg`，Windows `.msi`，
+产物在 `desktop/src-tauri/target/release/bundle/`：macOS `.app` / `.dmg`，Windows NSIS `setup.exe`，
 Linux `.deb` / `.AppImage`。每个平台必须在该平台本机（或对应的 CI runner）上打包——内置的
 CPython 与依赖都是平台专属的二进制。
 
@@ -46,6 +46,13 @@ CPython 与依赖都是平台专属的二进制。
 
 ## 体积
 
-内置运行时约 720 MB（未压缩），大头是核心依赖：pymilvus 带来的 pandas / pyarrow、milvus-lite
-带来的 faiss、PyMuPDF。torch / sentence-transformers、lightrag、boto3 不进安装包，由用户在
+内置运行时约 550 MB（未压缩），大头是核心依赖：milvus-lite 带来的 pyarrow / faiss、pymilvus 带来的
+pandas、PyMuPDF。torch / sentence-transformers、lightrag、boto3 不进安装包，由用户在
 「偏好设置 › 组件」按需安装到数据目录。
+
+打包脚本的裁剪（`prune_runtime`）：
+- 不带字节码：运行时由 `ka_server/bytecode_cache.py` 把 `sys.pycache_prefix` 指到用户缓存目录
+  （应用目录只读），首次启动编译一次；
+- 删去 site-packages 里的 `tests/` 与 `include/`；
+- 删去 pyarrow 的 Flight / S3 扩展与 C++ 自测库（`libarrow_substrait` 被核心库直接链接，必须保留）；
+  打包冒烟测试会真实跑一遍 Milvus Lite 建库-写入-检索。

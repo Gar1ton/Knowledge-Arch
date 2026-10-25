@@ -44,6 +44,8 @@ def test_updater_and_windows_signing_from_env() -> None:
     ]
     assert conf["bundle"]["createUpdaterArtifacts"] is True
     assert conf["bundle"]["windows"]["certificateThumbprint"] == "ABC123"
+    # 签名配置不能冲掉 NSIS 安装器配置。
+    assert conf["bundle"]["windows"]["nsis"]["installMode"] == "currentUser"
 
 
 def test_versions_are_in_sync() -> None:

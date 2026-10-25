@@ -7,6 +7,11 @@
 
 from __future__ import annotations
 
+from ka_server.bytecode_cache import redirect_bytecode_cache
+
+# 必须早于任何依赖导入：之后的每次 import 才会把字节码写进用户缓存目录。
+redirect_bytecode_cache()
+
 APP_NAME = "Knowledge Arch"
 APP_VERSION = "2.0.0"
 
