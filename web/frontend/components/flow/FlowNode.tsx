@@ -251,6 +251,7 @@ export function FlowNode({
 
   return (
     <div
+      data-tour={`node-${stage.id}`}
       className={`flow-node ${isDest ? "flow-node--dest" : ""} ${selected ? "is-selected" : ""} ${isOff ? "is-off" : ""} ${STATUS_CLASS[stage.status]} ${isDirty ? "is-dirty" : ""} ${showRestartPending ? "is-restart-pending" : ""} ${advancedOpen ? "is-advanced-open" : ""}`}
       onClick={onSelect}
     >

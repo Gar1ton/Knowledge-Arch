@@ -18,6 +18,7 @@ import {
   type SkillInstallState,
 } from "@/lib/agentApi";
 import { useI18n, type I18nKey, type TFunc } from "@/lib/i18n";
+import { requestTour } from "@/lib/tour";
 import { landing } from "./LandingShell";
 
 const POLL_MS = 3_000;
@@ -190,7 +191,9 @@ export function AgentSetupStep({ onDone }: { onDone: () => void }) {
         {copied || status?.connected ? (
           <button type="button" className={landing.ghost} onClick={onDone}>{t("agent_enter")}</button>
         ) : (
-          <button type="button" className={landing.ghost} onClick={onDone}>{t("agent_skip")}</button>
+          <button type="button" className={landing.ghost} onClick={() => { requestTour(); onDone(); }}>
+            {t("agent_skip")}
+          </button>
         )}
       </div>
       {copied && <p className={landing.hint}>{t("agent_copied")}</p>}

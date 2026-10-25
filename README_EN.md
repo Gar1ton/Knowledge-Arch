@@ -46,7 +46,7 @@ The installer bundles a standalone Python 3.12 runtime and all core dependencies
    - Copying the prompt turns on **Preferences › General › Allow AI assistants to connect**: the app writes its local address and a per-launch token to a connection file only your user can read, and deletes it when access is turned off or the app quits.
    - The assistant can only use configuration, retrieval and Q&A endpoints and **cannot write any API key or token**: when a key is needed, the app shows a field and you type it into the app yourself; the assistant never sees it.
    - You can also install the skill for Codex / Claude Code with one click in Preferences, then simply ask it to "set up Knowledge Arch".
-5. **Or configure models manually & start asking** (on the **Data Flow** page):
+5. **Or configure models manually & start asking** (on the **Data Flow** page; choosing *Skip, I'll set it up myself* on the welcome page starts a step-by-step tutorial, which you can replay from Preferences › General):
    - Open the **Model providers** node and add at least one **OpenAI-compatible** connection (or Anthropic for chat/research/graph).
    - Open **Model assignment** to select your **Chat model** (and optionally separate **Research** and **Graph** models).
    - Open **Embedding** (and optionally **Retrieval orchestration** for Rerank) to select an OpenAI-compatible connection and model—or install the local component in **Preferences › Components**.

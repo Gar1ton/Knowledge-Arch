@@ -6,6 +6,10 @@ import type { Lang, TFunc } from "@/lib/i18n";
 import { FitIcon, MinusIcon, PlusIcon } from "./Icons";
 import { EDGES, GRID, isFlowStageId, STAGE_HOME, STAGE_META, type FlowStageId, type FlowStageStatus } from "./model";
 import { FlowNode } from "./FlowNode";
+import { FLOW_FOCUS_EVENT } from "@/lib/tour";
+
+/** 首次使用引导聚焦节点时的最小缩放，节点太小看不清。 */
+const FOCUS_MIN_SCALE = 0.75;
 
 type Rect = { x: number; y: number; w: number; h: number };
 type Geo = { rects: Partial<Record<FlowStageId, Rect>> | null; w: number; h: number };
@@ -200,6 +204,26 @@ export function FlowDiagram({
       y: snapCoord(Math.max(24, (vh - geo.h * scale) / 2)),
     };
   }, [geo.h, geo.w]);
+
+  // 首次使用引导：把指定节点平移到视口中央（遮罩会挡住拖动，用户没法自己把它拖进来）。
+  useEffect(() => {
+    const onFocus = (event: Event) => {
+      const id = (event as CustomEvent<{ id: string }>).detail?.id;
+      const rect = id && isFlowStageId(id) ? geo.rects?.[id] : undefined;
+      const viewport = viewportRef.current;
+      if (!rect || !viewport) return;
+      setView((prev) => {
+        const s = snapScale(clampScale(Math.max(prev.s, FOCUS_MIN_SCALE)));
+        return {
+          s,
+          x: snapCoord(viewport.clientWidth / 2 - (rect.x + rect.w / 2) * s),
+          y: snapCoord(viewport.clientHeight / 2 - (rect.y + rect.h / 2) * s),
+        };
+      });
+    };
+    window.addEventListener(FLOW_FOCUS_EVENT, onFocus);
+    return () => window.removeEventListener(FLOW_FOCUS_EVENT, onFocus);
+  }, [geo.rects]);
 
   const fit = useCallback(() => {
     const nextView = buildFitView(false);

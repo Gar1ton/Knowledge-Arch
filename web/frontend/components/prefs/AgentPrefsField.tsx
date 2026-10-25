@@ -9,7 +9,22 @@ import { Field } from "@/components/ds/Card";
 import { useToast } from "@/components/ui/Toast";
 import { copySetupPrompt, skillStateText, useAgentPrompt, useAgentStatus } from "@/components/desktop/AgentSetup";
 import { installAgentSkill, SKILL_TARGETS } from "@/lib/agentApi";
+import { useConsole } from "@/lib/ConsoleContext";
+import { requestTour } from "@/lib/tour";
 import { useI18n, type I18nKey } from "@/lib/i18n";
+
+/** 重新查看首次使用引导：关闭偏好设置，引导从第一个未完成的步骤开始。 */
+export function TourReplayField() {
+  const { t } = useI18n();
+  const { closePrefs } = useConsole();
+  return (
+    <Field label={t("tour_replay_title")} hint={t("tour_replay_hint")}>
+      <Button size="sm" variant="outline" onClick={() => { closePrefs(); requestTour(); }}>
+        {t("tour_replay")}
+      </Button>
+    </Field>
+  );
+}
 
 export function AgentPrefsField() {
   const { t, lang } = useI18n();

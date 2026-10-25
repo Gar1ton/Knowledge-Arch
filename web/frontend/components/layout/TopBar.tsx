@@ -105,6 +105,7 @@ export function TopBar() {
       {/* 主窗口页面：工作台 / 数据流（数据流按钮保留健康呼吸光效）。 */}
       <span style={{ display: "flex", gap: 4, marginLeft: 12 }}>
         <Button
+          data-tour="topbar-workspace"
           variant="tab"
           size="sm"
           active={view === "workspace"}
@@ -113,7 +114,7 @@ export function TopBar() {
         >
           <Icon name="book" size={14} /> {t("topbar_workspace")}
         </Button>
-        <span className={`wf-pulse-${wfStatus}`}>
+        <span className={`wf-pulse-${wfStatus}`} data-tour="topbar-flow">
           <Button
             variant="tab"
             size="sm"

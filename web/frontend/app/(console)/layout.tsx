@@ -10,6 +10,7 @@ import { getSettingsSchema } from "@/lib/settingsApi";
 import { setColorTheme, THEMES, type ThemeName, useTheme } from "@/lib/theme";
 import { applyUiScale, UI_SCALE_KEY, useUiScaleShortcuts } from "@/lib/uiScale";
 import { BackendGate } from "@/components/desktop/BackendGate";
+import { FirstRunTour } from "@/components/desktop/FirstRunTour";
 import { SecretRequestDialog } from "@/components/desktop/SecretRequestDialog";
 import { WelcomeScreen, useWelcomeNeeded } from "@/components/desktop/WelcomeScreen";
 import { LandingSplash } from "@/components/desktop/LandingShell";
@@ -290,6 +291,7 @@ function ReadyShell({ epoch }: { epoch: number }) {
       <ConsoleCanvas />
       <ProgressDock />
       <SecretRequestDialog />
+      <FirstRunTour />
     </ConsoleProvider>
   );
 }

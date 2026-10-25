@@ -291,3 +291,12 @@
     （写回 path 类设置前展开）；白名单去掉 `/api/system/info`（只有带用户名的路径），`detect` 只在本机探测。
     Windows 上 prompt 仍是绝对路径（Git Bash 对 $HOME 的展开与 PowerShell 不同），会带出用户名。
   - 未验证：真实 Codex / Claude Code 会话全程；Windows / macOS 上的连接文件位置与 prompt 引号（逻辑有测试，未上机）。
+- [x] P16 · 首次使用引导（不用 AI 助手时）。决策：锁定其它区域，只有高亮处可点（弹窗 / 下拉在引导层之上，仍可操作）；
+  向量化为推荐步骤，可「先用关键词召回」或「改用 Codex / Claude 检索」（skill 的 agentic 检索不需要应用内模型）。
+  - [x] P16.1 `components/desktop/FirstRunTour.tsx`：四块遮罩 + 高亮环 + 提示卡，六步（数据流 → 模型连接（须有 Key 或本机
+    免 Key 服务）→ 对话模型 → 向量化 → 第一篇文献 → 第一个问题），按能力快照 / 库是否为空 / 是否已提问自动推进，
+    目标不在当前视图时先高亮切换按钮；数据流节点不在屏幕内时经 `ka:flow-focus` 让画布平移到中央。
+  - [x] P16.2 触发：欢迎页「跳过，自己配置」；偏好设置 › 通用「重新查看引导」。状态在 `lib/tour.ts`（本机 localStorage）。
+  - [x] P16.3 锚点 `data-tour`：顶栏两个视图按钮、数据流节点、上传按钮、Ask 输入框；`lib/zLayers.ts` 新增 `tour: 950`。
+  - 验证：前端 lint / tsc / build；Playwright 走完六步与完成卡（遮罩下点上传按钮无效、节点自动居中、关键词召回回答带
+    「Lexical retrieval」标记、完成后本机标记清除）。

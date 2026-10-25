@@ -13,6 +13,7 @@ export const Z = {
   base: 0,
   raised: 10,     // 固定外壳：TopBar、Rail（sticky）
   widget: 100,    // 常驻小部件：BuildWidget
+  tour: 950,      // 首次使用引导的遮罩与提示卡：低于 dialog，引导中打开的弹窗 / 下拉仍可操作
   dialog: 1000,   // modal 遮罩 + 对话框：ds/Modal、各面板全屏弹窗、dir-picker
   panel: 1100,    // 浮动面板：TerminalPanel
   dropdown: 1200, // Select 下拉 / popover / 菜单（高于 dialog 以支持 modal 内嵌套）

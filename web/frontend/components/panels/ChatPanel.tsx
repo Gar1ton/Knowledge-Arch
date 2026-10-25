@@ -11,6 +11,7 @@ import { Z } from "@/lib/zLayers";
 import { useConsole } from "@/lib/ConsoleContext";
 import { useToast } from "@/components/ui/Toast";
 import { useI18n, type I18nKey } from "@/lib/i18n";
+import { notifyAskSent } from "@/lib/tour";
 import { AnswerMarkdown } from "@/components/panels/AnswerMarkdown";
 import { FullTextConfirmDialog } from "@/components/panels/FullTextConfirmDialog";
 import {
@@ -930,6 +931,7 @@ export function ChatPanel({ width }: { width?: number }) {
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
     if (!input.trim() || loading) return;
+    notifyAskSent();
     await submitQuestion(input.trim(), retrievalMode, true);
   }
 
@@ -1101,6 +1103,7 @@ export function ChatPanel({ width }: { width?: number }) {
 
         <form onSubmit={handleSend}>
           <div
+            data-tour="ask"
             className={[
               "ask-card",
               collectionName ? "ask-card--collection" : "",

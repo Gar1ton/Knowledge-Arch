@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 新增 (Added) — P16 首次使用引导
+
+- **`web/frontend/components/desktop/FirstRunTour.tsx`**：不用 AI 助手时的游戏式引导（遮罩锁定其它区域、高亮目标、提示卡与进度点），
+  六步按真实状态自动推进到「收到第一条回复」；向量化可跳过（关键词召回）或改用 Codex / Claude 检索。
+- `lib/tour.ts`（本机状态与事件）；`FlowDiagram.tsx` 响应 `ka:flow-focus` 把节点移到中央；`ChatPanel.tsx` 提问时派发 `ka:ask-sent`；
+  偏好设置 › 通用「重新查看引导」（`components/prefs/AgentPrefsField.tsx` 的 `TourReplayField`）；`lib/zLayers.ts` 新增 `tour` 层。
+
 ### 新增 (Added) — P15 首次启动 AI 辅助配置
 
 - **欢迎页**：`web/frontend/components/desktop/WelcomeScreen.tsx` 改为「选择语言 → 导入旧数据 / 从空库开始 → 用 AI 助手完成配置」；

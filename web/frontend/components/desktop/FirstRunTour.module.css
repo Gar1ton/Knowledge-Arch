@@ -1,0 +1,115 @@
+/* 首次使用引导：四块遮罩围出可点击的「洞」，高亮环 + 提示卡。颜色全部取 ds token，随主题切换。 */
+
+.mask {
+  position: fixed;
+  z-index: var(--z-tour);
+  background: var(--overlay);
+  animation: overlayIn 0.16s ease;
+}
+
+.ring {
+  position: fixed;
+  z-index: var(--z-tour);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 0 0 2px var(--accent), 0 0 0 6px color-mix(in srgb, var(--accent) 22%, transparent);
+  pointer-events: none;
+  transition: top 0.18s ease, left 0.18s ease, width 0.18s ease, height 0.18s ease;
+  animation: tourRingPulse 2s ease-in-out infinite;
+}
+
+.card {
+  position: fixed;
+  z-index: calc(var(--z-tour) + 1);
+  width: 320px;
+  max-width: calc(100vw - 24px);
+  padding: 14px 16px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--bg);
+  box-shadow: var(--shadow-pop);
+  color: var(--fg);
+  animation: modalIn 0.2s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.step {
+  margin: 0 0 4px;
+  color: var(--accent);
+  font-family: var(--font-bitcount), var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.title {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.body {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.hint {
+  margin: 8px 0 0;
+  padding: 6px 8px;
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.dots {
+  display: flex;
+  gap: 4px;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border);
+}
+
+.dotDone {
+  background: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.dotCurrent {
+  background: var(--accent);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+@keyframes tourRingPulse {
+  0%, 100% { box-shadow: 0 0 0 2px var(--accent), 0 0 0 6px color-mix(in srgb, var(--accent) 22%, transparent); }
+  50% { box-shadow: 0 0 0 2px var(--accent), 0 0 0 10px color-mix(in srgb, var(--accent) 8%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ring { animation: none; transition: none; }
+}

@@ -41,7 +41,7 @@ import {
   type ComponentStatus,
   type ComponentsStatus,
 } from "@/lib/settingsApi";
-import { AgentPrefsField } from "./AgentPrefsField";
+import { AgentPrefsField, TourReplayField } from "./AgentPrefsField";
 import { PrefsSchemaFields, useSettingsHome } from "./PrefsSchemaFields";
 
 // ─── 通用 ──────────────────────────────────────────────────────
@@ -97,6 +97,7 @@ export function GeneralGroup() {
         }}
       />
       <AgentPrefsField />
+      <TourReplayField />
       {inDesktopShell() ? (
         <UpdateField />
       ) : (

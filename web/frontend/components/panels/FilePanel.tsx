@@ -1243,7 +1243,9 @@ export function FilePanel() {
           label={t("file_local_collections")}
           actions={
             <>
-              <IconButton name="upload" label={t("file_action_upload_document")} size={14} onClick={() => setShowUpload(true)} />
+              <span data-tour="upload" style={{ display: "inline-flex" }}>
+                <IconButton name="upload" label={t("file_action_upload_document")} size={14} onClick={() => setShowUpload(true)} />
+              </span>
               <IconButton name="plus" label={t("file_action_new_collection")} size={14} onClick={() => { setNewCollectionParent(null); setShowNewCollection(true); }} />
             </>
           }

@@ -27,6 +27,7 @@
   --z-base: 0;
   --z-raised: 10;     /* 固定外壳：TopBar、Rail */
   --z-widget: 100;    /* 常驻小部件 / 登录遮罩 */
+  --z-tour: 950;     /* 首次使用引导：低于 dialog */
   --z-dialog: 1000;   /* modal 遮罩 + 对话框 */
   --z-panel: 1100;    /* 浮动开发面板 */
   --z-dropdown: 1200; /* 下拉 / popover / 菜单（高于 dialog 以支持嵌套） */
