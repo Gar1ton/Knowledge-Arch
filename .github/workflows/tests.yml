@@ -18,6 +18,8 @@ jobs:
       - name: Install developer dependencies
         run: |
           python -m pip install --upgrade pip
+          # 先装 CPU 版 torch：PyPI 默认的 CUDA 版连同 nvidia / triton 有数 GB，会撑满 runner 磁盘。
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -r requirements-dev.txt
       - name: Ruff
         run: python -m ruff check .
