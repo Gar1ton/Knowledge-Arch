@@ -425,64 +425,6 @@ async def test_initializer_records_milvus_init_error_for_generic_failure(
         await initializer.teardown()
 
 
-async def test_clear_stale_milvus_lock_rejects_when_not_lock_issue(
-    temp_dir: Path, raw_config: dict[str, Any]
-) -> None:
-    """向导护栏：没有检测到锁定问题时拒绝清除（不同的失败原因不该被这个按钮处理）。"""
-    config = {**raw_config, "vector_db": {"backend": "milvus"}, "graph": {"enabled": False}}
-    initializer = AppInitializer(legacy_settings(config), temp_dir)
-    initializer.vector_store = None
-    initializer._vector_store_init_error = "some unrelated schema error"
-
-    result = await initializer.clear_stale_milvus_lock()
-
-    assert result["status"] == "error"
-    assert "No Milvus data folder lock" in result["message"]
-
-
-async def test_clear_stale_milvus_lock_rejects_when_vector_store_ready(
-    temp_dir: Path, raw_config: dict[str, Any]
-) -> None:
-    """守卫：vector_store 已经装配成功时不该允许清锁（那把锁此时是正当持有）。"""
-    config = {**raw_config, "vector_db": {"backend": "milvus"}, "graph": {"enabled": False}}
-    initializer = AppInitializer(legacy_settings(config), temp_dir)
-    initializer.vector_store = object()  # 假装已装配成功
-    initializer._vector_store_init_error = None
-
-    result = await initializer.clear_stale_milvus_lock()
-
-    assert result["status"] == "error"
-    assert "no lock to clear" in result["message"]
-
-
-async def test_clear_stale_milvus_lock_refuses_to_delete_os_lock_file(
-    temp_dir: Path, raw_config: dict[str, Any]
-) -> None:
-    """空 LOCK 仍可能被当前宿主持有；不能靠删除文件绕过 OS 锁。"""
-    config = {**raw_config, "vector_db": {"backend": "milvus"}, "graph": {"enabled": False}}
-    initializer = AppInitializer(legacy_settings(config), temp_dir)
-    initializer.vector_store = None
-    initializer._vector_store_init_error = (
-        "DataDirLockedError: another process holds the lock on "
-        "'/data/vector_store.db': [Errno 13] Permission denied"
-    )
-    db_dir = temp_dir / "vector_store.db"
-    db_dir.mkdir(parents=True)
-    (db_dir / "LOCK").write_bytes(b"")
-    collections_dir = db_dir / "collections"
-    collections_dir.mkdir()
-    (collections_dir / "kb_chunks.marker").write_text("real data, do not touch")
-    initializer._milvus_db_path = db_dir
-
-    result = await initializer.clear_stale_milvus_lock()
-
-    assert result["status"] == "error"
-    assert "Quit the app completely" in result["message"]
-    assert (db_dir / "LOCK").exists()
-    assert (collections_dir / "kb_chunks.marker").read_text() == "real data, do not touch"
-    assert initializer._vector_store_init_error is not None
-
-
 async def test_initializer_marks_recreated_empty_milvus_incompatible_when_docs_exist(
     temp_dir: Path, raw_config: dict[str, Any]
 ) -> None:

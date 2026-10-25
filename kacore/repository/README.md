@@ -14,6 +14,7 @@ repository/
 ```
 
 - **生产实现与测试实现共用 `base.py` 接口** → 测试注入 `memory.py`，无需真实 DB。
+- 生产代码不 import `memory.py`；桌面安装包不带它（`desktop/scripts/bundle_python.py` 的 `_TEST_ONLY`）。
 - 契约（同步顺序、主键约定、`None`/`False` 语义）**写在 `base.py` 的 docstring**，改契约必须同步改全部实现 + 调用方 + 测试。
 
 ## 契约书写要点（示例）

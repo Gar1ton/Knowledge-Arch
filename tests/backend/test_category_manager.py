@@ -77,8 +77,3 @@ async def test_document_classification(
     assert await manager.classify_document("missing", collection="papers") is False
 
 
-async def test_auto_tagging_raises_warning(manager: CategoryManager) -> None:
-    # 预留 AI / 自动打标签接口，应当触发用户软警告并回空列表
-    with pytest.warns(UserWarning, match="Auto tagging is currently disabled"):
-        tags = await manager.auto_tag_document("d1")
-        assert tags == []

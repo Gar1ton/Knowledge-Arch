@@ -203,17 +203,3 @@ async def test_missing_usage_stays_none_not_zero() -> None:
     assert zero.prompt_tokens == 0 and zero.completion_tokens == 0
 
 
-async def test_extract_graph_uses_client_and_parses_json() -> None:
-    payload = (
-        '{"entities": [{"name": "RAG", "type": "Method", "description": "d"}], '
-        '"relations": []}'
-    )
-    client = _Client(_ok(f"```json\n{payload}\n```"))
-    graph = await LLMAdapter(client).extract_graph("text", ["Method"])
-    assert graph["entities"][0]["name"] == "RAG"
-    assert "Method" in client.calls[0][1]
-
-
-async def test_extract_graph_falls_back_to_offline_stub_without_client() -> None:
-    graph = await LLMAdapter().extract_graph("Transformer uses Attention heavily", ["Method"])
-    assert {e["name"] for e in graph["entities"]} >= {"Transformer", "Attention"}

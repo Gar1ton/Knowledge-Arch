@@ -61,12 +61,6 @@ class BaseCategoryManager(BaseManager, ABC):
         """手动调整文档的集合与标签。"""
         ...
 
-    @abstractmethod
-    async def auto_tag_document(self, doc_id: str) -> list[str]:
-        """为文档自动提取并打上推荐标签（预留 AI/LLM 提取接口，默认关闭并警示）。"""
-        ...
-
-
 class BaseQuotaManager(BaseManager, ABC):
     """配额预警与阻断管理契约。"""
 

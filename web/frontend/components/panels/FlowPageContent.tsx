@@ -16,7 +16,7 @@ import {
   installDependency,
   rebuildIndexPending,
   recheckDependencies,
-  restartPlugin,
+  restartService,
   type CapabilitiesData,
   type DependencyStatus,
   type EffectiveConfig,
@@ -242,11 +242,11 @@ export function FlowPageContent({ onClose }: { onClose?: () => void } = {}) {
     }
   }, [refreshFlow, t, toast]);
 
-  const handleRestartPlugin = useCallback(async () => {
+  const handleRestartService = useCallback(async () => {
     setRestarting(true);
     toast(t("flow_restart_running"), "info");
     try {
-      await restartPlugin();
+      await restartService();
     } catch {
       // 软重启会拆掉当前 Web 控制台连接，请求往往以网络错误收尾——视为已触发，转入探活轮询。
     }
@@ -302,7 +302,7 @@ export function FlowPageContent({ onClose }: { onClose?: () => void } = {}) {
               type="button"
               className={`flow-restart-btn ${restartPendingIds.size > 0 ? "is-pending" : ""}`}
               disabled={restarting}
-              onClick={handleRestartPlugin}
+              onClick={handleRestartService}
               title={t("flow_restart_service_hint")}
             >
               {restarting ? t("flow_restart_running") : t("flow_restart_service")}

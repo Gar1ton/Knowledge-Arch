@@ -639,23 +639,6 @@ async def handle_document_notes_post(request: web.Request) -> web.Response:
     return web.json_response(note, status=201)
 
 
-async def handle_document_notes_patch(request: web.Request) -> web.Response:
-    doc_id = request.match_info["doc_id"]
-    note_id = request.match_info["note_id"]
-    body = await request.json() if request.can_read_body else {}
-    content = body.get("content", body.get("body")) if isinstance(body, dict) else None
-    linked = body.get("linked") if isinstance(body, dict) and "linked" in body else None
-    note = await _api(request).update_document_note(
-        doc_id,
-        note_id,
-        content=str(content).strip() if content is not None else None,
-        linked=bool(linked) if linked is not None else None,
-    )
-    if note is None:
-        return web.json_response({"error": "note not found"}, status=404)
-    return web.json_response(note)
-
-
 async def handle_collection_notes_get(request: web.Request) -> web.Response:
     name = request.match_info["name"]
     notes = await _api(request).list_collection_notes(name)
@@ -682,23 +665,6 @@ async def handle_collection_notes_post(request: web.Request) -> web.Response:
     if note is None:
         return web.json_response({"error": "collection not found"}, status=404)
     return web.json_response(note, status=201)
-
-
-async def handle_collection_notes_patch(request: web.Request) -> web.Response:
-    name = request.match_info["name"]
-    note_id = request.match_info["note_id"]
-    body = await request.json() if request.can_read_body else {}
-    content = body.get("content", body.get("body")) if isinstance(body, dict) else None
-    linked = body.get("linked") if isinstance(body, dict) and "linked" in body else None
-    note = await _api(request).update_collection_note(
-        name,
-        note_id,
-        content=str(content).strip() if content is not None else None,
-        linked=bool(linked) if linked is not None else None,
-    )
-    if note is None:
-        return web.json_response({"error": "note not found"}, status=404)
-    return web.json_response(note)
 
 
 async def handle_download_document(request: web.Request) -> web.StreamResponse:
@@ -756,11 +722,6 @@ async def handle_chunk_context(request: web.Request) -> web.Response:
         return web.json_response({"error": "doc_id and chunk_id required"}, status=400)
     ctx = await _api(request).get_chunk_context(doc_id, chunk_id, window)
     return web.json_response(ctx)
-
-
-async def handle_quota(request: web.Request) -> web.Response:
-    usages = await _api(request).list_quota()
-    return web.json_response([_quota_dict(u) for u in usages])
 
 
 # ── 预留端口路由（Reserved）──────────────────────────────────────
@@ -961,23 +922,13 @@ async def handle_providers_models(request: web.Request) -> web.Response:
         return _settings_error(exc)
 
 
-async def handle_plugin_restart(request: web.Request) -> web.Response:
+async def handle_service_restart(request: web.Request) -> web.Response:
     _mw_logger.info("Plugin soft restart requested")
     try:
-        result = await _api(request).restart_plugin()
+        result = await _api(request).restart_service()
         return web.json_response(result)
     except Exception as exc:  # noqa: BLE001
-        _mw_logger.error("Plugin restart failed to schedule: %s", exc, exc_info=True)
-        return web.json_response({"status": "error", "message": str(exc)}, status=503)
-
-
-async def handle_clear_milvus_lock(request: web.Request) -> web.Response:
-    _mw_logger.info("Milvus lock clear requested")
-    try:
-        result = await _api(request).clear_milvus_lock()
-        return web.json_response(result)
-    except Exception as exc:  # noqa: BLE001
-        _mw_logger.error("Milvus lock clear failed: %s", exc, exc_info=True)
+        _mw_logger.error("Service restart failed to schedule: %s", exc, exc_info=True)
         return web.json_response({"status": "error", "message": str(exc)}, status=503)
 
 
@@ -1264,69 +1215,6 @@ async def handle_graph_build_cancel(request: web.Request) -> web.Response:
         return web.json_response({"status": "error", "message": str(exc)}, status=400)
 
 
-async def handle_graph_probe(request: web.Request) -> web.Response:
-    body = await request.json() if request.can_read_body else {}
-    if not isinstance(body, dict) or body.get("confirmed") is not True:
-        return web.json_response(
-            {"status": "error", "message": "LightRAG probe requires confirmed=true"}, status=400
-        )
-    collection = body.get("collection") or "default"
-    text = (
-        (body.get("text") or "LightRAG probe document for Knowledge Arch.")
-        if isinstance(body, dict)
-        else "LightRAG probe document for Knowledge Arch."
-    )
-    doc_id = (
-        (body.get("doc_id") or "kr-lightrag-probe-doc")
-        if isinstance(body, dict)
-        else "kr-lightrag-probe-doc"
-    )
-    query = (
-        (body.get("query") or "What is this probe document about?")
-        if isinstance(body, dict)
-        else "What is this probe document about?"
-    )
-    try:
-        result = await _api(request).probe_lightrag_core(collection, text, doc_id, query)
-        return web.json_response(result)
-    except Exception as exc:
-        return web.json_response({"status": "error", "message": str(exc)}, status=500)
-
-
-async def handle_graph_query(request: web.Request) -> web.Response:
-    query = request.query.get("q", "")
-    top_k = _query_int(request, "top_k", 5, 1, 50)
-    collection = request.query.get("collection") or None
-    debug = request.query.get("debug", "").lower() in {"1", "true", "yes", "on"}
-    response = await _reserved(
-        _api(request).query_graph(query, top_k, collection=collection, debug=debug),
-        "v0.6.0",
-    )
-    if response.status == 200:
-        response = web.json_response(_graph_query_dict(response.body))
-    return response
-
-
-async def handle_graph_data(request: web.Request) -> web.Response:
-    collection = request.query.get("collection") or None
-    try:
-        result = await _api(request).get_graph(collection)
-        return web.json_response(result)
-    except NotImplementedError as exc:
-        return web.json_response(
-            {
-                "status": "not_ready",
-                "ready": False,
-                "collection": collection,
-                "engine": "lightrag_core",
-                "reason": str(exc),
-                "build_available": False,
-            }
-        )
-    except Exception as exc:
-        return web.json_response({"status": "error", "message": str(exc)}, status=500)
-
-
 async def handle_graph_stats(request: web.Request) -> web.Response:
     """GET /api/graph/stats — 图谱摘要统计（实体数、关系数、涉及集合数）。"""
     try:
@@ -1334,12 +1222,6 @@ async def handle_graph_stats(request: web.Request) -> web.Response:
         return web.json_response(result)
     except Exception as exc:
         return web.json_response({"status": "error", "message": str(exc)}, status=500)
-
-
-async def handle_metrics(request: web.Request) -> web.Response:
-    """GET /api/metrics — 近期操作延迟聚合（供性能监控面板使用）。"""
-    summary = _api(request).get_metrics_summary()
-    return web.json_response(summary)
 
 
 async def handle_ask_progress(request: web.Request) -> web.Response:
@@ -1452,19 +1334,6 @@ async def handle_model_unload(request: web.Request) -> web.Response:
     kinds = [str(k) for k in raw_kinds] if isinstance(raw_kinds, list) else None
     try:
         return web.json_response(await _api(request).unload_models(kinds))
-    except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
-
-
-async def handle_files_list(request: web.Request) -> web.Response:
-    """GET /api/files/list?dir=<subdir> — 列出 data_dir 内文件（路径穿越防护）。"""
-    subdir = request.query.get("dir", "")
-    try:
-        return web.json_response(_api(request).list_data_files(subdir))
-    except ValueError as exc:
-        return web.json_response({"error": str(exc)}, status=400)
-    except FileNotFoundError as exc:
-        return web.json_response({"error": str(exc)}, status=404)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
 
@@ -1839,47 +1708,6 @@ def _chunk_dict(c: object) -> dict:
     }
 
 
-def _quota_dict(u: object) -> dict:
-    return {
-        "target": u.target.value,  # type: ignore[attr-defined]
-        "used_bytes": u.used_bytes,  # type: ignore[attr-defined]
-        "limit_bytes": u.limit_bytes,  # type: ignore[attr-defined]
-        "ratio": round(u.ratio, 4),  # type: ignore[attr-defined]
-        "detail": u.detail,  # type: ignore[attr-defined]
-    }
-
-
-def _graph_query_dict(payload: bytes) -> dict:
-    """把业务门面的图谱查询字段翻译为 WebUI 稳定模型。"""
-    import json
-
-    body = json.loads(payload)
-    body["entities"] = [
-        {
-            "id": ent["entity_id"],
-            "name": ent["name"],
-            "type": ent.get("entity_type", ""),
-            "description": ent.get("description", ""),
-            "degree": ent.get("degree", 0),
-            "source_chunk_ids": ent.get("source_chunk_ids", []),
-        }
-        for ent in body.get("entities", [])
-    ]
-    body["relations"] = [
-        {
-            "id": rel["relation_id"],
-            "source": rel["src_entity_id"],
-            "target": rel["dst_entity_id"],
-            "relation": rel["relation"],
-            "description": rel.get("description", ""),
-            "weight": rel.get("weight", 1.0),
-            "source_chunk_ids": rel.get("source_chunk_ids", []),
-        }
-        for rel in body.get("relations", [])
-    ]
-    return body
-
-
 # ── 应用装配 ────────────────────────────────────────────────────
 
 
@@ -1940,9 +1768,6 @@ def build_app(
     app.router.add_delete("/api/collections/{name}", handle_delete_collection)
     app.router.add_get("/api/collections/{name}/notes", handle_collection_notes_get)
     app.router.add_post("/api/collections/{name}/notes", handle_collection_notes_post)
-    app.router.add_patch(
-        "/api/collections/{name}/notes/{note_id}", handle_collection_notes_patch
-    )
     app.router.add_get("/api/documents", handle_list_documents)
     app.router.add_post("/api/documents", handle_upload_document)
     app.router.add_patch("/api/documents/{doc_id}", handle_classify_document)
@@ -1957,14 +1782,10 @@ def build_app(
     app.router.add_get("/api/documents/{doc_id}/annotations", handle_document_annotations)
     app.router.add_get("/api/documents/{doc_id}/notes", handle_document_notes_get)
     app.router.add_post("/api/documents/{doc_id}/notes", handle_document_notes_post)
-    app.router.add_patch(
-        "/api/documents/{doc_id}/notes/{note_id}", handle_document_notes_patch
-    )
     app.router.add_get("/api/documents/{doc_id}/raw", handle_download_document)
     app.router.add_get("/api/kb/collections", handle_kb_collections)
     app.router.add_get("/api/kb/search", handle_kb_search)
     app.router.add_get("/api/kb/chunk-context", handle_chunk_context)
-    app.router.add_get("/api/quota", handle_quota)
     app.router.add_get("/api/config/effective", handle_effective_config)
     app.router.add_post("/api/config/update", handle_update_config)
     app.router.add_get("/api/settings/schema", handle_settings_schema)
@@ -1975,8 +1796,7 @@ def build_app(
     app.router.add_delete("/api/providers/{provider_id}", handle_providers_delete)
     app.router.add_post("/api/providers/{provider_id}/test", handle_providers_test)
     app.router.add_post("/api/providers/{provider_id}/models", handle_providers_models)
-    app.router.add_post("/api/plugin/restart", handle_plugin_restart)
-    app.router.add_post("/api/milvus/clear-lock", handle_clear_milvus_lock)
+    app.router.add_post("/api/service/restart", handle_service_restart)
     app.router.add_post("/api/config/test-embedding", handle_test_embedding)
     app.router.add_post("/api/documents/rebuild-index", handle_rebuild_index_pending)
     app.router.add_get("/api/documents/rebuild-index/active", handle_milvus_build_active)
@@ -2013,16 +1833,11 @@ def build_app(
     app.router.add_post("/api/graph/build/{job_id}/pause", handle_graph_build_pause)
     app.router.add_post("/api/graph/build/{job_id}/resume", handle_graph_build_resume)
     app.router.add_post("/api/graph/build/{job_id}/cancel", handle_graph_build_cancel)
-    app.router.add_post("/api/graph/probe", handle_graph_probe)
-    app.router.add_get("/api/graph/query", handle_graph_query)
     app.router.add_get("/api/graph/stats", handle_graph_stats)
-    app.router.add_get("/api/graph", handle_graph_data)
-    app.router.add_get("/api/metrics", handle_metrics)
     app.router.add_get("/api/ask/progress/{cid}", handle_ask_progress)
     app.router.add_get("/api/system/info", handle_system_info)
     app.router.add_get("/api/system/models", handle_model_runtime)
     app.router.add_post("/api/system/models/unload", handle_model_unload)
-    app.router.add_get("/api/files/list", handle_files_list)
     app.router.add_get("/api/fs/browse", handle_fs_browse)
     app.router.add_get("/api/models/local", handle_list_local_models)
     app.router.add_delete("/api/models/local/{name}", handle_delete_local_model)

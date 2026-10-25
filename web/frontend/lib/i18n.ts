@@ -630,8 +630,6 @@ const zh = {
   flow_quick_er_corrective_enabled: "纠正检索",
   // 节点状态徽章「待重启」+ 顶部全局重启
   flow_status_pending_restart: "待重启",
-  flow_restart_plugin: "重启服务",
-  flow_restart_plugin_hint: "保存改动后点此重启服务，使改动生效",
   flow_restart_running: "重启中…",
   flow_restart_done: "服务已重启",
   flow_restart_failed: "重启超时，请在偏好设置 › 诊断里重试",
@@ -1506,8 +1504,6 @@ const en: Record<keyof typeof zh, string> = {
   flow_quick_er_rerank_weight: "Enhanced rerank weight",
   flow_quick_er_corrective_enabled: "Corrective retrieval",
   flow_status_pending_restart: "Restart pending",
-  flow_restart_plugin: "Restart service",
-  flow_restart_plugin_hint: "Restart the service to apply saved changes",
   flow_restart_running: "Restarting…",
   flow_restart_done: "Service restarted",
   flow_restart_failed: "Restart timed out; retry from Preferences › Diagnostics",

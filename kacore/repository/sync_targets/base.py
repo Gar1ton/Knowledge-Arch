@@ -75,10 +75,6 @@ class SyncTarget(ABC):
         """列出对象；每项至少含 key/size，失败必须抛异常。"""
         raise NotImplementedError(f"{self.kind.value} does not support object listing")
 
-    async def stat_backup_object(self, key: str) -> dict[str, object] | None:
-        """返回对象 key/size/metadata；不存在返回 None。"""
-        raise NotImplementedError(f"{self.kind.value} does not support object stat")
-
     async def delete_backup_objects(self, keys: list[str]) -> None:
         """批量删除备份对象；空列表为 no-op。"""
         for key in keys:

@@ -2,10 +2,9 @@
  * lib/api.ts — 唯一网络出口
  * 所有组件禁止裸 fetch，必须经此模块。
  * 后端地址与 token 由 lib/backend.ts 提供（桌面壳 / 开发代理），每个请求带 Bearer token。
- * ?mock 参数启用内置离线模拟数据。
  */
 
-import { apiUrl, authHeaders, authedUrl, inDesktopShell, resetBackendInfo } from "@/lib/backend";
+import { apiUrl, authHeaders, inDesktopShell, resetBackendInfo } from "@/lib/backend";
 
 // ─── 类型定义 ──────────────────────────────────────────────────
 
@@ -53,36 +52,6 @@ export interface KrDocument {
   last_synced_at?: string | null;
   milvus_covered?: boolean;
   zotero_meta?: ZoteroMeta;
-}
-
-export interface KbChunkContext {
-  chunk_id: string;
-  doc_id: string;
-  ordinal: number;
-  text: string;
-}
-
-export interface KbChunk {
-  chunk_id: string;
-  doc_id: string;
-  ordinal: number;
-  text: string;
-  context_before?: KbChunkContext[];
-  context_after?: KbChunkContext[];
-}
-
-export interface ChunkContextResult {
-  context_before: KbChunkContext[];
-  context_after: KbChunkContext[];
-  matched_chunk_id: string;
-}
-
-export interface QuotaItem {
-  target: string;
-  used_bytes: number;
-  limit_bytes: number;
-  ratio: number;
-  detail?: string;
 }
 
 export interface EffectiveConfig {
@@ -263,56 +232,6 @@ export interface ZoteroProbeResult {
   };
 }
 
-export interface GraphNode {
-  id: string;
-  name: string;
-  type?: string;
-  degree?: number;
-}
-
-export interface GraphEdge {
-  id: string;
-  source: string;
-  target: string;
-  relation: string;
-  description?: string;
-  weight?: number;
-  source_chunk_ids?: string[];
-  source_previews?: string[];
-}
-
-export interface GraphData {
-  status?: string;
-  engine?: string;
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-}
-
-export interface GraphNotReady {
-  status: "not_ready";
-  ready: false;
-  collection?: string;
-  engine?: string;
-  reason?: string;
-  message?: string;
-  build_available: boolean;
-}
-
-export type GraphResponse = GraphData | GraphNotReady;
-
-export interface GraphQueryResult {
-  status: string;
-  query: string;
-  collection?: string;
-  engine?: string;
-  answer?: string;
-  context?: string;
-  chunks?: KbChunk[];
-  entities?: GraphNode[];
-  relations?: GraphEdge[];
-  debug?: Record<string, unknown>;
-}
-
 export interface GraphBuildEstimate {
   collection: string;
   docs_count: number;
@@ -458,22 +377,6 @@ export interface ReservedResult {
 
 export type MaybeReserved<T> = T | ReservedResult;
 
-export interface SyncRecord {
-  doc_id: string;
-  target: string;
-  remote_ref?: string | null;
-  status: string;
-  synced_at?: string | null;
-  message?: string;
-}
-
-// ─── mock 检测 ─────────────────────────────────────────────────
-
-function isMock(): boolean {
-  if (typeof window === "undefined") return false;
-  return new URLSearchParams(window.location.search).has("mock");
-}
-
 // ─── 错误类 ────────────────────────────────────────────────────
 
 export class ApiError extends Error {
@@ -515,7 +418,6 @@ const DEFAULT_API_TIMEOUT_MS = 30_000;
 const ASK_TIMEOUT_MS = 600_000; // 深度思考 / 图谱问答可跑数分钟
 const UPLOAD_TIMEOUT_MS = 300_000; // PDF 清洗 + 切块 + 首次索引
 const DEPENDENCY_INSTALL_TIMEOUT_MS = 900_000; // pip 安装 torch 等大包
-const MODEL_PROBE_TIMEOUT_MS = 300_000; // 模型连通性探测（可能触发首次下载）
 
 export type ApiFetchOptions = RequestInit & {
   timeoutMs?: number;
@@ -589,177 +491,11 @@ export async function apiFetch<T>(
   return res.json() as Promise<T>;
 }
 
-// reserved 响应识别
-export function isReserved(x: unknown): x is ReservedResult {
-  return (
-    typeof x === "object" &&
-    x !== null &&
-    "reserved" in x &&
-    (x as ReservedResult).reserved === true
-  );
-}
-
-export function isGraphNotReady(x: unknown): x is GraphNotReady {
-  return (
-    typeof x === "object" &&
-    x !== null &&
-    (x as { status?: unknown }).status === "not_ready" &&
-    (x as { ready?: unknown }).ready === false
-  );
-}
-
-// ─────────────────────────────────────────────────────────────
-// MOCK 数据（从 legacy index.html 移植）
-// ─────────────────────────────────────────────────────────────
-
-const MOCK_COLLECTIONS: Collection[] = [
-  { name: "papers", description: "Academic papers" },
-  { name: "manuals", description: "Product manuals and docs" },
-  { name: "default", description: "Default collection" },
-];
-
-const MOCK_DOCS: KrDocument[] = [
-  {
-    doc_id: "seed-1",
-    title: "Attention Is All You Need.pdf",
-    filename: "Attention Is All You Need.pdf",
-    collection: "papers",
-    tags: ["transformer", "attention", "nlp"],
-    size: 2_456_789,
-    chunks: 42,
-    updated: "2024-03-15T10:30:00Z",
-    ext: "pdf",
-  },
-  {
-    doc_id: "seed-2",
-    title: "LightRAG: Simple and Fast Retrieval-Augmented Generation.pdf",
-    filename: "LightRAG.pdf",
-    collection: "papers",
-    tags: ["rag", "lightrag", "retrieval"],
-    size: 1_234_567,
-    chunks: 28,
-    updated: "2024-04-20T14:20:00Z",
-    ext: "pdf",
-  },
-  {
-    doc_id: "seed-3",
-    title: "Knowledge Arch user guide.md",
-    filename: "Knowledge Arch user guide.md",
-    collection: "manuals",
-    tags: ["manual"],
-    size: 98_432,
-    chunks: 15,
-    updated: "2024-05-01T09:00:00Z",
-    ext: "md",
-  },
-  {
-    doc_id: "seed-4",
-    title: "GraphRAG technical report.pdf",
-    filename: "GraphRAG.pdf",
-    collection: "papers",
-    tags: ["graphrag", "knowledge-graph"],
-    size: 3_120_000,
-    chunks: 56,
-    updated: "2024-04-10T16:00:00Z",
-    ext: "pdf",
-  },
-  {
-    doc_id: "seed-5",
-    title: "System configuration notes.txt",
-    filename: "system-config.txt",
-    collection: "default",
-    tags: [],
-    size: 12_800,
-    chunks: 3,
-    updated: "2024-05-10T08:30:00Z",
-    ext: "txt",
-  },
-];
-
-const MOCK_KB_CHUNKS: KbChunk[] = [
-  { chunk_id: "k1", doc_id: "seed-1", ordinal: 0, text: "The Transformer models direct dependencies between any positions in a sequence through self-attention, removing the sequential computation limit of RNNs.", context_before: [], context_after: [] },
-  { chunk_id: "k2", doc_id: "seed-2", ordinal: 1, text: "LightRAG combines a knowledge graph with vector retrieval using two levels: local (entity neighbourhoods) and global (cross-document themes) work together to improve recall.", context_before: [], context_after: [] },
-  { chunk_id: "k3", doc_id: "seed-1", ordinal: 2, text: "RRF (Reciprocal Rank Fusion) is a parameter-free rank fusion method that merges several result lists with 1/(k+rank_i), sidestepping incompatible score scales.", context_before: [], context_after: [] },
-];
-
-const MOCK_GRAPH: GraphData = {
-  nodes: [
-    { id: "n1", name: "Transformer", type: "Method/Algorithm", degree: 4 },
-    { id: "n2", name: "Attention", type: "Method/Algorithm", degree: 3 },
-    { id: "n3", name: "LightRAG", type: "Method/Algorithm", degree: 2 },
-    { id: "n4", name: "FAISS", type: "Method/Algorithm", degree: 2 },
-    { id: "n5", name: "RRF", type: "Method/Algorithm", degree: 3 },
-    { id: "n6", name: "Knowledge Graph", type: "Dataset", degree: 2 },
-  ],
-  edges: [
-    { id: "e1", source: "n1", target: "n2", relation: "uses", weight: 1.0 },
-    { id: "e2", source: "n3", target: "n4", relation: "integrates", weight: 0.8 },
-    { id: "e3", source: "n3", target: "n5", relation: "uses", weight: 0.9 },
-    { id: "e4", source: "n3", target: "n6", relation: "builds", weight: 1.0 },
-    { id: "e5", source: "n5", target: "n2", relation: "leverages", weight: 0.7 },
-  ],
-};
-
-const MOCK_QUOTA: QuotaItem[] = [
-  {
-    target: "r2",
-    used_bytes: 3_200_000_000,
-    limit_bytes: 10_737_418_240,
-    ratio: 0.298,
-    detail: "3.2 GB / 10 GB",
-  },
-  {
-    target: "notion",
-    used_bytes: 52_428_800,
-    limit_bytes: 1_073_741_824,
-    ratio: 0.049,
-    detail: "50 MB / 1 GB",
-  },
-];
-
-const MOCK_CONFIG: EffectiveConfig = {
-  source_store: { db_filename: "knowledge_repository.db", default_collection: "default", ocr_enabled: false },
-  r2_sync: { enabled: true, bucket: "kr-bucket", account_id: "ac****nt", access_key_id: "ak****id", secret_access_key: "****", free_tier_gb: 10, warn_threshold: 0.8 },
-  notion_sync: { enabled: true, database_id: "db-****", qa_database_id: "qa-****", auto_sync_enabled: true, auto_sync_interval_sec: 300, sync_mode: "preserve", max_upload_mib: 5 },
-  ask: { answer_language: "auto" },
-  graph: { enabled: false, query_mode: "mix", llm_max_async: 4, embedding_max_async: 8, working_dir: "lightrag_workspaces", max_doc_chars: 30000, lightrag_llm_provider: "main", lightrag_llm_base_url: "", lightrag_llm_model: "", lightrag_llm_timeout_seconds: 900 },
-  rerank: { provider: "cross_encoder", model: "Alibaba-NLP/gte-reranker-modernbert-base", device: "auto", batch_size: 32, max_candidates: 30, keep: 12 },
-  deep_thinking: {
-    max_rounds: 4,
-    max_sub_queries: 4,
-    wide_top_k: 24,
-    rerank_weight: 0.2,
-    verify_enabled: true,
-    max_verify_rounds: 1,
-    llm_base_url: "",
-    llm_model: "",
-    llm_api_key: "",
-  },
-  vector_db: { backend: "milvus", db_filename: "vector_store.db", auto_index_enabled: true, auto_rebuild_enabled: true, auto_rebuild_delay_seconds: 30 },
-  embedding: { provider: "local", model: "intfloat/multilingual-e5-small", base_url: "https://api.openai.com/v1", max_token_size: 512, actual_dimension: 384, api_key: "" },
-  zotero_sync: { enabled: false, access_mode: "local", zotero_data_dir: "", resolved_data_dir: "", api_port: 23119, storage_mode: "managed_copy", linked_root: "", zotmoov_root: "", sync_mode: "conservative", auto_sync_enabled: false, auto_sync_interval_sec: 3600, server_key_present: false, server_key_masked: "" },
-};
-
-const MOCK_ASK: AskResult = {
-  conversation_id: "conv-demo-1",
-  answer: "The core of the Transformer is **self-attention**, which lets the model relate any two positions in a sequence directly [1]. Unlike RNNs, Transformers compute in parallel, which speeds up training considerably.\n\nLightRAG combines graph retrieval with vector retrieval and fuses the result lists with RRF [3] to provide more accurate context [2].",
-  sources: [
-    { n: 1, doc_id: "seed-1", title: "Attention Is All You Need", chunk_id: "k1", ordinal: 0, text: "The Transformer models direct dependencies between any positions in a sequence through self-attention.", rrf_score: 0.0327 },
-    { n: 2, doc_id: "seed-2", title: "LightRAG paper", chunk_id: "k2", ordinal: 1, text: "LightRAG combines a knowledge graph with vector retrieval using a two-level strategy.", rrf_score: 0.0289 },
-    { n: 3, doc_id: "seed-1", title: "Attention Is All You Need", chunk_id: "k3", ordinal: 2, text: "RRF is a parameter-free rank fusion method that merges result lists with 1/(k+rank_i).", rrf_score: 0.0214 },
-  ],
-  requested_retrieval_mode: "default",
-  actual_retrieval_mode: "milvus",
-  retrieval_engines: ["milvus", "sqlite_lexical"],
-  fallback_reason: null,
-};
-
 // ─────────────────────────────────────────────────────────────
 // 集合 Collections
 // ─────────────────────────────────────────────────────────────
 
 export async function listCollections(): Promise<Collection[]> {
-  if (isMock()) return [...MOCK_COLLECTIONS];
   return apiFetch<Collection[]>("/api/collections");
 }
 
@@ -768,11 +504,6 @@ export async function createCollection(
   description?: string,
   parentKey?: string
 ): Promise<Collection> {
-  if (isMock()) {
-    const c: Collection = { name, description, parent_key: parentKey, coll_key: `L${name}` };
-    MOCK_COLLECTIONS.push(c);
-    return c;
-  }
   return apiFetch<Collection>("/api/collections", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -781,14 +512,12 @@ export async function createCollection(
 }
 
 export async function deleteCollection(name: string): Promise<void> {
-  if (isMock()) return;
   await apiFetch<{ status: string }>(`/api/collections/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
 }
 
 export async function renameCollection(collKey: string, name: string): Promise<void> {
-  if (isMock()) return;
   await apiFetch<{ ok: boolean }>(`/api/collections/by-key/${encodeURIComponent(collKey)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -796,17 +525,7 @@ export async function renameCollection(collKey: string, name: string): Promise<v
   });
 }
 
-export async function moveCollection(collKey: string, parentKey: string): Promise<void> {
-  if (isMock()) return;
-  await apiFetch<{ ok: boolean }>(`/api/collections/by-key/${encodeURIComponent(collKey)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ parent_key: parentKey }),
-  });
-}
-
 export async function deleteCollectionByKey(collKey: string): Promise<void> {
-  if (isMock()) return;
   await apiFetch<{ ok: boolean }>(`/api/collections/by-key/${encodeURIComponent(collKey)}`, {
     method: "DELETE",
   });
@@ -820,12 +539,6 @@ export async function listDocuments(opts?: {
   collection?: string;
   tag?: string;
 }): Promise<KrDocument[]> {
-  if (isMock()) {
-    let docs = [...MOCK_DOCS];
-    if (opts?.collection) docs = docs.filter((d) => d.collection === opts.collection);
-    if (opts?.tag) docs = docs.filter((d) => d.tags.includes(opts.tag!));
-    return docs;
-  }
   const params = new URLSearchParams();
   if (opts?.collection) params.set("collection", opts.collection);
   if (opts?.tag) params.set("tag", opts.tag);
@@ -838,21 +551,6 @@ export async function uploadDocument(
   collection: string = "default",
   tags: string[] = []
 ): Promise<KrDocument> {
-  if (isMock()) {
-    const doc: KrDocument = {
-      doc_id: `mock-${Date.now()}`,
-      title: file.name,
-      filename: file.name,
-      collection,
-      tags,
-      size: file.size,
-      chunks: 0,
-      updated: new Date().toISOString(),
-      ext: file.name.split(".").pop(),
-    };
-    MOCK_DOCS.unshift(doc);
-    return doc;
-  }
   const form = new FormData();
   form.append("file", file);
   form.append("collection", collection);
@@ -868,13 +566,6 @@ export async function patchDocument(
   id: string,
   patch: { collection?: string; tags?: string[] }
 ): Promise<KrDocument> {
-  if (isMock()) {
-    const doc = MOCK_DOCS.find((d) => d.doc_id === id);
-    if (!doc) throw new ApiError(404, "Document not found");
-    if (patch.collection !== undefined) doc.collection = patch.collection;
-    if (patch.tags !== undefined) doc.tags = patch.tags;
-    return { ...doc };
-  }
   return apiFetch<KrDocument>(`/api/documents/${encodeURIComponent(id)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -893,101 +584,26 @@ export async function updateDocumentMeta(
   });
 }
 
-export async function deleteDocument(id: string): Promise<void> {
-  if (isMock()) {
-    const idx = MOCK_DOCS.findIndex((d) => d.doc_id === id);
-    if (idx !== -1) MOCK_DOCS.splice(idx, 1);
-    return;
-  }
-  await apiFetch<{ status: string }>(`/api/documents/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-  });
-}
-
 export async function reextractDocument(id: string): Promise<{ chunk_count: number; converter_version: string }> {
   return apiFetch(`/api/documents/${encodeURIComponent(id)}/reextract`, { method: "POST" });
 }
 
-export async function downloadDocument(id: string): Promise<void> {
-  if (isMock() || typeof window === "undefined") return;
-  window.location.assign(await authedUrl(`/api/documents/${encodeURIComponent(id)}/raw`));
-}
-
-/** PDF.js 等「只能给 URL」的加载方用：带 access_token 的原件地址。 */
-export async function rawDocumentUrl(id: string, inline = true): Promise<string> {
-  const suffix = inline ? "?disposition=inline" : "";
-  return authedUrl(`/api/documents/${encodeURIComponent(id)}/raw${suffix}`);
-}
-
 // ─────────────────────────────────────────────────────────────
-// 知识库检索 KB
+// 配置 Config
 // ─────────────────────────────────────────────────────────────
-
-export async function listKbCollections(): Promise<string[]> {
-  if (isMock()) return MOCK_COLLECTIONS.map((c) => c.name);
-  return apiFetch<string[]>("/api/kb/collections");
-}
-
-export async function searchKb(
-  collection: string,
-  q: string,
-  k: number = 5
-): Promise<KbChunk[]> {
-  if (isMock()) return [...MOCK_KB_CHUNKS];
-  const params = new URLSearchParams({ collection, q, top_k: String(k), window: "2" });
-  return apiFetch<KbChunk[]>(`/api/kb/search?${params}`);
-}
-
-export async function getChunkContext(
-  doc_id: string,
-  chunk_id: string,
-  window: number = 2,
-): Promise<ChunkContextResult> {
-  const params = new URLSearchParams({ doc_id, chunk_id, window: String(window) });
-  return apiFetch<ChunkContextResult>(`/api/kb/chunk-context?${params}`);
-}
-
-// ─────────────────────────────────────────────────────────────
-// 配额 / 配置 Quota / Config
-// ─────────────────────────────────────────────────────────────
-
-export async function getQuota(): Promise<QuotaItem[]> {
-  if (isMock()) return [...MOCK_QUOTA];
-  return apiFetch<QuotaItem[]>("/api/quota");
-}
 
 export async function getEffectiveConfig(timeoutMs = 8_000): Promise<EffectiveConfig> {
-  if (isMock()) return { ...MOCK_CONFIG };
   return apiFetch<EffectiveConfig>("/api/config/effective", { timeoutMs });
 }
 
-export interface PluginRestartResult {
+export interface ServiceRestartResult {
   status: string;
   message: string;
 }
 
 /** 触发服务软重启（teardown + 重新 initialize，重读持久化设置）；进程与端口不变，期间请求短暂返回 503。 */
-export async function restartPlugin(): Promise<PluginRestartResult> {
-  if (isMock()) {
-    return { status: "restarting", message: "mock restart" };
-  }
-  return apiFetch<PluginRestartResult>("/api/plugin/restart", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-  });
-}
-
-export interface ClearMilvusLockResult {
-  status: string;
-  message: string;
-}
-
-/** 删除 Milvus 数据目录残留的 LOCK 标记；仅在已检测到锁定问题时后端才会真正执行。 */
-export async function clearMilvusLock(): Promise<ClearMilvusLockResult> {
-  if (isMock()) {
-    return { status: "ok", message: "mock clear lock" };
-  }
-  return apiFetch<ClearMilvusLockResult>("/api/milvus/clear-lock", {
+export async function restartService(): Promise<ServiceRestartResult> {
+  return apiFetch<ServiceRestartResult>("/api/service/restart", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
   });
@@ -1029,12 +645,10 @@ export interface MilvusBuildJob {
 
 // 触发后台重建：立即返回 { status: "started", job }，进度交给 getActiveMilvusBuildJob 轮询。
 export async function rebuildIndexPending(): Promise<RebuildIndexResult> {
-  if (isMock()) return { status: "started", job: null };
   return apiFetch("/api/documents/rebuild-index", { method: "POST" });
 }
 
 export async function getActiveMilvusBuildJob(): Promise<MilvusBuildJob | null> {
-  if (isMock()) return null;
   const res = await apiFetch<{ job: MilvusBuildJob | null }>("/api/documents/rebuild-index/active", {
     timeoutMs: 4_000,
   });
@@ -1058,16 +672,10 @@ export interface IngestJob {
 }
 
 export async function getActiveIngestJob(): Promise<IngestJob | null> {
-  if (isMock()) return null;
   const res = await apiFetch<{ job: IngestJob | null }>("/api/documents/ingest/active", {
     timeoutMs: 4_000,
   });
   return res.job;
-}
-
-export async function getPendingReindexCount(): Promise<{ count: number }> {
-  if (isMock()) return { count: 0 };
-  return apiFetch("/api/documents/pending-reindex-count");
 }
 
 export interface ChatMessage {
@@ -1083,7 +691,6 @@ export interface ChatMessage {
 }
 
 export async function getChatHistory(conversationId: string): Promise<ChatMessage[]> {
-  if (isMock()) return [];
   const res = await apiFetch<{ messages: ChatMessage[] }>(
     `/api/chat/history?conversation_id=${encodeURIComponent(conversationId)}`
   );
@@ -1094,7 +701,6 @@ export async function clearChatHistory(
   conversationId: string,
   preserveLocked = false,
 ): Promise<void> {
-  if (isMock()) return;
   const qs = new URLSearchParams({ conversation_id: conversationId });
   if (preserveLocked) qs.set("preserve_locked", "true");
   await apiFetch<{ status: string }>(
@@ -1103,68 +709,11 @@ export async function clearChatHistory(
   );
 }
 
-export interface EmbeddingTestResult {
-  status: "ok" | "error";
-  dimension?: number;
-  model?: string;
-  message?: string;
-}
-
-export async function testEmbeddingConnection(
-  baseUrl: string,
-  modelName: string
-): Promise<EmbeddingTestResult> {
-  if (isMock()) return { status: "ok", dimension: 1024, model: modelName };
-  return apiFetch<EmbeddingTestResult>("/api/config/test-embedding", {
-    method: "POST",
-    timeoutMs: MODEL_PROBE_TIMEOUT_MS,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ base_url: baseUrl, model_name: modelName }),
-  });
-}
-
 // ─────────────────────────────────────────────────────────────
 // 知识图谱 Graph
 // ─────────────────────────────────────────────────────────────
 
-export async function getGraph(
-  collection?: string
-): Promise<MaybeReserved<GraphResponse>> {
-  if (isMock()) return { ...MOCK_GRAPH };
-  const qs = collection ? `?collection=${encodeURIComponent(collection)}` : "";
-  return apiFetch<MaybeReserved<GraphResponse>>(`/api/graph${qs}`);
-}
-
-export async function queryGraph(
-  q: string,
-  collection?: string
-): Promise<MaybeReserved<GraphQueryResult>> {
-  if (isMock()) {
-    return {
-      status: "ok",
-      query: q,
-      collection,
-      chunks: MOCK_KB_CHUNKS,
-      entities: MOCK_GRAPH.nodes.slice(0, 2),
-      relations: MOCK_GRAPH.edges.slice(0, 1),
-      context: "Mock graph query result",
-      debug: { vector_chunk_ids: ["k1"], keyword_chunk_ids: ["k2"], graph_chunk_ids: ["k3"], rrf_scores: { k1: 0.033, k2: 0.028, k3: 0.021 } },
-    };
-  }
-  const params = new URLSearchParams({ q });
-  if (collection) params.set("collection", collection);
-  return apiFetch<MaybeReserved<GraphQueryResult>>(`/api/graph/query?${params}`);
-}
-
 export async function estimateGraphBuild(collection?: string): Promise<GraphBuildEstimate> {
-  if (isMock()) return {
-    collection: collection || "papers", docs_count: 5, chunks_count: 144, chars_count: 42000,
-    estimated_lrag_chunks: 12,
-    estimated_llm_calls_min: 12, estimated_llm_calls_max: 18, estimated_embedding_batches: 2,
-    estimated_duration_seconds_min: 648, estimated_duration_seconds_max: 2592,
-    seconds_per_chunk: 90, runtime_profile: "local",
-    estimate_notice: "This is an estimate, not a promise; actual LLM calls and time may be higher.",
-  };
   return apiFetch<GraphBuildEstimate>("/api/graph/build/estimate", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(collection ? { collection } : {}),
@@ -1172,7 +721,6 @@ export async function estimateGraphBuild(collection?: string): Promise<GraphBuil
 }
 
 export async function buildGraph(collection?: string): Promise<GraphBuildJob> {
-  if (isMock()) return { job_id: `mock-${Date.now()}`, status: "queued", engine: "lightrag_core", collection: collection || "papers" };
   return apiFetch<GraphBuildJob>("/api/graph/build", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1180,18 +728,7 @@ export async function buildGraph(collection?: string): Promise<GraphBuildJob> {
   });
 }
 
-export async function getGraphBuildJob(jobId: string): Promise<GraphBuildJob> {
-  if (isMock()) return {
-    job_id: jobId, status: "success", stage: "done", engine: "lightrag_core", collection: "papers",
-    processed_docs: 5, failed_docs: 0, total_docs: 5,
-    processed_chunks: 12, failed_chunks: 0, total_chunks: 12, progress_basis: "lrag_chunks",
-    elapsed_seconds: 840, average_seconds_per_chunk: 70, estimated_remaining_seconds: 0,
-  };
-  return apiFetch<GraphBuildJob>(`/api/graph/build/${encodeURIComponent(jobId)}`);
-}
-
 export async function getActiveBuildJob(): Promise<GraphBuildJob | null> {
-  if (isMock()) return null;
   const res = await apiFetch<{ job: GraphBuildJob | null }>("/api/graph/build/active", {
     timeoutMs: 4_000,
   });
@@ -1221,19 +758,16 @@ export interface BuildJobRecord {
 }
 
 export async function getBuildJobHistory(collection?: string): Promise<BuildJobRecord[]> {
-  if (isMock()) return [];
   const qs = collection ? `?collection=${encodeURIComponent(collection)}` : "";
   const res = await apiFetch<{ jobs: BuildJobRecord[] }>(`/api/graph/build/history${qs}`);
   return res.jobs;
 }
 
 export async function pauseBuildJob(jobId: string): Promise<void> {
-  if (isMock()) return;
   await apiFetch(`/api/graph/build/${encodeURIComponent(jobId)}/pause`, { method: "POST" });
 }
 
 export async function resumeBuildJob(jobId: string): Promise<void> {
-  if (isMock()) return;
   await apiFetch(`/api/graph/build/${encodeURIComponent(jobId)}/resume`, { method: "POST" });
 }
 
@@ -1249,13 +783,6 @@ export interface CancelBuildResult {
 }
 
 export async function cancelBuildJob(jobId: string, cleanup = true): Promise<CancelBuildResult> {
-  if (isMock()) {
-    return {
-      job_id: jobId,
-      status: "cancelled",
-      cleanup: { workspace: false, index_status_rows: 0, codex_tasks: 0, active_state_removed: true },
-    };
-  }
   return apiFetch<CancelBuildResult>(`/api/graph/build/${encodeURIComponent(jobId)}/cancel`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1271,9 +798,6 @@ export async function notionInit(
   parentPageId: string,
   databaseTitle: string
 ): Promise<{ status: string; database_id?: string; qa_database_id?: string; message?: string }> {
-  if (isMock()) {
-    return { status: "success", database_id: "mock-articles", qa_database_id: "mock-qa" };
-  }
   return apiFetch("/api/notion/init", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1294,11 +818,6 @@ export interface NotionPushStatus {
 }
 
 export async function getNotionPushStatus(): Promise<NotionPushStatus> {
-  if (isMock()) return {
-    status: "ok", database_id: "mock-articles", qa_database_id: "mock-qa",
-    data_source_id: "mock-articles-source", qa_data_source_id: "mock-qa-source",
-    documents: { synced: 5, failed: 0 }, outbox_pending: 0, outbox_failed: 0, errors: [],
-  };
   return apiFetch("/api/sync/notion/status");
 }
 
@@ -1310,7 +829,6 @@ export async function pushNotionNote(payload: {
   source?: string;
   keep_local?: boolean;
 }): Promise<{ status: string; page_id?: string; message?: string }> {
-  if (isMock()) return { status: "success", page_id: "mock-notion-page" };
   return apiFetch("/api/notion/push-note", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1318,14 +836,8 @@ export async function pushNotionNote(payload: {
   });
 }
 
-export async function getSyncStatus(): Promise<MaybeReserved<SyncRecord[]>> {
-  if (isMock()) return { reserved: true, available_in: "v0.4.0" };
-  return apiFetch<MaybeReserved<SyncRecord[]>>("/api/sync/status");
-}
-
 // 统一进度面板轮询：当前 running/partial/error 的 Notion 推送任务（无任务 → null）。
 export async function getActiveNotionSyncJob(): Promise<NotionSyncJob | null> {
-  if (isMock()) return null;
   const res = await apiFetch<{ job: NotionSyncJob | null }>("/api/sync/notion/active", {
     timeoutMs: 4_000,
   });
@@ -1336,7 +848,6 @@ export async function syncDocuments(
   target: "r2" | "notion" | "all",
   docIds?: string[]
 ): Promise<MaybeReserved<{ status: string; synced_count?: number; failed_count?: number }>> {
-  if (isMock()) return { reserved: true, available_in: "v0.4.0" };
   return apiFetch(`/api/sync/${target}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1349,39 +860,10 @@ export async function syncDocuments(
 // ─────────────────────────────────────────────────────────────
 
 export async function getZoteroConfig(timeoutMs = 8_000): Promise<ZoteroConfig> {
-  if (isMock()) {
-    const z = (MOCK_CONFIG.zotero_sync ?? {}) as Record<string, unknown>;
-    return {
-      enabled: Boolean(z.enabled),
-      access_mode: z.access_mode === "server" ? "server" : "local",
-      zotero_data_dir: String(z.zotero_data_dir ?? ""),
-      resolved_data_dir: String(z.resolved_data_dir ?? ""),
-      api_port: Number(z.api_port ?? 23119),
-      storage_mode: z.storage_mode === "linked" || z.storage_mode === "zotmoov" ? z.storage_mode : "managed_copy",
-      linked_root: String(z.linked_root ?? ""),
-      zotmoov_root: String(z.zotmoov_root ?? ""),
-      sync_mode: z.sync_mode === "strict_mirror" || z.sync_mode === "archive" ? z.sync_mode : "conservative",
-      auto_sync_enabled: Boolean(z.auto_sync_enabled),
-      auto_sync_interval_sec: Number(z.auto_sync_interval_sec ?? 3600),
-      server_key_present: Boolean(z.server_key_present),
-      server_key_masked: String(z.server_key_masked ?? ""),
-      server_user_id: "",
-      server_username: "",
-      server_access: {},
-      connection: { connected: false, port: 23119, detail: "mock" },
-      availability: { available: false, reason: "mock" },
-    };
-  }
   return apiFetch<ZoteroConfig>("/api/zotero/config", { timeoutMs });
 }
 
 export async function saveZoteroServerKey(apiKey: string): Promise<ZoteroConfig | ZoteroAccountChangeRequired> {
-  if (isMock()) {
-    const z = (MOCK_CONFIG.zotero_sync ?? {}) as Record<string, unknown>;
-    z.server_key_present = true;
-    z.server_key_masked = apiKey ? "mo****ck" : "";
-    return getZoteroConfig();
-  }
   return apiFetch<ZoteroConfig | ZoteroAccountChangeRequired>("/api/zotero/server-key", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1401,17 +883,10 @@ export async function resolveZoteroAccountChange(
 }
 
 export async function deleteZoteroServerKey(): Promise<ZoteroConfig> {
-  if (isMock()) {
-    const z = (MOCK_CONFIG.zotero_sync ?? {}) as Record<string, unknown>;
-    z.server_key_present = false;
-    z.server_key_masked = "";
-    return getZoteroConfig();
-  }
   return apiFetch<ZoteroConfig>("/api/zotero/server-key", { method: "DELETE" });
 }
 
 export async function syncZoteroPull(incremental = true): Promise<ZoteroSyncResult> {
-  if (isMock()) return { status: "success", new: [], changed: [], skipped_unchanged: 0 };
   return apiFetch<ZoteroSyncResult>("/api/sync/zotero/pull", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1421,13 +896,11 @@ export async function syncZoteroPull(incremental = true): Promise<ZoteroSyncResu
 }
 
 export async function getZoteroSyncStatus(): Promise<ZoteroSyncResult> {
-  if (isMock()) return {};
   return apiFetch<ZoteroSyncResult>("/api/sync/zotero/status", { timeoutMs: 4_000 });
 }
 
 // 统一进度面板轮询：当前 running/partial/error 的同步任务（success/无任务 → null）。
 export async function getActiveZoteroSyncJob(): Promise<ZoteroSyncJob | null> {
-  if (isMock()) return null;
   const res = await apiFetch<{ job: ZoteroSyncJob | null }>("/api/sync/zotero/active", {
     timeoutMs: 4_000,
   });
@@ -1436,17 +909,10 @@ export async function getActiveZoteroSyncJob(): Promise<ZoteroSyncJob | null> {
 
 // 本地离线探针：连接测试 + zotero.sqlite 干读计数（不写库、不同步）。
 export async function probeZoteroLocal(): Promise<ZoteroProbeResult> {
-  if (isMock()) {
-    return {
-      connection: { connected: false, port: 23119, detail: "mock" },
-      read: { available: false, reason: "mock" },
-    };
-  }
   return apiFetch<ZoteroProbeResult>("/api/zotero/probe");
 }
 
 export async function backupNow(force = false): Promise<MaybeReserved<unknown>> {
-  if (isMock()) return { status: "started", force };
   return apiFetch("/api/backup", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1455,7 +921,6 @@ export async function backupNow(force = false): Promise<MaybeReserved<unknown>> 
 }
 
 export async function restoreBackup(autoRestart = true): Promise<MaybeReserved<unknown>> {
-  if (isMock()) return { status: "started", auto_restart: autoRestart };
   return apiFetch("/api/restore", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1464,12 +929,10 @@ export async function restoreBackup(autoRestart = true): Promise<MaybeReserved<u
 }
 
 export async function getR2Status(): Promise<R2Status> {
-  if (isMock()) return { status: "ok", bucket_used_bytes: 0, plugin_used_bytes: 0 };
   return apiFetch<R2Status>("/api/r2/status", { timeoutMs: 15_000 });
 }
 
 export async function getR2Job(): Promise<R2BackupJob | null> {
-  if (isMock()) return null;
   const result = await apiFetch<{ job: R2BackupJob | null }>("/api/r2/job");
   return result.job;
 }
@@ -1497,17 +960,6 @@ export async function ask(opts: {
   /** 全文检索确认门：正文超阈值时后端返回 409，用户同意后带 true 重发同一请求。 */
   confirmed?: boolean;
 }): Promise<AskResult> {
-  if (isMock()) {
-    await new Promise((r) => setTimeout(r, 800));
-    const requested = opts.retrieval_mode ?? "default";
-    return {
-      ...MOCK_ASK,
-      conversation_id: `conv-${Date.now()}`,
-      requested_retrieval_mode: requested,
-      actual_retrieval_mode: requested === "graph_mixed" ? "milvus_lightrag" : requested === "graph_only" ? "lightrag_only" : requested === "fulltext" ? "fulltext" : requested === "enhanced" ? "enhanced_recall" : "milvus",
-      retrieval_engines: requested === "graph_mixed" ? ["milvus", "sqlite_lexical", "lightrag"] : requested === "graph_only" ? ["lightrag"] : requested === "fulltext" ? ["fulltext"] : ["milvus", "sqlite_lexical"],
-    };
-  }
   const result = await apiFetch<AskResult | AskTaskTimeoutBody>("/api/ask", {
     method: "POST",
     timeoutMs: ASK_TIMEOUT_MS,
@@ -1556,7 +1008,6 @@ export interface AskProgress {
 
 /** 轮询单次 ask 进度；无进度（404）或网络抖动时返回 null，不打断调用方的轮询循环。 */
 export async function getAskProgress(conversationId: string): Promise<AskProgress | null> {
-  if (isMock()) return null;
   try {
     return await apiFetch<AskProgress>(
       `/api/ask/progress/${encodeURIComponent(conversationId)}`
@@ -1576,7 +1027,6 @@ export async function waitForLateAskAnswer(
   conversationId: string,
   opts?: { maxWaitMs?: number; intervalMs?: number },
 ): Promise<ChatMessage[] | null> {
-  if (isMock()) return null;
   const maxWaitMs = opts?.maxWaitMs ?? 15 * 60_000;
   const intervalMs = opts?.intervalMs ?? 3_000;
   const deadline = Date.now() + maxWaitMs;
@@ -1598,43 +1048,21 @@ export async function waitForLateAskAnswer(
 }
 
 // ─────────────────────────────────────────────────────────────
-// 图谱统计 & 性能指标
+// 图谱统计
 // ─────────────────────────────────────────────────────────────
 
-export interface GraphStats {
-  entities_count: number;
-  relations_count: number;
-  collections_covered: number;
-}
-
-export async function getGraphStats(): Promise<GraphStats> {
-  if (isMock()) {
-    return { entities_count: 12, relations_count: 18, collections_covered: 2 };
-  }
-  return apiFetch<GraphStats>("/api/graph/stats");
-}
-
 // ─────────────────────────────────────────────────────────────
-// 系统信息 & 文件列表 & 本地模型管理
+// 系统信息 & 本地模型管理
 // ─────────────────────────────────────────────────────────────
 
 export interface SystemInfo {
   cwd: string; data_dir: string; db_file: string; docs_dir: string;
   python_version: string; platform: string;
 }
-export interface FileEntry { name: string; type: "file" | "dir"; size_bytes: number | null; modified_at: string | null; }
-export interface FileList  { path: string; entries: FileEntry[]; }
 export interface LocalModel { name: string; dir_name: string; size_bytes: number; last_modified: string | null; }
 
 export async function getSystemInfo(): Promise<SystemInfo> {
-  if (isMock()) return { cwd: "/mock/cwd", data_dir: "/mock/data", db_file: "knowledge_repository.db", docs_dir: "/mock/data/documents", python_version: "3.12.0", platform: "linux" };
   return apiFetch<SystemInfo>("/api/system/info");
-}
-
-export async function listDataFiles(subdir?: string): Promise<FileList> {
-  const qs = subdir ? `?dir=${encodeURIComponent(subdir)}` : "";
-  if (isMock()) return { path: subdir ?? "", entries: [] };
-  return apiFetch<FileList>(`/api/files/list${qs}`);
 }
 
 export interface FsBrowseResult {
@@ -1645,19 +1073,14 @@ export interface FsBrowseResult {
 
 export async function browseDir(path?: string): Promise<FsBrowseResult> {
   const qs = path ? `?path=${encodeURIComponent(path)}` : "";
-  if (isMock()) return { path: path ?? "~", parent: null, dirs: ["Documents", "Desktop", "Downloads"] };
   return apiFetch<FsBrowseResult>(`/api/fs/browse${qs}`);
 }
 
 export async function listLocalModels(): Promise<LocalModel[]> {
-  if (isMock()) return [
-    { name: "BAAI/bge-m3", dir_name: "models--BAAI--bge-m3", size_bytes: 2_100_000_000, last_modified: null },
-  ];
   return apiFetch<LocalModel[]>("/api/models/local");
 }
 
 export async function deleteLocalModel(name: string): Promise<void> {
-  if (isMock()) return;
   await apiFetch<{ deleted: string }>(`/api/models/local/${encodeURIComponent(name.replace("/", "--"))}`, { method: "DELETE" });
 }
 
@@ -1681,7 +1104,6 @@ export async function postLogEvent(event: {
   message: string;
   route?: string;
 }): Promise<void> {
-  if (isMock()) return;
   await apiFetch<{ status: string }>("/api/logs/events", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1690,10 +1112,6 @@ export async function postLogEvent(event: {
 }
 
 export async function getLogs(afterSeq = 0, limit = 200): Promise<LogsResponse> {
-  if (isMock()) return {
-    lines: [], server_ts: Date.now() / 1000,
-    oldest_seq: 0, latest_seq: 0, dropped_count: 0,
-  };
   return apiFetch<LogsResponse>(`/api/logs?after_seq=${afterSeq}&limit=${limit}`, { timeoutMs: 4_000 });
 }
 
@@ -1748,33 +1166,7 @@ export interface InstallResult {
   detail?: string[];
 }
 
-const MOCK_DEPENDENCIES: DependencyStatus[] = [
-  { key: "local_embedding", import_name: "sentence_transformers", dist_name: "sentence-transformers", pip_spec: "sentence-transformers>=3,<6", feature: "local_embedding", stages: ["embedding", "ask"], required: false, installed: true, version: "3.0.1" },
-  { key: "milvus", import_name: "pymilvus", dist_name: "pymilvus", pip_spec: "pymilvus[milvus_lite]>=2.5,<3.0", feature: "milvus", stages: ["vector_store", "retrieval"], required: true, installed: true, version: "2.5.0" },
-  { key: "lightrag", import_name: "lightrag", dist_name: "lightrag-hku", pip_spec: "lightrag-hku>=1.5.0rc1,<2.0.0", feature: "lightrag", stages: ["graph"], required: false, installed: false, version: null },
-  { key: "r2", import_name: "boto3", dist_name: "boto3", pip_spec: "boto3", feature: "r2", stages: ["sync"], required: false, installed: false, version: null },
-];
-
-const MOCK_CAPABILITIES: CapabilitiesData = {
-  pipeline: [
-    { id: "zotero", current: "off", candidates: ["on", "off"], status: "off", switchable: true, consequence: "restart", required_deps: [], configured: false, detail: { access_mode: "local", api_port: 23119, sync_mode: "conservative", storage_mode: "managed_copy" } },
-    { id: "ingest", current: "pymupdf4llm", candidates: ["pymupdf4llm"], status: "ready", switchable: false, consequence: "none", required_deps: [], configured: true, detail: { ocr_enabled: false, pdf_converter: "pymupdf4llm", pdf_converter_ready: true, dependency_source: "requirements.txt" } },
-    { id: "embedding", current: "local", candidates: ["local", "external"], status: "ready", switchable: true, consequence: "rebuild", required_deps: ["local_embedding"], configured: true, detail: { model: "intfloat/multilingual-e5-small", actual_dimension: 384 } },
-    { id: "vector_store", current: "milvus", candidates: ["milvus"], status: "ready", switchable: false, consequence: "restart", required_deps: ["milvus"], configured: true, detail: { auto_index_enabled: true, auto_rebuild_enabled: true, auto_rebuild_delay_seconds: 30, compatible: true, rebuild_required: false, pending_reindex_count: 0, document_count: 0, chunk_count: 0, reason: "", lock_detected: false } },
-    { id: "retrieval", current: "rrf_fusion", candidates: ["rrf_fusion"], status: "ready", switchable: false, consequence: "none", required_deps: [], configured: true, detail: { engines: ["milvus", "sqlite_lexical"] } },
-    { id: "graph", current: "off", candidates: ["on", "off"], status: "off", switchable: true, consequence: "rebuild", required_deps: ["lightrag"], configured: false, detail: { query_mode: "mix", llm_provider: "main", llm_model: "", llm_label: "<main - main LLM>" } },
-    { id: "ask", current: "", candidates: [], status: "ready", switchable: false, consequence: "none", required_deps: [], configured: true, detail: { rerank_provider: "cross_encoder", rerank_model: "Alibaba-NLP/gte-reranker-modernbert-base", rerank_status: "idle", rerank_dependency_ready: true, rerank_runtime: { provider: "cross_encoder", status: "idle", model: "Alibaba-NLP/gte-reranker-modernbert-base", enabled: true, last_error: null } } },
-    { id: "models", current: "", candidates: [], status: "degraded", switchable: false, consequence: "none", required_deps: [], configured: false, detail: { chat: "", research: "", graph: "", research_follows_chat: true, graph_follows_chat: true } },
-    { id: "providers", current: "0", candidates: [], status: "degraded", switchable: false, consequence: "none", required_deps: [], configured: false, detail: { count: 0 } },
-    { id: "notion", current: "off", candidates: ["on", "off"], status: "off", switchable: true, consequence: "restart", required_deps: [], configured: false, detail: { token_present: false, database_ready: false, sync_mode: "preserve" } },
-    { id: "r2", current: "off", candidates: ["on", "off"], status: "off", switchable: true, consequence: "restart", required_deps: [], configured: false, detail: { credentials_present: false, bucket: "" } },
-  ],
-  dependencies: MOCK_DEPENDENCIES,
-  diagnostics: [],
-};
-
 export async function getCapabilities(): Promise<CapabilitiesData> {
-  if (isMock()) return JSON.parse(JSON.stringify(MOCK_CAPABILITIES));
   // 8s 而非 1.5s：该端点会聚合 SQLite 统计与 Milvus 运行态，重建/加载模型时 1.5s 必超，
   // 于是数据流页会毫无征兆地弹「请求超时」。
   return apiFetch<CapabilitiesData>("/api/capabilities", { timeoutMs: 8_000 });
@@ -1814,38 +1206,11 @@ export interface ModelRuntime {
   errors?: Record<string, string>;
 }
 
-const MOCK_MODEL_RUNTIME: ModelRuntime = {
-  accelerator: {
-    device: "NVIDIA GeForce RTX 4090",
-    total_bytes: 25_757_220_864,
-    free_bytes: 17_179_869_184,
-    used_bytes: 8_577_351_680,
-    allocated_bytes: 2_147_483_648,
-    reserved_bytes: 2_684_354_560,
-    torch_version: "2.4.0",
-  },
-  models: [
-    { kind: "embedding", provider: "local", state: "ready", model: "BAAI/bge-m3", device: "cuda" },
-    { kind: "rerank", provider: "cross_encoder", state: "idle", model: "BAAI/bge-reranker-v2-m3", enabled: true },
-  ],
-  resident_count: 1,
-};
-
 export async function getModelRuntime(): Promise<ModelRuntime> {
-  if (isMock()) return JSON.parse(JSON.stringify(MOCK_MODEL_RUNTIME));
   return apiFetch<ModelRuntime>("/api/system/models", { timeoutMs: 8_000 });
 }
 
 export async function unloadModels(kinds?: string[]): Promise<ModelRuntime> {
-  if (isMock()) {
-    return {
-      ...JSON.parse(JSON.stringify(MOCK_MODEL_RUNTIME)),
-      models: MOCK_MODEL_RUNTIME.models.map((m) => ({ ...m, state: "idle" as const })),
-      resident_count: 0,
-      unloaded: kinds ?? ["embedding", "rerank"],
-      errors: {},
-    };
-  }
   return apiFetch<ModelRuntime>("/api/system/models/unload", {
     method: "POST",
     // 卸载要等 CUDA 缓存回收，比普通 GET 慢；沿用能力探测那档超时。
@@ -1853,12 +1218,6 @@ export async function unloadModels(kinds?: string[]): Promise<ModelRuntime> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ kinds: kinds ?? [] }),
   });
-}
-
-export async function listDependencies(): Promise<DependencyStatus[]> {
-  if (isMock()) return JSON.parse(JSON.stringify(MOCK_DEPENDENCIES));
-  const res = await apiFetch<{ dependencies: DependencyStatus[] }>("/api/dependencies");
-  return res.dependencies;
 }
 
 /** 安装失败时后端用 500 返回结构化结果（含失败归类）：当作结果交给调用方，而不是抛异常。 */
@@ -1872,7 +1231,6 @@ export async function installResultOf<T extends { status: string }>(request: Pro
 }
 
 export async function installDependency(pkg: string): Promise<InstallResult> {
-  if (isMock()) return { status: "ok", package: pkg, restart_required: true, message: "mock installed" };
   return installResultOf(apiFetch<InstallResult>("/api/dependencies/install", {
     method: "POST",
     timeoutMs: DEPENDENCY_INSTALL_TIMEOUT_MS,
@@ -1882,7 +1240,6 @@ export async function installDependency(pkg: string): Promise<InstallResult> {
 }
 
 export async function recheckDependencies(): Promise<CapabilitiesData> {
-  if (isMock()) return JSON.parse(JSON.stringify(MOCK_CAPABILITIES));
   return apiFetch<CapabilitiesData>("/api/dependencies/recheck", {
     method: "POST",
     timeoutMs: 10_000,
@@ -1951,21 +1308,6 @@ export interface DocumentChunk {
   metadata?: Record<string, unknown>;
 }
 
-export async function getDocumentContent(
-  docId: string,
-  format: "md" | "pdf" = "md",
-): Promise<string> {
-  if (isMock()) return "";
-  const res = await fetch(
-    await apiUrl(`/api/documents/${encodeURIComponent(docId)}/content?format=${format}`),
-    { headers: await authHeaders() },
-  );
-  if (!res.ok) {
-    throw new ApiError(res.status, res.statusText);
-  }
-  return res.text();
-}
-
 export async function getDocumentNotes(docId: string): Promise<DocumentNote[]> {
   return apiFetch<DocumentNote[]>(`/api/documents/${encodeURIComponent(docId)}/notes`);
 }
@@ -1982,25 +1324,6 @@ export async function createDocumentNote(
   });
 }
 
-export async function updateDocumentNote(
-  docId: string,
-  noteId: string,
-  content: string,
-): Promise<DocumentNote> {
-  return apiFetch<DocumentNote>(
-    `/api/documents/${encodeURIComponent(docId)}/notes/${encodeURIComponent(noteId)}`,
-    {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content }),
-    },
-  );
-}
-
-export async function getCollectionNotes(collectionName: string): Promise<DocumentNote[]> {
-  return apiFetch<DocumentNote[]>(`/api/collections/${encodeURIComponent(collectionName)}/notes`);
-}
-
 export async function createCollectionNote(
   collectionName: string,
   content: string,
@@ -2013,23 +1336,7 @@ export async function createCollectionNote(
   });
 }
 
-export async function updateCollectionNote(
-  collectionName: string,
-  noteId: string,
-  content: string,
-): Promise<DocumentNote> {
-  return apiFetch<DocumentNote>(
-    `/api/collections/${encodeURIComponent(collectionName)}/notes/${encodeURIComponent(noteId)}`,
-    {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content }),
-    },
-  );
-}
-
 export async function getDocumentAnnotations(docId: string): Promise<ZoteroAnnotation[]> {
-  if (isMock()) return [];
   return apiFetch<ZoteroAnnotation[]>(
     `/api/documents/${encodeURIComponent(docId)}/annotations`,
   );
@@ -2051,7 +1358,6 @@ export async function getConsoleScopeState(
   scopeType: string,
   scopeKey: string,
 ): Promise<ConsoleScopeState | null> {
-  if (isMock()) return null;
   const qs = new URLSearchParams({ scope_type: scopeType, scope_key: scopeKey });
   try {
     return await apiFetch<ConsoleScopeState>(`/api/console/scope-state?${qs}`);
@@ -2072,16 +1378,6 @@ export async function upsertConsoleScopeState(
 }
 
 export async function listDocumentChunks(docId: string): Promise<DocumentChunk[]> {
-  if (isMock()) {
-    return MOCK_KB_CHUNKS
-      .filter((chunk) => chunk.doc_id === docId)
-      .map((chunk) => ({
-        chunk_id: chunk.chunk_id,
-        doc_id: chunk.doc_id,
-        ordinal: chunk.ordinal,
-        text: chunk.text,
-      }));
-  }
   return apiFetch<DocumentChunk[]>(
     `/api/documents/${encodeURIComponent(docId)}/chunks`,
   );

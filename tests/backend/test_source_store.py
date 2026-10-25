@@ -135,11 +135,8 @@ async def test_scoped_notes_chat_lock_and_console_state(
     notes = await store.list_scoped_notes("document", "d1")
     assert len(notes) == 1
     assert notes[0].raw_zotero_json["itemType"] == "note"
-
-    notes[0].content = "updated"
-    assert await store.update_scoped_note(notes[0]) is True
     got = await store.get_scoped_note("n1")
-    assert got is not None and got.content == "updated"
+    assert got is not None and got.content == notes[0].content
 
     await store.add_chat_message("conv", "user", "q")
     await store.add_chat_message("conv", "assistant", "a")

@@ -65,17 +65,6 @@ class ZoteroLocalApiClient:
         self.timeout = timeout
         self._opener = opener or urllib.request.urlopen
 
-    def get_status_schema(self) -> dict[str, Any]:
-        """读取 schema 探针端点，返回 API/schema 版本和 item type 数量。"""
-        payload, headers, status = self._request_json("itemTypes")
-        return {
-            "connected": True,
-            "status": status,
-            "api_version": headers.get("Zotero-API-Version", ""),
-            "schema_version": headers.get("Zotero-Schema-Version", ""),
-            "item_types": len(payload) if isinstance(payload, list) else 0,
-        }
-
     def list_items(
         self,
         *,
@@ -93,29 +82,6 @@ class ZoteroLocalApiClient:
         if not isinstance(payload, list):
             raise ZoteroLocalApiError("Expected Zotero item list JSON")
         return [item for item in payload if isinstance(item, dict)]
-
-    def get_item(self, item_key: str, *, include: str = "data") -> dict[str, Any] | None:
-        """读取单个 Zotero item；404 返回 None。"""
-        path = f"users/{self.user_id}/items/{urllib.parse.quote(item_key)}"
-        try:
-            payload, _, _ = self._request_json(path, {"format": "json", "include": include})
-        except ZoteroLocalApiError as exc:
-            if exc.status == 404:
-                return None
-            raise
-        return payload if isinstance(payload, dict) else None
-
-    def get_file_view_url(self, item_key: str) -> str | None:
-        """返回 attachment 的本地 file URL 文本；不可用时返回 None。"""
-        path = f"users/{self.user_id}/items/{urllib.parse.quote(item_key)}/file/view/url"
-        try:
-            text, _, _ = self._request_text(path)
-        except ZoteroLocalApiError as exc:
-            if exc.status == 404:
-                return None
-            raise
-        text = text.strip()
-        return text or None
 
     def _request_json(
         self, path: str, params: dict[str, str | int] | None = None

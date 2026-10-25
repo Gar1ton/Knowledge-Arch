@@ -30,14 +30,23 @@ DEFAULT_OUT = ROOT / "desktop" / "src-tauri" / "resources"
 PYTHON_VERSION = "3.12"
 IS_WINDOWS = os.name == "nt"
 
-# 只带运行所需的源码（相对仓库根）；目录按 _IGNORE 过滤缓存与测试残留。
+# 只带运行所需的源码（相对仓库根）；目录按 _ignore 过滤缓存与测试残留。
 SOURCES = (
     "kacore", "ka_server", "migrations",
     "web/server.py", "web/desktop_routes.py", "web/agent_routes.py",
 )
 # AI 助手 skill（kacore/agent_skill.py 在 ka/agent_skill/ 下查找）：仓库路径 → 包内路径。
 SKILL_SOURCE = (".agents/skills/operate-knowledge-arch", "agent_skill/operate-knowledge-arch")
-_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", ".pytest_cache", "README.md")
+_IGNORE_PATTERNS = shutil.ignore_patterns(
+    "__pycache__", "*.pyc", "*.pyo", ".pytest_cache", "README.md"
+)
+# repository 的内存实现只给测试做接口对换，生产代码不 import；
+# kacore/settings/memory.py 是生产代码，不在此列。
+_TEST_ONLY = frozenset({
+    "kacore/repository/source_store/memory.py",
+    "kacore/repository/sync_targets/memory.py",
+    "kacore/repository/vector_store/memory.py",
+})
 PTH_NAME = "knowledge_arch.pth"
 BUNDLE_MARKER = ".ka_bundle"  # 与 ka_server/bytecode_cache.py 一致
 
@@ -183,6 +192,12 @@ def slim_interpreter(python_dir: Path) -> int:
     return freed
 
 
+def _ignore(directory: str, names: list[str]) -> set[str]:
+    ignored = set(_IGNORE_PATTERNS(directory, names))
+    rel = Path(directory).resolve().relative_to(ROOT).as_posix()
+    return ignored | {name for name in names if f"{rel}/{name}" in _TEST_ONLY}
+
+
 def copy_sources(out: Path) -> Path:
     target = out / "ka"
     if target.exists():
@@ -192,11 +207,11 @@ def copy_sources(out: Path) -> Path:
         dst = target / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         if src.is_dir():
-            shutil.copytree(src, dst, ignore=_IGNORE)
+            shutil.copytree(src, dst, ignore=_ignore)
         else:
             shutil.copy2(src, dst)
     skill_src, skill_dst = SKILL_SOURCE
-    shutil.copytree(ROOT / skill_src, target / skill_dst, ignore=_IGNORE)
+    shutil.copytree(ROOT / skill_src, target / skill_dst, ignore=_ignore)
     (target / BUNDLE_MARKER).write_text("bundled runtime\n", encoding="utf-8")
     return target
 

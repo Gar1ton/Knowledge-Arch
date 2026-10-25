@@ -194,10 +194,6 @@ async def test_r2_backup_object_operations_are_streamed_and_paginated(
         {"Contents": [{"Key": "p/b", "Size": 4, "LastModified": "t2"}]},
     ]
     mock_s3.get_paginator.return_value = paginator
-    mock_s3.head_object.return_value = {
-        "ContentLength": 3,
-        "Metadata": {"sha256": "abc"},
-    }
     mock_s3.delete_objects.return_value = {}
 
     with _patched_boto_client(mock_s3):
@@ -207,7 +203,6 @@ async def test_r2_backup_object_operations_are_streamed_and_paginated(
         )
         await target.download_backup_file("p/a", destination)
         rows = await target.list_backup_objects("p/")
-        stat = await target.stat_backup_object("p/a")
         await target.delete_backup_objects(["p/a", "p/b"])
 
     mock_s3.upload_file.assert_called_once_with(
@@ -221,7 +216,6 @@ async def test_r2_backup_object_operations_are_streamed_and_paginated(
     )
     paginator.paginate.assert_called_once_with(Bucket="mock-bucket", Prefix="p/")
     assert [row["key"] for row in rows] == ["p/a", "p/b"]
-    assert stat == {"key": "p/a", "size": 3, "metadata": {"sha256": "abc"}}
     mock_s3.delete_objects.assert_called_once_with(
         Bucket="mock-bucket",
         Delete={"Objects": [{"Key": "p/a"}, {"Key": "p/b"}], "Quiet": True},

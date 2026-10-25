@@ -1,18 +1,16 @@
-"""LLM 结构化抽取适配器（adapters 层）。
+"""LLM 生成适配器（adapters 层）。
 
-主 LLM 经注入的 chat client（由 ModelRouter 按角色提供）调用：问答生成与学术实体 / 有向关系的
-结构化 JSON 抽取；未配置模型时提供离线占位实现。HTTP 客户端在 kacore/providers/。
+主 LLM 经注入的 chat client（由 ModelRouter 按角色提供）调用，负责问答生成；未配置模型时
+提供离线占位实现。HTTP 客户端在 kacore/providers/。
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import re
 import time
 from dataclasses import replace
-from typing import Any, Protocol
+from typing import Protocol
 
 from kacore.domain.llm_generation import (
     STATUS_EMPTY,
@@ -98,10 +96,6 @@ class LLMAdapter:
 
         return replace(result, text=result.text.strip())
 
-    async def _call_context_llm(self, prompt: str, system_prompt: str = "") -> str:
-        """调用主 LLM，只取纯文本（供 extract_graph 等不需要状态诊断的调用方）。"""
-        return (await self._call_client_result(prompt, system_prompt)).text
-
     async def _call_client_result(
         self, prompt: str, system_prompt: str = ""
     ) -> GenerationResult:
@@ -185,118 +179,3 @@ class LLMAdapter:
             "the data flow to get real answers."
         )
 
-    async def extract_graph(
-        self, text: str, entity_types: list[str]
-    ) -> dict[str, list[dict[str, Any]]]:
-        """从给定的文本中，根据指定的 entity_types 提取结构化的实体和关系。
-
-        返回格式：
-        {
-            "entities": [{"name": "Transformer", "type": "Method/Algorithm",
-                          "description": "..."}],
-            "relations": [{"src": "Transformer", "dst": "Attention",
-                           "relation": "uses", "description": "...",
-                           "weight": 1.0}]
-        }
-        """
-        types_str = ", ".join(entity_types)
-        system_prompt = f"""You are a brilliant scientific researcher and knowledge graph builder.
-Your task is to extract unique, high-quality entities and relationships
-from the provided scientific text.
-
-CRITICAL CONSTRAINTS:
-1. Every extracted entity's `type` field MUST be exactly one of the
-following categories: [{types_str}]. Do NOT use any other categories.
-2. Output your response as a single, valid JSON object matching this schema:
-{{
-    "entities": [
-        {{
-            "name": "Entity Name",
-            "type": "One of the configured categories",
-            "description": "Clean, informative academic description"
-        }}
-    ],
-    "relations": [
-        {{
-            "src": "Exact Name of Src Entity",
-            "dst": "Exact Name of Dst Entity",
-            "relation": "Relationship word (lower_case)",
-            "description": "How they are related",
-            "weight": 1.0
-        }}
-    ]
-}}
-3. Do NOT wrap the JSON in Markdown backticks (e.g. ```json) in your raw response.
-Output ONLY the raw JSON string.
-"""
-
-        user_prompt = (
-            f"Please analyze the following academic text and extract the knowledge graph:\n\n{text}"
-        )
-
-        raw_response = await self._call_context_llm(user_prompt, system_prompt)
-
-        # 4) 离线测试桩回退
-        if not raw_response or not raw_response.strip():
-            logger.info("[Offline Stub] Using mock LLM extraction stub.")
-            raw_response = self._mock_llm_extraction(text, entity_types)
-
-        # 5) 清洗并解析 JSON
-        return self._clean_and_parse_json(raw_response)
-
-    def _mock_llm_extraction(self, text: str, entity_types: list[str]) -> str:
-        """纯离线高保真测试桩，从文本中发现专有名词生成结构化学术图谱。"""
-        # 简单使用正则表达式发现英文首字母大写的科学名词（模拟学术概念）
-        words = re.findall(r"\b[A-Z][a-zA-Z0-9-]+\b", text)
-        unique_words = sorted(list(set(words)))
-
-        entities = []
-        relations = []
-
-        # 默认回退的第一个类别
-        default_type = entity_types[0] if entity_types else "Method/Algorithm"
-
-        # 如果发现专有名词，构造实体
-        for i, word in enumerate(unique_words[:4]):  # 限制数量
-            entities.append(
-                {
-                    "name": word,
-                    "type": default_type,
-                    "description": f"Extracted academic concept representing {word}.",
-                }
-            )
-
-        # 构造链式有向关系
-        for i in range(len(entities) - 1):
-            relations.append(
-                {
-                    "src": entities[i]["name"],
-                    "dst": entities[i + 1]["name"],
-                    "relation": "relates_to",
-                    "description": (
-                        f"{entities[i]['name']} is connected to {entities[i + 1]['name']}."
-                    ),
-                    "weight": 1.0,
-                }
-            )
-
-        result = {"entities": entities, "relations": relations}
-        return json.dumps(result)
-
-    def _clean_and_parse_json(self, raw_str: str) -> dict[str, list[dict[str, Any]]]:
-        """清洗大模型可能包含的 Markdown ```json 包裹并安全解析为字典。"""
-        cleaned = raw_str.strip()
-        # 移除 markdown json 标记
-        if cleaned.startswith("```"):
-            cleaned = re.sub(r"^```(?:json)?\n", "", cleaned)
-            cleaned = re.sub(r"\n```$", "", cleaned)
-            cleaned = cleaned.strip()
-
-        try:
-            parsed = json.loads(cleaned)
-            if isinstance(parsed, dict) and "entities" in parsed:
-                return parsed
-        except Exception as e:
-            logger.error(f"Failed to parse LLM JSON response: {e}. Raw: {raw_str}")
-
-        return {"entities": [], "relations": []}

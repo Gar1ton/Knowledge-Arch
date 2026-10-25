@@ -49,7 +49,7 @@ from kacore.pipelines.llm_json import est_tokens, llm_json_call
 
 if TYPE_CHECKING:
     from kacore.adapters.llm import LLMAdapter
-    from kacore.config import EnhancedRecallConfig, RerankConfig
+    from kacore.config import EnhancedRecallConfig
     from kacore.domain.models import DocumentChunk
     from kacore.pipelines.retrieval_orchestrator import (
         RetrievalOrchestrator,
@@ -78,18 +78,15 @@ class EnhancedRecallOrchestrator:
         reranker: Reranker,
         llm_adapter: LLMAdapter,
         er_config: EnhancedRecallConfig,
-        rerank_config: RerankConfig,
     ) -> None:
         self._retrieval = retrieval_orchestrator
         self._reranker = reranker
         self._llm = llm_adapter
         self._cfg = er_config
-        self._rerank_cfg = rerank_config
 
-    def update_reranker(self, reranker: Reranker, rerank_config: RerankConfig) -> None:
+    def update_reranker(self, reranker: Reranker) -> None:
         """热替换 reranker，供数据流 AB test 即时切换使用（与 deep 对齐）。"""
         self._reranker = reranker
-        self._rerank_cfg = rerank_config
 
     @property
     def reranker_status(self) -> dict[str, str | bool | None]:

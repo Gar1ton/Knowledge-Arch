@@ -139,24 +139,6 @@ class R2SyncTarget(SyncTarget):
         except Exception as exc:
             raise RuntimeError(f"R2 object listing failed: {exc}") from exc
 
-    async def stat_backup_object(self, key: str) -> dict[str, object] | None:
-        s3 = self._get_client()
-        try:
-            response = await asyncio.to_thread(
-                s3.head_object, Bucket=self._config.bucket, Key=key
-            )
-        except Exception as exc:
-            response = getattr(exc, "response", {})
-            code = str(response.get("Error", {}).get("Code", ""))
-            if code in {"404", "NoSuchKey", "NotFound"}:
-                return None
-            raise RuntimeError(f"R2 object stat failed: {exc}") from exc
-        return {
-            "key": key,
-            "size": int(response.get("ContentLength") or 0),
-            "metadata": dict(response.get("Metadata") or {}),
-        }
-
     async def delete_backup_objects(self, keys: list[str]) -> None:
         if not keys:
             return

@@ -5,7 +5,6 @@
 """
 from __future__ import annotations
 
-import warnings
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -58,19 +57,5 @@ class CategoryManager(BaseCategoryManager):
         if success:
             self.logger.info(f"Document {doc_id} classified successfully.")
         return success
-
-    async def auto_tag_document(self, doc_id: str) -> list[str]:
-        # 预留 AI / 自动聚类打标签的 ABC 端口，默认关闭并给出软警告
-        warnings.warn(
-            "Auto tagging is currently disabled by default. "
-            "Please configure an LLM / embedding clustering model in Backlog.",
-            UserWarning,
-        )
-        self.logger.warning(
-            f"Auto tagging requested for document {doc_id} "
-            f"but is disabled by default."
-        )
-        return []
-
 
 __all__ = ["CategoryManager"]

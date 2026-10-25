@@ -11,7 +11,6 @@ import { NotionActions, R2Actions } from "./SyncActions";
 import { ZoteroQuickConfig } from "./ZoteroQuickConfig";
 
 export type FlowConfigSnapshot = EffectiveConfig;
-export type QuickConfigValue = string | number | boolean;
 export type QuickConfigValues = Record<string, string | boolean>;
 // section 为空 = key 即设置键（NodePanel）；Zotero 面板仍用「段.键」，保存时映射到设置键。
 export type QuickConfigUpdate = { section?: string; key: string; value: unknown };
@@ -35,8 +34,6 @@ export type QuickConfigHandle = { save: () => void };
 
 export const ZOTERO_SYNC_MODES = ["strict_mirror", "conservative", "archive"];
 export const ZOTERO_STORAGE_MODES = ["managed_copy", "linked", "zotmoov"];
-export const NOTION_SYNC_MODES = ["preserve", "strict"];
-
 type QuickConfigFieldBase = {
   id: string;
   section: ConfigSection;
@@ -100,17 +97,6 @@ export function selectField(
   helpKey?: I18nKey,
 ): QuickConfigField {
   return { id: fieldId(section, key), kind: "select", section, key, labelKey, value, options, wide, helpKey };
-}
-
-export function readonlyField(
-  section: ConfigSection,
-  key: string,
-  labelKey: I18nKey,
-  value: string,
-  wide = false,
-  helpKey?: I18nKey,
-): QuickConfigField {
-  return { id: fieldId(section, key), kind: "readonly", section, key, labelKey, value, wide, helpKey };
 }
 
 function sectionData(config: FlowConfigSnapshot, section: ConfigSection): Record<string, unknown> {
@@ -330,46 +316,6 @@ export function useQuickConfigDraft(fields: QuickConfigField[]) {
 
   const { updates, hasInvalidNumber } = useMemo(() => computeUpdates(fields, draft), [draft, fields]);
   return { draft, setDraft, updates, hasInvalidNumber };
-}
-
-export function QuickConfigFieldGrid({
-  fields,
-  draft,
-  setDraft,
-  lang,
-  t,
-  saving,
-  onBrowseDir,
-}: {
-  fields: QuickConfigField[];
-  draft: QuickConfigValues;
-  setDraft: React.Dispatch<React.SetStateAction<QuickConfigValues>>;
-  lang: Lang;
-  t: TFunc;
-  saving: boolean;
-  onBrowseDir?: (fieldId: string) => void;
-}) {
-  return (
-    <div className="flow-quick-grid">
-      {fields.map((field) => (
-        <label key={field.id} className={`flow-quick-field ${field.wide ? "flow-quick-field--wide" : ""}`}>
-          <span>
-            {t(field.labelKey)}
-            {field.helpKey && <span className="flow-help-dot" title={t(field.helpKey)}>?</span>}
-          </span>
-          <FieldControl
-            field={field}
-            value={draft[field.id] ?? fieldInitialValue(field)}
-            lang={lang}
-            t={t}
-            saving={saving}
-            onChange={(value) => setDraft((current) => ({ ...current, [field.id]: value }))}
-            onBrowseDir={() => onBrowseDir?.(field.id)}
-          />
-        </label>
-      ))}
-    </div>
-  );
 }
 
 // 高级折叠：折叠按钮 + 展开浮层。slot 非空时整体 Portal 到节点底部槽位（按钮在节点最底部，

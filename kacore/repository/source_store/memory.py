@@ -419,14 +419,6 @@ class InMemorySourceDocumentStore(SourceDocumentStore):
         stored.updated_at = stored.updated_at or stored.created_at
         self._notes[stored.id] = stored
 
-    async def update_scoped_note(self, note: ScopedNote) -> bool:
-        if note.id not in self._notes:
-            return False
-        stored = copy.deepcopy(note)
-        stored.updated_at = stored.updated_at or datetime.now(timezone.utc)
-        self._notes[stored.id] = stored
-        return True
-
     async def get_scoped_note(self, note_id: str) -> ScopedNote | None:
         note = self._notes.get(note_id)
         return copy.deepcopy(note) if note is not None else None

@@ -72,16 +72,6 @@ class InMemorySyncTarget(SyncTarget):
             if key.startswith(prefix)
         ]
 
-    async def stat_backup_object(self, key: str) -> dict[str, object] | None:
-        value = self._objects.get(key)
-        if value is None:
-            return None
-        return {
-            "key": key,
-            "size": len(value),
-            "metadata": dict(self._metadata.get(key, {})),
-        }
-
     async def delete_backup_objects(self, keys: list[str]) -> None:
         for key in keys:
             self._objects.pop(key, None)

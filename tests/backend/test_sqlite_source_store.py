@@ -335,14 +335,9 @@ async def test_scoped_notes_persist_zotero_shape(
     assert len(notes) == 1
     assert notes[0].parent_item_key == "ITEM1"
     assert notes[0].raw_zotero_json["itemType"] == "note"
-
-    notes[0].content = "updated"
-    notes[0].raw_zotero_json["note"] = "<p>updated</p>"
-    assert await sqlite_store.update_scoped_note(notes[0]) is True
     got = await sqlite_store.get_scoped_note("n1")
     assert got is not None
-    assert got.content == "updated"
-    assert got.raw_zotero_json["note"] == "<p>updated</p>"
+    assert got.raw_zotero_json["note"] == "<p>plain note</p>"
 
 
 async def test_chat_lock_and_preserve_locked_clear(

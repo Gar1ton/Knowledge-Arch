@@ -45,11 +45,6 @@ class Checklist:
             if item.id in satisfied_ids:
                 item.satisfied = True
 
-    def critical_unmet(self) -> bool:
-        """是否存在未满足的关键项——baseline 回退判据之一。空清单视为无未满足。"""
-        return any(item.critical and not item.satisfied for item in self.items)
-
-
 # ── 证据与轨迹 ──────────────────────────────────────────────
 @dataclass
 class EvidenceItem:

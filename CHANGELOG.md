@@ -4,6 +4,24 @@
 
 ## [Unreleased]
 
+### 移除 (Removed) — 死代码清理
+
+- **无调用方的后端接口**：`web/server.py` 删去 `/api/quota`、`/api/milvus/clear-lock`、`/api/files/list`、`/api/metrics`、
+  `GET /api/graph`、`/api/graph/query`、`/api/graph/probe` 与文档 / 集合笔记的 PATCH；`kacore/api.py` 删去对应实现，
+  `kacore/metrics.py`（只写不读的延迟统计）与 `AppInitializer.clear_stale_milvus_lock` 一并移除。
+- **只在测试里出现的方法**：Zotero 本地 API 的 `get_item` / `get_status_schema` / `get_file_view_url`、`LLMAdapter.extract_graph`
+  及其离线桩、`Config.apply_override`、`SyncTarget.stat_backup_object`、`EncryptedSecretStore.masked_secret` 等；
+  orchestrator 只写不读的 `_rerank_cfg`、Notion `upsert_document` 的 `force_body`、未读的图谱重试退避配置。
+- **前端**：`lib/api.ts` 24 个未调用的函数与只被它们用到的类型、`?mock` 离线模拟模式（MOCK 数据与 `isMock()` 分支）、
+  `components/ds/index.ts`、`geist` 依赖、47 个未引用的 CSS 变量（`--font-geist-mono` 改用 `--font-mono`）。
+- **docs**：删去 6 份无人引用的旧设计稿与图片。
+
+### 改进 (Changed) — 命名与打包
+
+- **重启服务**：`restart_plugin` → `restart_service`，`/api/plugin/restart` → `/api/service/restart`（AI 助手白名单与 skill 同步），
+  前端 `restartService` / `ServiceRestartResult`。
+- **安装包不带测试替身**：`desktop/scripts/bundle_python.py` 的 `_TEST_ONLY` 排除 repository 的三个 `memory.py`。
+
 ### 改进 (Changed) — rc.3 反馈：main 精简
 
 - **README 默认英文**：英文版改为 `README.md`，中文版改名 `README_ZH.md`；两份的版本记录链接改指 GitHub Releases。

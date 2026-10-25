@@ -1352,47 +1352,6 @@ class SQLiteSourceDocumentStore(SourceDocumentStore):
                 raise ValueError(f"duplicate note id: {note.id}") from e
             raise
 
-    @_locked_write
-    async def update_scoped_note(self, note: ScopedNote) -> bool:
-        updated_at = _format_dt(note.updated_at or datetime.now(timezone.utc))
-        async with self._db.execute(
-            """
-            UPDATE scoped_notes SET
-                scope_type = ?, scope_key = ?, content = ?, note_html = ?,
-                doc_id = ?, collection_name = ?, library_id = ?, parent_item_key = ?,
-                parent_attachment_key = ?, zotero_note_key = ?, zotero_version = ?,
-                tags = ?, collections = ?, relations = ?, linked = ?, source = ?,
-                chat_conversation_id = ?, chat_message_id = ?, updated_at = ?,
-                raw_zotero_json = ?
-            WHERE id = ?
-            """,
-            (
-                note.scope_type,
-                note.scope_key,
-                note.content,
-                note.note_html,
-                note.doc_id or None,
-                note.collection_name or None,
-                note.library_id,
-                note.parent_item_key,
-                note.parent_attachment_key,
-                note.zotero_note_key,
-                note.zotero_version,
-                json.dumps(note.tags),
-                json.dumps(note.collections),
-                json.dumps(note.relations),
-                int(note.linked),
-                note.source,
-                note.chat_conversation_id,
-                note.chat_message_id,
-                updated_at,
-                json.dumps(note.raw_zotero_json),
-                note.id,
-            ),
-        ) as cursor:
-            await self._db.commit()
-            return cursor.rowcount > 0
-
     async def get_scoped_note(self, note_id: str) -> ScopedNote | None:
         async with self._db.execute(
             f"SELECT {_NOTE_COLUMNS} FROM scoped_notes WHERE id = ?",

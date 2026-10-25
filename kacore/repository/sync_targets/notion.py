@@ -381,12 +381,11 @@ class NotionSyncTarget(SyncTarget):
         path: str,
         collection_names: list[str],
         prior: NotionEntityRecord | None = None,
-        force_body: bool = False,
     ) -> NotionUpsertResult:
         """把一篇文章幂等推送到 Articles 库。
 
         幂等序列：prior.page_id 直接 update（404/失败落 miss 分支）→ 按 DocID
-        反查回填 → 仍无才 create。所有路径只写属性；force_body 保留调用接口，
+        反查回填 → 仍无才 create。所有路径只写属性，
         不触及文章正文。是否需要推送（指纹相等 skip）由上层判定。
         """
         if not self._config.enabled:

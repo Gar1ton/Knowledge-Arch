@@ -47,16 +47,6 @@ def test_zotero_client_lists_items_with_readonly_get() -> None:
     assert "limit=5" in seen["url"]
 
 
-def test_zotero_client_reads_file_view_url() -> None:
-    def opener(request: Any, *, timeout: float) -> FakeResponse:
-        assert request.full_url.endswith("/api/users/0/items/ATTACH/file/view/url")
-        return FakeResponse("file:///C:/Zotero/storage/ATTACH/paper.pdf\n", headers={})
-
-    client = ZoteroLocalApiClient(opener=opener)
-
-    assert client.get_file_view_url("ATTACH") == "file:///C:/Zotero/storage/ATTACH/paper.pdf"
-
-
 def test_normalize_zotero_annotation_parses_position_and_page() -> None:
     item = {
         "key": "ANN1",

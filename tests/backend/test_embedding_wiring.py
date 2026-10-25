@@ -58,7 +58,8 @@ def test_cache_namespace_of_providers_is_byte_identical_to_before() -> None:
     cached = CachedEmbeddingProvider(MockEmbeddingProvider(), namespace="external:m:https://x")
 
     assert cached.identity == {}
-    assert cached._get_hash("t") == hashlib.sha256(b"external:m:https://x\0t").hexdigest()
+    namespace = cached._current_namespace()
+    assert cached._hash(namespace, "t") == hashlib.sha256(b"external:m:https://x\0t").hexdigest()
 
 
 # ── 索引指纹 ─────────────────────────────────────────────────────

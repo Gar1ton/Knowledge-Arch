@@ -6,7 +6,7 @@
  * 纯受控组件：所有状态由 TerminalPanel 经 useTerminalLogs 提供。
  */
 import React from "react";
-import { Select } from "@/components/ds";
+import { Select } from "@/components/ds/Select";
 import { useI18n } from "@/lib/i18n";
 import { LEVELS, levelColor, levelShort, type LevelKey } from "./format";
 

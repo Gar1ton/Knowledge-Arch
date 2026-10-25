@@ -79,10 +79,6 @@ class CachedEmbeddingProvider(EmbeddingProvider):
 
         return hashlib.sha256(f"{namespace}\0{text}".encode()).hexdigest()
 
-    def _get_hash(self, text: str) -> str:
-        """Hash the provider/model namespace and text into one cache key."""
-        return self._hash(self._current_namespace(), text)
-
     @property
     def identity(self) -> dict[str, str]:
         """透传被包装 provider 的身份：组合根拿到的是本装饰器，指纹要用里层的身份。"""

@@ -217,11 +217,6 @@ class R2BackupManager:
         if self._reload_callback is not None:
             await self._reload_callback()
 
-    async def wait_current(self) -> dict[str, Any] | None:
-        if self._task is None:
-            return None
-        return await self._task
-
     async def backup(self, *, force: bool = False) -> dict[str, Any]:
         """创建并原子提交最新完整快照。"""
         async with self._lock:

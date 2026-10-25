@@ -29,7 +29,6 @@ from kacore.domain.models import Collection, SyncTargetKind
 from kacore.managers.category_manager import CategoryManager
 from kacore.managers.ingest_manager import IngestManager
 from kacore.managers.quota_manager import QuotaManager
-from kacore.metrics import PerformanceTracker
 from kacore.migration_runner import run_migrations
 from kacore.pipelines.sync_pipeline import SyncPipeline
 from kacore.repository.source_store.sqlite import SQLiteSourceDocumentStore
@@ -99,13 +98,11 @@ class AppInitializer:
         # 最近一次 Milvus 装配失败的具体异常文本；vector_store 装配成功时清空。
         # 供 capabilities 面板展示具体原因（而非套话），以及「清除残留锁」的前置守卫。
         self._vector_store_init_error: str | None = None
-        self._milvus_db_path: Path | None = None
         self.embedding_provider: EmbeddingProvider | None = None
         self.embedding_dimension: int | None = None
         self.embedding_fingerprint: str | None = None
         self.index_compatibility: IndexCompatibilityStore | None = None
         self.retrieval_orchestrator: RetrievalOrchestrator | None = None
-        self.metrics: PerformanceTracker = PerformanceTracker()
         self.progress_store: ProgressStore = ProgressStore()
         self.secret_store: SecretStore = settings.secrets
 
@@ -352,7 +349,6 @@ class AppInitializer:
             )
 
             milvus_path = self._data_dir / vdb_cfg.db_filename
-            self._milvus_db_path = milvus_path
             self._vector_store_init_error = None
             is_new_index = not milvus_path.exists()
             milvus = None
@@ -515,7 +511,6 @@ class AppInitializer:
             reranker=self.reranker,
             llm_adapter=dt_llm_adapter,
             dt_config=dt_cfg,
-            rerank_config=rerank_cfg,
         )
 
         # 4.8a) Codex/外部 agent 的无生成式 LLM 证据召回器。只复用检索、reranker
@@ -538,7 +533,6 @@ class AppInitializer:
             reranker=self.reranker,
             llm_adapter=dt_llm_adapter,
             er_config=self._config.get_enhanced_recall_config(),
-            rerank_config=rerank_cfg,
         )
 
         # 4.9) R2 完整备份管理器：inventory/manifest 是 R2 v1 的唯一恢复真相源。
@@ -574,14 +568,12 @@ class AppInitializer:
             managed_documents_dir=self._data_dir / "library",
             vector_store=self.vector_store,
             vector_store_init_error=self._vector_store_init_error,
-            clear_milvus_lock_callback=self.clear_stale_milvus_lock,
             embedding_provider=self.embedding_provider,
             retrieval_orchestrator=self.retrieval_orchestrator,
             deep_thinking_orchestrator=self.deep_thinking_orchestrator,
             enhanced_recall_orchestrator=self.enhanced_recall_orchestrator,
             agent_evidence_orchestrator=self.agent_evidence_orchestrator,
             reranker=self.reranker,
-            metrics=self.metrics,
             progress_store=self.progress_store,
             index_compatibility=self.index_compatibility,
             embedding_fingerprint=self.embedding_fingerprint,
@@ -852,36 +844,6 @@ class AppInitializer:
                 except Exception as exc:
                     logger.error("Failed to mark document %s for reindex: %s", doc.doc_id, exc)
 
-    async def clear_stale_milvus_lock(self) -> dict[str, Any]:
-        """保留既有端口，但拒绝删除 LOCK；OS 锁必须由持有服务释放。
-
-        空文件不代表锁已失效，删除文件可能绕过仍在工作的服务的互斥保护。
-        旧实例已丢失释放入口时，应完整退出持锁进程，不做文件层面的恢复。
-        """
-        from kacore.capabilities import milvus_lock_error_hint
-
-        if self._config is None or self._config.get_vector_db_config().backend != "milvus":
-            return {(
-                "status"
-            ): "error", "message": "The vector store backend is not Milvus; there is "
-                                                  "no lock to clear."}
-        if self.vector_store is not None:
-            return {"status": "error", "message": "Milvus is set up normally; there is no lock to "
-                                                  "clear."}
-        if not self._vector_store_init_error or not milvus_lock_error_hint(
-            self._vector_store_init_error
-        ):
-            return {"status": "error", "message": "No Milvus data folder lock was detected; "
-                                                  "refusing to clear."}
-        if self._milvus_db_path is None:
-            return {"status": "error", "message": "The Milvus data folder is not known yet, so it "
-                                                  "cannot be cleared."}
-
-        return {
-            "status": "error",
-            "message": milvus_lock_error_hint(self._vector_store_init_error),
-        }
-
     # ── 关闭：与构造顺序相反释放 ────────────────────────────────
     async def teardown(self) -> None:
         teardown_started = time.monotonic()
@@ -997,7 +959,7 @@ class AppInitializer:
     async def reload(self) -> None:
         """软重启：teardown 全部子系统后，重读持久化配置重建 Config 并重新 initialize。
 
-        供「重启服务」按钮经 api.restart_plugin 触发；进程与 HTTP 端口不变，只在进程内
+        供「重启服务」按钮经 api.restart_service 触发；进程与 HTTP 端口不变，只在进程内
         重建全部子系统。重启期间到达的请求可能短暂失败，由前端轮询重连。
         """
         reload_started = time.monotonic()

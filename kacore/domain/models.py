@@ -432,13 +432,6 @@ class QuotaUsage:
     detail: str = ""
 
     @property
-    def ratio(self) -> float:
-        """当前用量占上限的比例；无上限时恒为 0.0。"""
-        if self.limit_bytes <= 0:
-            return 0.0
-        return self.used_bytes / self.limit_bytes
-
-    @property
     def projected_bytes(self) -> int:
         """写入本次增量后的预计用量。"""
         return self.used_bytes + self.pending_bytes

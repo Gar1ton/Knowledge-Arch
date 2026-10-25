@@ -470,12 +470,12 @@ def _assert_doc_writable(doc: SourceDocument) -> None:
         )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Callable
 
     from kacore.adapters.llm import LLMAdapter
     from kacore.ask_progress import ProgressStore
     from kacore.config import Config
-    from kacore.domain.models import DocumentChunk, QuotaUsage
+    from kacore.domain.models import DocumentChunk
     from kacore.extras.manager import ExtrasManager
     from kacore.index_compatibility import IndexCompatibilityStore
     from kacore.lightrag_core import BuildJob, LightRAGCoreRegistry
@@ -485,7 +485,6 @@ if TYPE_CHECKING:
         BaseIngestManager,
         BaseQuotaManager,
     )
-    from kacore.metrics import PerformanceTracker
     from kacore.pipelines.agent_evidence import AgentEvidenceOrchestrator
     from kacore.pipelines.deep_thinking_orchestrator import DeepThinkingOrchestrator
     from kacore.pipelines.enhanced_recall_orchestrator import EnhancedRecallOrchestrator
@@ -686,14 +685,12 @@ class KnowledgeRepositoryApi(
         managed_documents_dir: Path | None = None,
         vector_store: VectorStore | None = None,
         vector_store_init_error: str | None = None,
-        clear_milvus_lock_callback: Callable[[], Awaitable[dict[str, Any]]] | None = None,
         embedding_provider: EmbeddingProvider | None = None,
         retrieval_orchestrator: RetrievalOrchestrator | None = None,
         deep_thinking_orchestrator: DeepThinkingOrchestrator | None = None,
         enhanced_recall_orchestrator: EnhancedRecallOrchestrator | None = None,
         agent_evidence_orchestrator: AgentEvidenceOrchestrator | None = None,
         reranker: Reranker | None = None,
-        metrics: PerformanceTracker | None = None,
         progress_store: ProgressStore | None = None,
         index_compatibility: IndexCompatibilityStore | None = None,
         embedding_fingerprint: str | None = None,
@@ -710,9 +707,6 @@ class KnowledgeRepositoryApi(
         self._source_store = source_store
         self._vector_store = vector_store
         self._vector_store_init_error = vector_store_init_error
-        # 「清除残留 Milvus 锁」回调（组合根注入 AppInitializer.clear_stale_milvus_lock；
-        # 为空表示当前环境不支持程序化清除）。
-        self._clear_milvus_lock_callback = clear_milvus_lock_callback
         self._embedding_provider = embedding_provider
         self._retrieval_orchestrator = retrieval_orchestrator
         self._deep_thinking_orchestrator = deep_thinking_orchestrator
@@ -738,7 +732,6 @@ class KnowledgeRepositoryApi(
         self._provider_registry = provider_registry
         self._llm_adapter = llm_adapter
         self._managed_documents_dir = managed_documents_dir
-        self._metrics = metrics
         self._progress_store = progress_store
         self._index_compatibility = index_compatibility
         self._embedding_fingerprint = embedding_fingerprint
@@ -829,20 +822,6 @@ class KnowledgeRepositoryApi(
         """列出全部集合。"""
         return await self._source_store.list_collections()
 
-    async def list_titles_by_collection(self) -> dict[str, list[str]]:
-        """返回 {collection_name: [title, ...]}，供 research skill 的范围解析使用。
-
-        复用 list_documents() 的 (collection, title)，按主集合名分组；纯读、零越层。
-        """
-        result: dict[str, list[str]] = {}
-        docs = await self._source_store.list_documents()
-        for doc in docs:
-            col = doc.collection or ""
-            if not col:
-                continue
-            result.setdefault(col, []).append(doc.title)
-        return result
-
     async def search_exact_mentions(
         self, terms: list[str], collection: str | None = None, limit: int = 5
     ) -> list[dict[str, Any]]:
@@ -858,10 +837,6 @@ class KnowledgeRepositoryApi(
                 return []
             coll_key = col.coll_key
         return await self._source_store.search_exact_mentions(terms, coll_key, limit)
-
-    def is_reranker_active(self) -> bool:
-        """default 研究路径是否有可用的真实 cross-encoder 重排器（非 passthrough）。"""
-        return self._reranker is not None and not self._reranker.is_passthrough
 
     async def create_collection(self, name: str, description: str = "") -> None:
         """新建或更新集合（按 name upsert）。v0.3.0 起委派 category_manager。"""
@@ -1308,31 +1283,6 @@ class KnowledgeRepositoryApi(
         await self._source_store.add_scoped_note(note)
         return _scoped_note_dict(note)
 
-    async def update_document_note(
-        self,
-        doc_id: str,
-        note_id: str,
-        *,
-        content: str | None = None,
-        linked: bool | None = None,
-    ) -> dict[str, Any] | None:
-        """更新文档笔记；note 不属于该文档时返回 None。"""
-        doc = await self._source_store.get_document(doc_id)
-        if doc is None:
-            return None
-        note = await self._source_store.get_scoped_note(note_id)
-        if note is None or note.scope_type != "document" or note.scope_key != doc.doc_id:
-            return None
-        if content is not None:
-            note.content = content.strip()
-            note.note_html = _note_html(note.content)
-            note.raw_zotero_json = {**note.raw_zotero_json, "note": note.note_html}
-        if linked is not None:
-            note.linked = bool(linked)
-        note.updated_at = _now()
-        ok = await self._source_store.update_scoped_note(note)
-        return _scoped_note_dict(note) if ok else None
-
     async def list_collection_notes(self, collection_name: str) -> list[dict[str, Any]] | None:
         """列出某集合的本地笔记。"""
         collections = {c.name: c for c in await self._source_store.list_collections()}
@@ -1383,31 +1333,6 @@ class KnowledgeRepositoryApi(
         )
         await self._source_store.add_scoped_note(note)
         return _scoped_note_dict(note)
-
-    async def update_collection_note(
-        self,
-        collection_name: str,
-        note_id: str,
-        *,
-        content: str | None = None,
-        linked: bool | None = None,
-    ) -> dict[str, Any] | None:
-        """更新集合笔记；note 不属于该集合时返回 None。"""
-        collections = {c.name for c in await self._source_store.list_collections()}
-        if collection_name not in collections:
-            return None
-        note = await self._source_store.get_scoped_note(note_id)
-        if note is None or note.scope_type != "collection" or note.scope_key != collection_name:
-            return None
-        if content is not None:
-            note.content = content.strip()
-            note.note_html = _note_html(note.content)
-            note.raw_zotero_json = {**note.raw_zotero_json, "note": note.note_html}
-        if linked is not None:
-            note.linked = bool(linked)
-        note.updated_at = _now()
-        ok = await self._source_store.update_scoped_note(note)
-        return _scoped_note_dict(note) if ok else None
 
     def _resolve_document_artifact_path(self, doc: SourceDocument, rel_path: str) -> Path | None:
         candidates: list[Path] = []
@@ -2502,9 +2427,7 @@ class KnowledgeRepositoryApi(
         doc: SourceDocument,
         content: str,
         answer_language: str,
-        ask_start: float,
         progress: Any,
-        record: Any,
     ) -> dict:
         """全文检索分支：整篇正文 → 答案 + 单条 Harvard 引用 + 落库（供 ask 内部调用）。
 
@@ -2568,8 +2491,6 @@ class KnowledgeRepositoryApi(
             annotate_sources(sources)
         answer_notice = _compute_answer_notice(None, answer_language, question, generation_status)
 
-        record("llm_generate", t_llm)
-        record("ask_total", ask_start, sources=1)
         progress("done", 100)
         logger.info(
             "ask done mode=fulltext doc_id=%s text=%d chars generation %.1fs",
@@ -2723,12 +2644,7 @@ class KnowledgeRepositoryApi(
                 },
             )
 
-        def _record(op: str, t0: float, **meta: object) -> None:
-            if self._metrics is not None:
-                self._metrics.record(op, (time.monotonic() - t0) * 1000, meta or None)
-
         _progress("embed_query", 0)
-        t0 = time.monotonic()
 
         # 翻译召回查询（当 use_english_retrieval=True 时，将用户问题翻译为英语再送入向量检索）。
         # 仅含中文才翻译：与聊天路径的 _has_cjk 门一致，英文 query 不白耗一次 LLM 调用。
@@ -2781,9 +2697,7 @@ class KnowledgeRepositoryApi(
                     doc=fulltext_doc,
                     content=fulltext_content,
                     answer_language=answer_language,
-                    ask_start=ask_start,
                     progress=_progress,
-                    record=_record,
                 )
 
             if retrieval_mode in {MODE_GRAPH_MIXED, MODE_GRAPH_ONLY}:
@@ -2843,8 +2757,6 @@ class KnowledgeRepositoryApi(
                         if _answers_in_chinese(answer_language, question)
                         else "Nothing related to this question was found in the knowledge graph."
                     )
-                _record("llm_generate", t_llm)
-                _record("ask_total", ask_start, sources=0)
                 _progress("done", 100)
                 try:
                     await self._source_store.add_chat_message(cid, "user", question)
@@ -2884,7 +2796,6 @@ class KnowledgeRepositoryApi(
                 raise RuntimeError("EnhancedRecallOrchestrator is not configured")
             if retrieval_mode == "deep_thinking":
                 _progress("deep_thinking", 20)
-                t_dt = time.monotonic()
                 deep_outcome = await self._deep_thinking_orchestrator.run(
                     collection or "",
                     retrieval_question,
@@ -2895,16 +2806,8 @@ class KnowledgeRepositoryApi(
                 )
                 chunks = list(deep_outcome.evidence)
                 engines.append("deep_thinking")
-                _record(
-                    "deep_thinking_total",
-                    t_dt,
-                    rounds=len(deep_outcome.trace),
-                    degraded=deep_outcome.degraded,
-                    est_tokens=deep_outcome.est_total_tokens,
-                )
             elif retrieval_mode == "enhanced":
                 _progress("enhanced", 15)
-                t_er = time.monotonic()
                 deep_outcome = await self._enhanced_recall_orchestrator.run(
                     collection or "",
                     retrieval_question,
@@ -2915,16 +2818,8 @@ class KnowledgeRepositoryApi(
                 )
                 chunks = list(deep_outcome.evidence)
                 engines.append("enhanced_recall")
-                _record(
-                    "enhanced_recall_total",
-                    t_er,
-                    rounds=len(deep_outcome.trace),
-                    degraded=deep_outcome.degraded,
-                    est_tokens=deep_outcome.est_total_tokens,
-                )
             else:
                 _progress("vector_search", 20)
-                t_vs = time.monotonic()
                 seen_ids: set[str] = set()
                 # 跨集合聚合候选：先搜完所有目标集合，再按 RRF 分全局排序取 top_k。
                 # 不再「凑满 top_k 就 break」——否则早期弱相关塞满后，后面装着精确命中的
@@ -2969,9 +2864,7 @@ class KnowledgeRepositoryApi(
                 if multi_scope:
                     scored_candidates.sort(key=lambda item: (-item[0], item[1]))
                 chunks = [c for _, _, c in scored_candidates[:top_k]]
-                _record("vector_search", t_vs, hits=len(chunks))
 
-            _record("embed_query", t0)
 
             lightrag_context = ""
             if retrieval_mode == MODE_GRAPH_MIXED:
@@ -3139,8 +3032,6 @@ class KnowledgeRepositoryApi(
                 else ""
             )
 
-            _record("llm_generate", t_llm)
-            _record("ask_total", ask_start, sources=len(sources))
             _progress("done", 100)
             # 一次 ask 的收尾摘要：检索/生成各花多久、命中多少、走了哪些引擎。
             # 排查「问答变慢/超时」时，这一行就能区分是检索慢还是 LLM 慢。
@@ -3359,18 +3250,6 @@ class KnowledgeRepositoryApi(
             "indexed_docs": indexed,
             "unindexed_docs": unindexed,
         }
-
-    # ── 在线服务（配额）────────────────────────────────────────
-
-    async def list_quota(self) -> list[QuotaUsage]:
-        """汇总各已配置同步目标的用量快照（配额仪表盘用）。
-
-        无同步目标时返回空列表。warning 级别由调用方（quota_manager / 前端）按阈值判定。
-        """
-        usages = []
-        for target in self._sync_targets.values():
-            usages.append(await target.check_quota())
-        return usages
 
     # ── 在线同步与完整备份 ────────────────────────────────────────
 
@@ -3731,39 +3610,6 @@ class KnowledgeRepositoryApi(
             raise NotImplementedError("get_effective_config: available in v0.8.0")
         return self._config.to_public_dict()
 
-    async def get_service_status(self) -> dict[str, Any]:
-        """返回服务框架概览：所用模型与各服务启用状态（静态配置视图）。"""
-        if self._config is None:
-            return {}
-        vdb = self._config.get_vector_db_config()
-        rerank = self._config.get_rerank_config()
-        models = self._config.get_model_assignments()
-        graph = self._config.get_graph_config()
-        r2 = self._config.get_r2_sync_config()
-        notion = self._config.get_notion_sync_config()
-        zotero = self._config.get_zotero_sync_config()
-        return {
-            "models": {
-                "embedding": self._config.describe_embedding(),
-                "vector_db": vdb.backend,
-                "rerank": (
-                    "noop" if rerank.provider == "noop" else f"{rerank.provider}:{rerank.model}"
-                ),
-                "chat_llm": models.chat or "unassigned",
-                "deep_thinking_llm": models.research or models.chat or "unassigned",
-                "lightrag_llm": (
-                    (models.graph or models.chat or "unassigned") if graph.enabled else "off"
-                ),
-            },
-            "services": {
-                "graph": graph.enabled,
-                "r2_sync": r2.enabled,
-                "notion_sync": notion.enabled,
-                "zotero_sync": zotero.enabled,
-                "zotero_auto_sync": zotero.auto_sync_enabled,
-            },
-        }
-
     async def _check_zotero_access_mode_switch(self, new_mode: str) -> None:
         """access_mode 切换前的守卫：已知未解决的跨命名空间重复时拦截切换。
 
@@ -3884,7 +3730,7 @@ class KnowledgeRepositoryApi(
         logger.info("update_config ok: %s.%s persisted", section, key)
         return _config_update_response(restart_required, rebuild_required)
 
-    async def restart_plugin(self) -> dict[str, Any]:
+    async def restart_service(self) -> dict[str, Any]:
         """软重启服务运行时：teardown 后重新 initialize（重读持久化配置）。
 
         重启会拆掉并重建 Web 控制台连接，故先立即返回，再以后台任务延迟执行重启，
@@ -3901,7 +3747,7 @@ class KnowledgeRepositoryApi(
 
         operation_id = self._runtime_events.start(
             category="system",
-            operation="plugin_restart",
+            operation="service_restart",
             msg="Service soft restart queued",
         )
 
@@ -3912,15 +3758,15 @@ class KnowledgeRepositoryApi(
                 self._runtime_events.finish(
                     operation_id=operation_id,
                     category="system",
-                    operation="plugin_restart",
+                    operation="service_restart",
                     msg="Service soft restart finished",
                 )
             except Exception as exc:  # noqa: BLE001 - 后台任务需吞掉异常并记录
-                logger.error("plugin soft restart failed: %s", exc, exc_info=True)
+                logger.error("service soft restart failed: %s", exc, exc_info=True)
                 self._runtime_events.fail(
                     operation_id=operation_id,
                     category="system",
-                    operation="plugin_restart",
+                    operation="service_restart",
                     msg="Service soft restart failed",
                     error=exc,
                 )
@@ -3930,24 +3776,11 @@ class KnowledgeRepositoryApi(
         self._deferred_reload_task.add_done_callback(
             lambda _t: setattr(self, "_deferred_reload_task", None)
         )
-        logger.info("plugin soft restart scheduled")
+        logger.info("service soft restart scheduled")
         return {
             "status": "restarting",
             "message": "The service is restarting and will reconnect automatically.",
         }
-
-    async def clear_milvus_lock(self) -> dict[str, Any]:
-        """清除 Milvus 数据目录残留的 LOCK 标记（仅在已探测到锁定问题时可用）。
-
-        委派给组合根注入的 `AppInitializer.clear_stale_milvus_lock`，实际的前置守卫
-        （backend 是否 milvus、是否真的检测到锁定问题）都在那里做；这里只是薄委派。
-        """
-        if self._clear_milvus_lock_callback is None:
-            return {
-                "status": "unsupported",
-                "message": "This environment cannot clear the lock; please handle it manually.",
-            }
-        return await self._clear_milvus_lock_callback()
 
     async def test_embedding_connection(self, base_url: str, model_name: str) -> dict:
         """临时创建一个 ExternalEmbeddingProvider 并发送测试请求，验证云端 API 可连通性。"""
@@ -5002,69 +4835,13 @@ class KnowledgeRepositoryApi(
                 pending.append(doc)
         return pending
 
-    async def probe_lightrag_core(
-        self, collection: str, text: str, doc_id: str, query: str
-    ) -> dict:
-        """Manual LightRAG probe for log-based verification in a running app."""
-        if self._lightrag_registry is None:
-            raise RuntimeError("LightRAG Core registry is not configured")
-        return await self._lightrag_registry.manual_probe(
-            collection=collection, text=text, doc_id=doc_id, query=query
-        )
-
-    async def query_graph(
-        self,
-        query: str,
-        top_k: int = 5,
-        collection: str | None = None,
-        debug: bool = False,
-    ) -> dict:
-        """Run the independent full-answer LightRAG query endpoint."""
-        del top_k, debug
-        if self._lightrag_registry is None:
-            raise NotImplementedError("query_graph requires LightRAG Core")
-        col = await self._resolve_collection(collection)
-        readiness = await self.get_lightrag_readiness(col)
-        if not readiness["ready"]:
-            raise RuntimeError(readiness["reason"])
-        payload = await self._lightrag_registry.query(col, query)
-        payload["status"] = "success"
-        payload["query"] = query
-        return payload
-
-    async def get_graph(self, collection: str | None = None) -> dict:
-        """Export a graph or return a structured not-ready state.
-
-        LightRAG Core 已落地；未启用、依赖缺失或 workspace 未构建都不是 reserved
-        功能，而是运行态未就绪状态，供 WebUI 给出准确下一步。
-        """
-        col = await self._resolve_collection(collection)
-        readiness = await self.get_lightrag_readiness(col)
-        if not readiness["ready"]:
-            return {
-                "status": "not_ready",
-                "ready": False,
-                "collection": col,
-                "engine": "lightrag_core",
-                "reason": readiness["reason"],
-                "build_available": readiness["build_available"],
-            }
-        assert self._lightrag_registry is not None
-        return await self._lightrag_registry.export_graph(col)
-
     async def _resolve_collection(self, collection: str | None) -> str:
         if collection:
             return collection
         cols = await self.list_collections()
         return cols[0].name if cols else "default"
 
-    # ── 性能指标与进度（供 WebUI 监控面板使用）─────────────────────
-
-    def get_metrics_summary(self) -> dict:
-        """返回近期操作延迟聚合统计。无 metrics 时返回空结构。"""
-        if self._metrics is not None:
-            return self._metrics.summary()
-        return {"ops": {}, "total_records": 0}
+    # ── 问答进度与图谱统计 ─────────────────────────────────────────
 
     def get_ask_progress(self, conversation_id: str) -> dict | None:
         """返回指定对话的召回进度，不存在或已过期时返回 None。"""
@@ -5096,7 +4873,7 @@ class KnowledgeRepositoryApi(
             "collections_covered": collections,
         }
 
-    # ── 调试：系统信息 & 文件列表 ─────────────────────────────────
+    # ── 调试：系统信息 ─────────────────────────────────────────────
 
     def get_system_info(self) -> dict:
         """返回后端运行环境基础信息，供调试面板使用。"""
@@ -5114,43 +4891,6 @@ class KnowledgeRepositoryApi(
             "docs_dir": str((data_dir / "library").resolve()),
             "python_version": sys.version.split()[0],
             "platform": sys.platform,
-        }
-
-    def list_data_files(self, subdir: str = "") -> dict:
-        """列出 data_dir 或其子目录的文件，路径严格限制在 data_dir 内。"""
-        data_dir = (
-            self._managed_documents_dir.parent if self._managed_documents_dir else Path("data")
-        ).resolve()
-
-        # 路径安全：拒绝包含 .. 的路径
-        if ".." in subdir.replace("\\", "/").split("/"):
-            raise ValueError("Path traversal not allowed")
-
-        target = (data_dir / subdir).resolve()
-        try:
-            target.relative_to(data_dir)
-        except ValueError:
-            raise ValueError("Path is outside data directory")
-
-        if not target.exists():
-            raise FileNotFoundError(f"Directory not found: {subdir!r}")
-
-        entries = []
-        for item in sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name)):
-            stat = item.stat()
-            entries.append(
-                {
-                    "name": item.name,
-                    "type": "file" if item.is_file() else "dir",
-                    "size_bytes": stat.st_size if item.is_file() else None,
-                    "modified_at": datetime.fromtimestamp(
-                        stat.st_mtime, tz=timezone.utc
-                    ).isoformat(),
-                }
-            )
-        return {
-            "path": str(target.relative_to(data_dir)),
-            "entries": entries,
         }
 
     # ── HuggingFace 本地模型管理 ──────────────────────────────────
@@ -5233,9 +4973,9 @@ class KnowledgeRepositoryApi(
         # 同一实例同时供 default 研究路径与 deep_thinking 使用，热切换后两处都指向新实例。
         self._reranker = reranker
         if self._deep_thinking_orchestrator is not None:
-            self._deep_thinking_orchestrator.update_reranker(reranker, rerank_cfg)
+            self._deep_thinking_orchestrator.update_reranker(reranker)
         if self._enhanced_recall_orchestrator is not None:
-            self._enhanced_recall_orchestrator.update_reranker(reranker, rerank_cfg)
+            self._enhanced_recall_orchestrator.update_reranker(reranker)
         if self._agent_evidence_orchestrator is not None:
             self._agent_evidence_orchestrator.update_reranker(reranker)
         logger.info(

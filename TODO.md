@@ -308,3 +308,11 @@
 - [x] Linux AppImage 的 updater 条目与 artifact 瘦身：`updater-manifest` 作业 + `updater_add_appimage.py`（只写
   `linux-x86_64-appimage`，通用键缺失才补）；artifact 排除 `*.AppDir`。验证：`test_release_config.py` 新增 3 项；actionlint。
   未验证（只在推 `v*` 标签时运行）：真实 Release 上的 latest.json 合并。
+- [x] 死代码清理（rc.3 后审查，不含大文件拆分）。删去无调用方的后端接口（`/api/quota`、`/api/milvus/clear-lock`、
+  `/api/files/list`、`/api/metrics`、`GET /api/graph`、`/api/graph/query`、`/api/graph/probe`、两个笔记 PATCH）及其
+  `kacore` 实现、`kacore/metrics.py`、Milvus 清锁回调；只在测试里出现的方法；前端 `lib/api.ts` 的 24 个未调用函数、
+  `?mock` 离线模式、`components/ds/index.ts`、`geist`、47 个未引用的 CSS 变量；6 份无人引用的 docs。
+  `restart_plugin` / `/api/plugin/restart` 改名为 service；repository 的 `memory.py` 不进安装包。
+  保留：source_store 的读方法（store 契约测试用它核对写入）、`MemoryLogHandler.get_lines`（测试读日志）、
+  Zotero 账号合并（报错指路到它但没有 HTTP 入口，待定）。验证：pytest 1383 passed / 4 skipped；ruff；mypy；
+  tsc；eslint；`next build`；knip 无未用文件 / 依赖。

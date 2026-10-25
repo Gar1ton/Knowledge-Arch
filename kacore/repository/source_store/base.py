@@ -297,11 +297,6 @@ class SourceDocumentStore(ABC):
         ...
 
     @abstractmethod
-    async def update_scoped_note(self, note: ScopedNote) -> bool:
-        """整体更新一条笔记。返回 False 表示 note id 不存在。"""
-        ...
-
-    @abstractmethod
     async def get_scoped_note(self, note_id: str) -> ScopedNote | None:
         """按 note id 获取笔记；不存在返回 None。"""
         ...

@@ -58,7 +58,7 @@ AGENT_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/api/config/effective"),
     ("POST", "/api/config/update"),
     ("POST", "/api/config/test-embedding"),
-    ("POST", "/api/plugin/restart"),
+    ("POST", "/api/service/restart"),
     ("GET", "/api/providers"),
     ("POST", "/api/providers"),
     ("PATCH", "/api/providers/{provider_id}"),

@@ -6,12 +6,11 @@ from kacore.adapters.zotero.web_api import ZoteroWebApiReader, current_key_ident
 from kacore.secret_store import EncryptedSecretStore
 
 
-def test_secret_store_encrypts_and_masks(tmp_path: Path) -> None:
+def test_secret_store_encrypts_at_rest(tmp_path: Path) -> None:
     store = EncryptedSecretStore(tmp_path / "secrets")
     store.set_secret("zotero.server_api_key", "abcdef123456")
 
     assert store.get_secret("zotero.server_api_key") == "abcdef123456"
-    assert store.masked_secret("zotero.server_api_key") == "ab****56"
     payload = (tmp_path / "secrets" / "zotero.server_api_key.secret").read_text()
     assert "abcdef123456" not in payload
 

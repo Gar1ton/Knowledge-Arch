@@ -371,21 +371,6 @@ async def test_zotero_reset_removes_linked_artifacts_but_not_external_original(
     assert await store.get_document("local-doc") is not None
 
 
-async def test_list_quota() -> None:
-    api = await _make_api()
-    usages = {u.target: u for u in await api.list_quota()}
-    assert usages[SyncTargetKind.R2].ratio == pytest.approx(0.4)  # base 4 / limit 10
-    assert usages[SyncTargetKind.NOTION].will_exceed is False
-
-
-async def test_list_quota_empty_when_no_targets() -> None:
-    store = InMemorySourceDocumentStore()
-    api = KnowledgeRepositoryApi(
-        source_store=store
-    )
-    assert await api.list_quota() == []
-
-
 async def test_notion_failed_ledger_is_visible_without_sync_records_and_takes_precedence() -> None:
     from kacore.config import Config
     from kacore.domain.models import NotionEntityRecord
@@ -998,14 +983,14 @@ async def test_rerank_config_update_hot_swaps_deep_thinking(
         def __init__(self) -> None:
             self.calls = []
 
-        def update_reranker(self, reranker, rerank_config) -> None:
-            self.calls.append((reranker, rerank_config))
+        def update_reranker(self, reranker) -> None:
+            self.calls.append(reranker)
 
         @property
         def reranker_status(self) -> dict:
             if not self.calls:
                 return NoopReranker().status
-            return self.calls[-1][0].status
+            return self.calls[-1].status
 
     monkeypatch.setattr(
         "kacore.repository.reranker._has_sentence_transformers", lambda: False
@@ -1022,9 +1007,7 @@ async def test_rerank_config_update_hot_swaps_deep_thinking(
     assert result["restart_required"] is False
     assert result["rebuild_required"] is False
     assert len(probe.calls) == 1
-    reranker, rerank_cfg = probe.calls[0]
-    assert isinstance(reranker, NoopReranker)
-    assert rerank_cfg.provider == "cross_encoder"
+    assert isinstance(probe.calls[0], NoopReranker)
 
 
 async def test_zotero_config_same_value_save_reports_no_consequence() -> None:
@@ -1831,68 +1814,6 @@ async def test_build_graph_reports_lrag_chunk_progress() -> None:
     assert job.to_dict()["estimated_remaining_seconds"] == 0
 
 
-async def test_probe_lightrag_core_delegates_to_registry() -> None:
-    received: dict = {}
-
-    class Registry:
-        async def manual_probe(
-            self, *, collection: str, text: str, doc_id: str, query: str
-        ) -> dict:
-            received.update(
-                {"collection": collection, "text": text, "doc_id": doc_id, "query": query}
-            )
-            return {"status": "success", "steps": []}
-
-    api = KnowledgeRepositoryApi(
-        source_store=InMemorySourceDocumentStore(),
-        lightrag_registry=Registry(),  # type: ignore[arg-type]
-    )
-
-    result = await api.probe_lightrag_core("col", "text content", "doc_x", "test query")
-
-    assert result["status"] == "success"
-    assert received == {
-        "collection": "col",
-        "text": "text content",
-        "doc_id": "doc_x",
-        "query": "test query",
-    }
-
-
-async def test_query_graph_delegates_to_registry_when_ready(tmp_path: Path) -> None:
-    from kacore.index_compatibility import IndexCompatibilityStore
-
-    queries: list[str] = []
-
-    class Registry:
-        def has_workspace(self, collection: str) -> bool:
-            return True
-
-        async def query(
-            self, collection: str, query: str, *, only_need_context: bool = False
-        ) -> dict:
-            queries.append(query)
-            return {"answer": "graph answer", "context": "", "entities": [], "relations": []}
-
-    store = InMemorySourceDocumentStore()
-    await store.add_document(_doc("d1", "papers"))
-    await store.set_lightrag_index_status("d1", "papers", "indexed")
-    compatibility = IndexCompatibilityStore(tmp_path / "compat.json")
-    compatibility.mark_lightrag_compatible("papers", "fp")
-    api = KnowledgeRepositoryApi(
-        source_store=store,
-        lightrag_registry=Registry(),  # type: ignore[arg-type]
-        index_compatibility=compatibility,
-        embedding_fingerprint="fp",
-    )
-
-    result = await api.query_graph("transformer attention", collection="papers")
-
-    assert queries == ["transformer attention"]
-    assert result["status"] == "success"
-    assert result["answer"] == "graph answer"
-
-
 # ── Deep Thinking 模式端到端 ────────────────────────────────
 class _MockSynthLLM:
     async def generate_result(
@@ -2450,14 +2371,14 @@ async def test_llm_unavailable_fallback_is_formatted_excerpts() -> None:
     assert "**[1] " in result["answer"]
 
 
-async def test_restart_plugin_unsupported_without_callback() -> None:
+async def test_restart_service_unsupported_without_callback() -> None:
     """未注入 reload_callback（如无法程序化重启的环境）时返回 unsupported，不报错。"""
     api = await _make_api()
-    result = await api.restart_plugin()
+    result = await api.restart_service()
     assert result["status"] == "unsupported"
 
 
-async def test_restart_plugin_schedules_reload() -> None:
+async def test_restart_service_schedules_reload() -> None:
     """注入 reload_callback 时立即返回 restarting，并在后台延迟触发软重启回调。"""
     reloaded = asyncio.Event()
 
@@ -2468,29 +2389,9 @@ async def test_restart_plugin_schedules_reload() -> None:
         source_store=InMemorySourceDocumentStore(),
         reload_callback=_reload,
     )
-    result = await api.restart_plugin()
+    result = await api.restart_service()
     assert result["status"] == "restarting"
     await asyncio.wait_for(reloaded.wait(), timeout=3.0)
-
-
-async def test_clear_milvus_lock_unsupported_without_callback() -> None:
-    """未注入 clear_milvus_lock_callback 时返回 unsupported，不报错。"""
-    api = await _make_api()
-    result = await api.clear_milvus_lock()
-    assert result["status"] == "unsupported"
-
-
-async def test_clear_milvus_lock_delegates_to_callback() -> None:
-    """注入回调时薄委派：返回值原样透传，不在 api 层重复做守卫判断。"""
-    async def _clear() -> dict:
-        return {"status": "ok", "message": "锁定标记已清除，请重启插件以重新装配 Milvus。"}
-
-    api = KnowledgeRepositoryApi(
-        source_store=InMemorySourceDocumentStore(),
-        clear_milvus_lock_callback=_clear,
-    )
-    result = await api.clear_milvus_lock()
-    assert result["status"] == "ok"
 
 
 async def test_capabilities_excludes_detached_documents_from_vector_stats(tmp_path: Path) -> None:
