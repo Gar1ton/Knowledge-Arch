@@ -21,6 +21,8 @@
 - **批量上传**：`components/panels/FilePanel.tsx` 的上传框支持多选与多文件拖入，逐个上传并显示进度，失败的文件留在列表里重试。
 - **目标集合下拉跟随主题**：改用 ds `Select`；集合列表晚到时补上默认目标。
 - **上传格式与后端一致**：去掉后端没有解析器的 DOCX（会被当纯文本读入），加上 `.markdown`。
+- **文档列表刷新**：`components/panels/DocumentsPanel.tsx` 在搜索键旁加刷新键；上传成功后经 `lib/documentEvents.ts`
+  自动重新加载；未选集合时（All Documents）列出全部文档，此前恒为空。
 
 ### 改进 (Changed)
 

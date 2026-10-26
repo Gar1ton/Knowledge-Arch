@@ -332,3 +332,6 @@
   集合列表晚到时补上默认目标；去掉后端并不支持的 DOCX（会被当纯文本读成乱码），加上 `.markdown`。
   验证：tsc；eslint；`next build`；Playwright 对 dev 前端 + 临时数据目录：多选 3 个、模拟拖入 1 个、DOCX 被拒，
   三个文件依次上传成功并入库；暗色主题下拉截图。未验证：桌面壳里的真实系统拖放（需出包后实测）。
+- [x] 文档列表刷新：Documents 面板搜索键旁加刷新键；上传成功后经 `lib/documentEvents.ts` 通知列表重新加载；
+  未选集合（All Documents）时真正列出全部文档（此前不请求、恒为 0 篇）。上传框的目标集合改为派生值，去掉 effect 里的 setState。
+  验证：tsc；eslint；`next build`；Playwright：All Documents 列出已有 3 篇，上传后不刷新页面即出现第 4 篇。

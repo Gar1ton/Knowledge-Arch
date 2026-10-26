@@ -7,6 +7,7 @@ import { Eyebrow } from "@/components/ds/Eyebrow";
 import { IconButton } from "@/components/ds/IconButton";
 import { Icon } from "@/components/ds/Icon";
 import { useConsole } from "@/lib/ConsoleContext";
+import { DOCUMENTS_CHANGED_EVENT } from "@/lib/documentEvents";
 import {
   getDocumentAnnotations,
   KrDocument,
@@ -513,25 +514,32 @@ export function DocumentsPanel() {
   const [documentList, setDocumentList] = useState<DocumentListState>(() => ({
     colName,
     docs: [],
-    loading: Boolean(colName),
+    loading: true,
   }));
+  const [reloadKey, setReloadKey] = useState(0);
   const [modeState, setModeState] = useState<ReadingModeState>(() => ({
     docId: "",
     mode: "md",
   }));
   const docs = documentList.colName === colName ? documentList.docs : [];
-  const loading = colName ? (documentList.colName === colName ? documentList.loading : true) : false;
+  const loading = documentList.colName === colName ? documentList.loading : true;
   const selectedDoc = selectedDocId ? docs.find((d) => d.doc_id === selectedDocId) : null;
   const highlightedDoc = highlightedChunk ? docs.find((d) => d.doc_id === highlightedChunk.docId) : null;
   const activeDoc = highlightedDoc ?? selectedDoc ?? null;
   const activeDocId = activeDoc?.doc_id ?? "";
   const mode = modeState.docId === activeDocId ? modeState.mode : "md";
 
-  // Load documents when collection changes
+  // 上传等操作完成后（documentEvents）与刷新键都会重新加载当前列表。
   useEffect(() => {
-    if (!colName) return;
+    const reload = () => setReloadKey((k) => k + 1);
+    window.addEventListener(DOCUMENTS_CHANGED_EVENT, reload);
+    return () => window.removeEventListener(DOCUMENTS_CHANGED_EVENT, reload);
+  }, []);
+
+  // 切换集合或请求刷新时加载；未选集合时列出全部文档。
+  useEffect(() => {
     let cancelled = false;
-    listDocuments({ collection: colName })
+    listDocuments(colName ? { collection: colName } : undefined)
       .then((nextDocs) => {
         if (!cancelled) setDocumentList({ colName, docs: nextDocs, loading: false });
       })
@@ -541,7 +549,7 @@ export function DocumentsPanel() {
     return () => {
       cancelled = true;
     };
-  }, [colName]);
+  }, [colName, reloadKey]);
 
   useEffect(() => {
     if (!highlightedDoc || selectedDocId === highlightedDoc.doc_id) return;
@@ -609,7 +617,10 @@ export function DocumentsPanel() {
       ))}
     </div>
   ) : (
-    <IconButton name="search" label={t("documents_search_in_collection")} />
+    <div style={{ display: "flex", gap: 2 }}>
+      <IconButton name="sync" label={t("documents_refresh")} onClick={() => setReloadKey((k) => k + 1)} />
+      <IconButton name="search" label={t("documents_search_in_collection")} />
+    </div>
   );
 
   return (

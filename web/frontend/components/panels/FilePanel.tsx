@@ -7,6 +7,7 @@ import { IconButton } from "@/components/ds/IconButton";
 import { Icon } from "@/components/ds/Icon";
 import { Select } from "@/components/ds/Select";
 import { formatBytes } from "@/components/flow/SyncActions";
+import { notifyDocumentsChanged } from "@/lib/documentEvents";
 import { useConsole } from "@/lib/ConsoleContext";
 import { listCollections, getActiveBuildJob, getBuildJobHistory, buildGraph, pauseBuildJob, resumeBuildJob, deleteCollection, deleteCollectionByKey, renameCollection, createCollection, uploadDocument, syncZoteroPull, getActiveZoteroSyncJob, backupNow, Collection, GraphBuildJob, BuildJobRecord } from "@/lib/api";
 import { useToast } from "@/components/ui/Toast";
@@ -754,16 +755,13 @@ function UploadDocumentDialog({ defaultCollection, localCollections, onClose }: 
   const { t } = useI18n();
   const { toast } = useToast();
   const [files, setFiles] = useState<File[]>([]);
-  const [collection, setCollection] = useState(defaultCollection ?? localCollections[0] ?? "");
+  const [chosenCollection, setCollection] = useState("");
+  // 未手选时用默认集合；集合列表晚于对话框到达时也能补上。
+  const collection = chosenCollection || defaultCollection || localCollections[0] || "";
   const [uploading, setUploading] = useState(false);
   const [done, setDone] = useState(0);
   const [dragOver, setDragOver] = useState(false);
   const inputRef = React.useRef<HTMLInputElement>(null);
-
-  // 集合列表晚于对话框到达时补上默认目标。
-  useEffect(() => {
-    if (!collection && localCollections.length) setCollection(defaultCollection ?? localCollections[0]);
-  }, [collection, defaultCollection, localCollections]);
 
   // 追加文件（按「名称 + 大小」去重），不支持的格式提示后忽略。
   function addFiles(list: FileList | null) {
@@ -798,6 +796,7 @@ function UploadDocumentDialog({ defaultCollection, localCollections, onClose }: 
     }
     setUploading(false);
     const ok = files.length - failed.length;
+    if (ok) notifyDocumentsChanged();
     if (!failed.length) {
       toast(files.length === 1
         ? t("file_upload_success", { name: files[0].name })
