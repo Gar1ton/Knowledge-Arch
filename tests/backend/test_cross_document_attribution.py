@@ -48,6 +48,7 @@ def test_sea_prompt_labels_each_evidence_with_source() -> None:
         Checklist(items=[ChecklistItem(id="c1", text="局限性")]),
         _evidence(),
         source_labels=_LABELS,
+        lang="zh",
     )
     assert "[a_c0]（来源：Lean4Agent）" in prompt
     assert "[b_c0]（来源：LeanMarathon）" in prompt
@@ -59,6 +60,7 @@ def test_verify_prompt_labels_each_evidence_with_source() -> None:
         "答案",
         [_CHUNK_A, _CHUNK_B],
         source_labels=_LABELS,
+        lang="zh",
     )
     # VERIFY 按序号编号，来源标签紧跟编号。
     assert "[1]（来源：Lean4Agent）" in prompt
@@ -112,16 +114,16 @@ async def test_document_labels_resolves_titles_and_falls_back() -> None:
 
 # ── 向后兼容 ────────────────────────────────────────────────
 def test_source_tag_empty_without_labels() -> None:
-    assert source_tag("Lean4Agent", None) == ""
-    assert source_tag("Lean4Agent", {}) == ""
-    assert source_tag("Unknown", _LABELS) == ""  # 无映射条目不标注
+    assert source_tag("Lean4Agent", None, "zh") == ""
+    assert source_tag("Lean4Agent", {}, "zh") == ""
+    assert source_tag("Unknown", _LABELS, "zh") == ""  # 无映射条目不标注
 
 
 def test_prompts_backward_compatible_without_labels() -> None:
     sea = build_sea_prompt(
-        "q", Checklist(items=[ChecklistItem(id="c1", text="x")]), _evidence()
+        "q", Checklist(items=[ChecklistItem(id="c1", text="x")]), _evidence(), lang="zh"
     )
-    verify = build_verify_prompt("q", "a", [_CHUNK_A, _CHUNK_B])
+    verify = build_verify_prompt("q", "a", [_CHUNK_A, _CHUNK_B], lang="zh")
     assert "（来源：" not in sea
     assert "（来源：" not in verify
     # 旧的纯 chunk_id / 序号前缀仍在。

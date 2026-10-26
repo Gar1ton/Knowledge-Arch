@@ -207,14 +207,15 @@ def test_parse_verify_three_tier_partial_is_soft():
 
 
 def test_prompt_contracts_include_reliability_constraints():
-    plan = build_plan_prompt("纵观这批文献，比较数据集和模型", 4)
+    plan = build_plan_prompt("纵观这批文献，比较数据集和模型", 4, lang="zh")
     sea = build_sea_prompt(
         "比较多篇论文",
         Checklist(items=[ChecklistItem(id="c1", text="跨论文结论")]),
         [EvidenceItem(_doc_chunk("a1", "docA"), "rerank_score")],
         max_next_queries=3,
+        lang="zh",
     )
-    verify = build_verify_prompt("q", "answer [1]", [_doc_chunk("a1", "docA")])
+    verify = build_verify_prompt("q", "answer [1]", [_doc_chunk("a1", "docA")], lang="zh")
 
     assert "arXiv id" in plan
     assert "数据集名" in plan and "模型名" in plan and "表格/图/章节锚点" in plan
@@ -558,7 +559,7 @@ async def test_answer_question_used_for_synthesis_and_verify_not_retrieval_query
     assert retrieval.queries[:2] == ["translated retrieval query", "q1"]
     synth_prompt = llm.prompts[2]
     verify_prompt = llm.prompts[3]
-    assert "Question: 用户原始问题" in synth_prompt
+    assert "问题：用户原始问题" in synth_prompt  # 中文问题 → 中文提示词
     assert "问题：用户原始问题" in verify_prompt
     assert "Question: translated retrieval query" not in synth_prompt
 
@@ -761,8 +762,8 @@ def test_verify_prompt_respects_clip_param():
     from kacore.pipelines.deep_thinking_prompts import build_verify_prompt
 
     chunk = DocumentChunk("c1", "d", 0, "X" * 100, "h")
-    short = build_verify_prompt("q", "a", [chunk], 10)
-    longer = build_verify_prompt("q", "a", [chunk], 80)
+    short = build_verify_prompt("q", "a", [chunk], 10, lang="en")
+    longer = build_verify_prompt("q", "a", [chunk], 80, lang="en")
     assert "X" * 10 in short and "X" * 11 not in short
     assert "X" * 80 in longer
 
@@ -772,13 +773,13 @@ async def test_synthesize_answer_deep_style_selects_deep_system():
     from kacore.pipelines.answer_synthesis import synthesize_answer
 
     llm = ScriptedLLM(["ans"])
-    await synthesize_answer(llm, "q", [_chunk("c1")], "zh", style="deep")
+    await synthesize_answer(llm, "q", [_chunk("c1")], "en", style="deep")
     assert "mechanism" in llm.system_prompts[0].lower()
     assert "Begin with a concise, direct answer" in llm.system_prompts[0]
     assert "or begin with an inventory" in llm.system_prompts[0]
     assert "do not repeat the same citation" in llm.system_prompts[0]
     llm2 = ScriptedLLM(["ans"])
-    await synthesize_answer(llm2, "q", [_chunk("c1")], "zh")
+    await synthesize_answer(llm2, "q", [_chunk("c1")], "en")
     assert "mechanism" not in llm2.system_prompts[0].lower()
 
 

@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 改进 (Changed) — P19 提示词按回答语言切换
+
+- **`kacore/pipelines/prompt_language.py`**：回答语言 zh / en 直接决定提示词语言，auto 跟随问题语言。
+- **双语提示词**：深度思考的规划 / 证据审计 / 校验（`deep_thinking_prompts.py`）、增强召回（`enhanced_recall_prompts.py`）、
+  答案合成模板（`answer_synthesis.py`）、`api.py` 的默认 / 图谱内联提示词（改用共享的 `rag_rules` / `context_prompt`）、
+  追问改写、来源标签、JSON 重试提醒与证据动作说明都有中英两版；只翻译不改语义，JSON 字段名与枚举值不变。
+  英文回答时深度思考暴露的信息点、缺口与补检查询也随之是英文。
+- 英语召回的翻译提示词保持英文。
+
 ### 新增 (Added) — P18 多轮对话
 
 - **追问结合上下文**：`kacore/pipelines/conversation_context.py` 取本会话最近 3 轮（答案截断），`ask(use_context=True)`

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, TypeVar
 from kacore.domain.llm_generation import STATUS_LENGTH
 from kacore.managers.token_budget import default_tokenizer
 from kacore.pipelines.deep_thinking_prompts import JsonContractError
+from kacore.pipelines.prompt_language import PromptLang
 from kacore.utils.usage_ledger import current_usage, usage_stage
 
 if TYPE_CHECKING:
@@ -24,7 +25,12 @@ logger = logging.getLogger("LLMJsonCall")
 T = TypeVar("T")
 
 # 默认重试后缀：针对纯 JSON 步骤（PLAN/SEA/VERIFY 等）。
-_DEFAULT_RETRY_SUFFIX = "\n\n只输出合法 JSON，不要任何额外文字。"
+# 解析失败重试时追加在 prompt 后的提醒，与该次 prompt 同语言（见 prompt_language）。
+JSON_RETRY_SUFFIX: dict[PromptLang, str] = {
+    "zh": "\n\n只输出合法 JSON，不要任何额外文字。",
+    "en": "\n\nOutput valid JSON only, with no extra text.",
+}
+_DEFAULT_RETRY_SUFFIX = JSON_RETRY_SUFFIX["zh"]
 
 
 def est_tokens(*texts: str) -> int:

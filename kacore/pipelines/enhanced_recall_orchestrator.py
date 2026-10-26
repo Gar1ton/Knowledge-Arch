@@ -45,7 +45,8 @@ from kacore.pipelines.enhanced_recall_prompts import (
     parse_synth_check,
 )
 from kacore.pipelines.evidence_session import current_evidence_session, evidence_request
-from kacore.pipelines.llm_json import est_tokens, llm_json_call
+from kacore.pipelines.llm_json import JSON_RETRY_SUFFIX, est_tokens, llm_json_call
+from kacore.pipelines.prompt_language import prompt_lang
 
 if TYPE_CHECKING:
     from kacore.adapters.llm import LLMAdapter
@@ -107,6 +108,8 @@ class EnhancedRecallOrchestrator:
                 progress(stage, pct, detail)
 
         final_question = answer_question or query
+        # 提示词语言跟回答语言（auto 跟随用户原问题，而不是英语召回翻译后的 query）。
+        lang = prompt_lang(answer_language, final_question)
         checklist = Checklist()
         trace: list[RoundTrace] = []
         total_tokens = 0
@@ -119,10 +122,11 @@ class EnhancedRecallOrchestrator:
         try:
             (rewritten, subs), plan_calls, plan_tokens = await llm_json_call(
                 self._llm,
-                build_plan_lite_prompt(query, self._cfg.max_sub_queries),
-                PLAN_LITE_SYSTEM,
+                build_plan_lite_prompt(query, self._cfg.max_sub_queries, lang=lang),
+                PLAN_LITE_SYSTEM[lang],
                 parse_plan_lite,
                 self._cfg.json_max_retries,
+                retry_suffix=JSON_RETRY_SUFFIX[lang],
             )
         except JsonContractError as exc:
             # calls/tokens 来自异常上携带的重试耗尽前真实消费，不再用重试次数硬编码估算。
@@ -154,13 +158,13 @@ class EnhancedRecallOrchestrator:
             try:
                 synth, synth_calls, synth_tokens = await llm_json_call(
                     self._llm,
-                    build_synth_check_prompt(final_question, evidence, labels),
+                    build_synth_check_prompt(final_question, evidence, labels, lang=lang),
                     build_synth_check_system(
-                        answer_language, self._cfg.max_corrective_queries
+                        answer_language, self._cfg.max_corrective_queries, lang=lang
                     ),
                     parse_synth_check,
                     self._cfg.json_max_retries,
-                    retry_suffix=SYNTH_CHECK_RETRY_SUFFIX,
+                    retry_suffix=SYNTH_CHECK_RETRY_SUFFIX[lang],
                 )
                 total_tokens += synth_tokens
             except JsonContractError as exc:
@@ -192,7 +196,7 @@ class EnhancedRecallOrchestrator:
             and self._cfg.corrective_enabled
             and (bool(synth.corrective_queries) or has_actions)
             and (total_tokens
-                 + est_tokens(build_synth_check_prompt(final_question, evidence, labels))
+                 + est_tokens(build_synth_check_prompt(final_question, evidence, labels, lang=lang))
                  + self._cfg.output_reserve < self._cfg.token_budget)
         )
         if not needs_corrective:
@@ -228,11 +232,13 @@ class EnhancedRecallOrchestrator:
             labels = await self._retrieval.document_labels(c.doc_id for c in evidence)
             resynth, resynth_calls, resynth_tokens = await llm_json_call(
                 self._llm,
-                build_synth_check_prompt(final_question, evidence, labels),
-                build_synth_check_system(answer_language, self._cfg.max_corrective_queries),
+                build_synth_check_prompt(final_question, evidence, labels, lang=lang),
+                build_synth_check_system(
+                    answer_language, self._cfg.max_corrective_queries, lang=lang
+                ),
                 parse_synth_check,
                 self._cfg.json_max_retries,
-                retry_suffix=SYNTH_CHECK_RETRY_SUFFIX,
+                retry_suffix=SYNTH_CHECK_RETRY_SUFFIX[lang],
             )
             total_tokens += resynth_tokens
             if resynth.answer:

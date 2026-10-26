@@ -2078,7 +2078,7 @@ async def test_deep_thinking_verify_disabled_uses_deep_synth_fallback() -> None:
     )
     result = await api.ask(question="综述", collection="papers", retrieval_mode="deep_thinking")
     assert result["answer"].startswith("deep fallback answer (Anon., n.d.)")
-    assert any("mechanism" in s.lower() for s in llm.system_prompts)
+    assert any("机制与方法" in s for s in llm.system_prompts)  # 中文问题 → 中文 deep 模板
 
 
 async def test_deep_thinking_degraded_reports_mode() -> None:

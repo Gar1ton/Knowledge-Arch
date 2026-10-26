@@ -18,6 +18,7 @@ from kacore.domain.deep_thinking import ChecklistItem
 from kacore.pipelines.answer_synthesis import source_tag
 from kacore.pipelines.evidence_actions import ACTION_GUIDANCE, parse_actions
 from kacore.pipelines.evidence_views import evidence_text
+from kacore.pipelines.prompt_language import PromptLang
 
 if TYPE_CHECKING:
     from kacore.domain.deep_thinking import Checklist, EvidenceItem
@@ -102,14 +103,51 @@ def extract_json_object(raw: str) -> dict[str, Any]:
 
 
 # ── PLAN：分解 + checklist（合并单次调用）──────────────────
-PLAN_SYSTEM = (
-    "你是研究规划助手。把用户问题拆为可验证的信息点清单、检索子查询和证据计划。"
-    "优先识别关键实体、时间范围、术语、章节/图表锚点和必须找到的证据类型。"
-    "只输出 JSON，不要任何额外文字。"
-)
+PLAN_SYSTEM: dict[PromptLang, str] = {
+    "zh": (
+        "你是研究规划助手。把用户问题拆为可验证的信息点清单、检索子查询和证据计划。"
+        "优先识别关键实体、时间范围、术语、章节/图表锚点和必须找到的证据类型。"
+        "只输出 JSON，不要任何额外文字。"
+    ),
+    "en": (
+        "You are a research-planning assistant. Break the user's question into a checklist of "
+        "verifiable information points, retrieval sub-queries and an evidence plan. Prioritize "
+        "identifying key entities, time ranges, terms, section/figure/table anchors and the types "
+        "of evidence that must be found. Output JSON only, with no extra text."
+    ),
+}
 
 
-def build_plan_prompt(query: str, max_sub_queries: int) -> str:
+def build_plan_prompt(query: str, max_sub_queries: int, *, lang: PromptLang) -> str:
+    if lang == "en":
+        return (
+            f"User question: {query}\n\n"
+            "Output JSON in this format:\n"
+            '{"answer_outline":["key points of the answer structure"],'
+            '"must_have_evidence":["types of evidence that must be found"],'
+            '"search_hints":["key entities/terms/section anchors"],'
+            '"checklist":[{"id":"c1","text":"one information point the answer needs",'
+            '"critical":true,'
+            '"evidence_type":"definition|direct_quote|comparison|timeline|section_anchor",'
+            '"search_hints":["terms usable for retrieval"]}],'
+            '"sub_queries":[{"query":"a retrieval query focused on one aspect, with keywords",'
+            '"type":"semantic|keyword|anchor"}]}\n'
+            "Requirements: give every checklist item a stable id (c1, c2, ...); critical=true "
+            "means the question cannot be answered without it; "
+            f"give 1-{max_sub_queries} sub_queries that each cover a different aspect; "
+            "spread the sub_queries across definition/background, mechanism, comparison, "
+            "timeline, section anchors and verbatim evidence; "
+            "if the question compares several objects or asks about 'the X shared by A and B', "
+            "lay out a mechanism probe for each object separately (e.g. 'the mechanism/design "
+            "of A', 'the mechanism/design of B') plus a cross-object comparison probe, so the "
+            "concrete mechanisms on both sides are recalled; "
+            "if the question concerns 'this set of papers', 'several papers', 'what they discuss "
+            "in common', 'a side-by-side comparison' or 'an overview of the literature', the "
+            "sub_queries must cover candidate paper titles/years/arXiv ids, dataset names, model "
+            "names, method names and table/figure/section anchors, rather than querying a single "
+            "generic concept; "
+            "do not write the answer, only plan which evidence is needed."
+        )
     return (
         f"用户问题：{query}\n\n"
         "请输出 JSON，格式：\n"
@@ -171,19 +209,42 @@ def parse_plan(raw: str) -> tuple[list[ChecklistItem], list[str]]:
 
 
 # ── SEA：结构化充分性审计 ───────────────────────────────────
-SEA_SYSTEM = (
-    "你是证据审计助手。依据信息点清单审计已收集证据，输出逐项 coverage matrix。"
-    "必须区分 supported、partial、missing、contradicted，并指出支撑 chunk、缺口原因、"
-    "下一步检索动作和整体是否足以回答。"
-    "比较多篇论文或多个对象时，supported 必须满足来源约束：不能用单篇/单来源证据支撑跨论文结论；"
-    "若证据来源与断言对象不一致，标为 partial 或 contradicted。"
-    "同时主动从已召回证据里发现 checklist 尚未覆盖、但与问题高度相关的新机制/新论点，"
-    "列入 discovered_aspects 以供深挖。"
-    "若整体不足以回答（sufficient=false），必须同时在 next_sub_queries 给出下一轮补检的"
-    "精准检索子查询：query 要可检索，优先包含论文名、方法名、数据集名、模型名、表格名、"
-    "图号、章节名或 arXiv id，避免只输出「缺少定义」「缺少对比」这类泛化短语。"
-    "只输出 JSON，不要任何额外文字。"
-)
+_SEA_INTRO: dict[PromptLang, str] = {
+    "zh": (
+        "你是证据审计助手。依据信息点清单审计已收集证据，输出逐项 coverage matrix。"
+        "必须区分 supported、partial、missing、contradicted，并指出支撑 chunk、缺口原因、"
+        "下一步检索动作和整体是否足以回答。"
+        "比较多篇论文或多个对象时，supported 必须满足来源约束："
+        "不能用单篇/单来源证据支撑跨论文结论；"
+        "若证据来源与断言对象不一致，标为 partial 或 contradicted。"
+        "同时主动从已召回证据里发现 checklist 尚未覆盖、但与问题高度相关的新机制/新论点，"
+        "列入 discovered_aspects 以供深挖。"
+        "若整体不足以回答（sufficient=false），必须同时在 next_sub_queries 给出下一轮补检的"
+        "精准检索子查询：query 要可检索，优先包含论文名、方法名、数据集名、模型名、表格名、"
+        "图号、章节名或 arXiv id，避免只输出「缺少定义」「缺少对比」这类泛化短语。"
+        "只输出 JSON，不要任何额外文字。"
+    ),
+    "en": (
+        "You are an evidence-audit assistant. Audit the collected evidence against the checklist "
+        "of information points and output a per-item coverage matrix. "
+        "You must distinguish supported, partial, missing and contradicted, and point out the "
+        "supporting chunks, the reason for each gap, the next retrieval action and whether the "
+        "evidence as a whole is sufficient to answer. "
+        "When comparing several papers or objects, supported must respect source constraints: "
+        "evidence from a single paper or source cannot support a cross-paper conclusion; if the "
+        "evidence's source does not match the object of the claim, mark it partial or "
+        "contradicted. "
+        "Also proactively discover, in the evidence already retrieved, new mechanisms or "
+        "arguments that are highly relevant to the question but not yet covered by the "
+        "checklist, and list them in discovered_aspects for deeper exploration. "
+        "If the evidence as a whole is not sufficient to answer (sufficient=false), you must also "
+        "give precise retrieval sub-queries for the next round in next_sub_queries: each query "
+        "must be searchable, preferably containing a paper title, method name, dataset name, "
+        "model name, table name, figure number, section name or arXiv id, rather than generic "
+        "phrases such as 'missing definition' or 'missing comparison'. "
+        "Output JSON only, with no extra text."
+    ),
+}
 
 
 @dataclass
@@ -212,7 +273,9 @@ class SeaDiscoveredItem:
     gap_type: str = ""
 
 
-SEA_SYSTEM += ACTION_GUIDANCE
+SEA_SYSTEM: dict[PromptLang, str] = {
+    lang: _SEA_INTRO[lang] + ACTION_GUIDANCE[lang] for lang in ("zh", "en")
+}
 
 
 @dataclass
@@ -235,20 +298,62 @@ def build_sea_prompt(
     clip: int = _EVIDENCE_TEXT_CLIP,
     source_labels: dict[str, str] | None = None,
     max_next_queries: int = 4,
+    *,
+    lang: PromptLang,
 ) -> str:
+    critical_mark = "[关键]" if lang == "zh" else "[critical]"
+    empty = "（空）" if lang == "zh" else "(empty)"
     checklist_lines = "\n".join(
-        f'- {item.id}{"[关键]" if item.critical else ""}: {item.text}'
+        f'- {item.id}{critical_mark if item.critical else ""}: {item.text}'
         for item in checklist.items
     )
     evidence_lines = "\n".join(
-        f"[{item.chunk.chunk_id}]{source_tag(item.chunk.doc_id, source_labels)} "
+        f"[{item.chunk.chunk_id}]{source_tag(item.chunk.doc_id, source_labels, lang)} "
         f"{evidence_text(item.chunk)[:clip]}"
         for item in evidence
     )
+    if lang == "en":
+        return (
+            f"Original question: {query}\n\n"
+            f"Checklist of information points:\n{checklist_lines or empty}\n\n"
+            "Collected evidence (each line is prefixed with its chunk_id):\n"
+            f"{evidence_lines or empty}\n\n"
+            "Output JSON in this format:\n"
+            '{"coverage":[{"checklist_id":"c1","status":"supported|partial|missing|contradicted",'
+            '"supporting_chunk_ids":["chunk_id"],"confidence":0.8,"why_missing":"what is missing",'
+            '"next_action":"definition|direct_quote|comparison|timeline|conflict_resolution|section_anchor",'
+            '"gap_query":"query for the next retrieval round"}],'
+            '"satisfied_ids":["c1"],"gaps":[{"checklist_id":"c2","text":"what is still missing"}],'
+            '"discovered_aspects":[{"text":"a new mechanism or argument in the evidence that the '
+            'checklist does not cover",'
+            '"why_relevant":"why it matters for the question","search_hints":["searchable terms"],'
+            '"gap_type":"definition|comparison|section_anchor"}],'
+            '"conflicting_chunk_ids":["chunk_id"],"sufficient":false,'
+            '"next_sub_queries":[{"query":"retrieval query for the next round",'
+            '"type":"definition|direct_quote|comparison|timeline|conflict_resolution|section_anchor"}]}\n'
+            "Use checklist ids for satisfied_ids and the chunk_ids above for "
+            "conflicting_chunk_ids; "
+            "gaps are blocking gaps that the answer requires but are still missing; "
+            "discovered_aspects are new angles in the evidence worth exploring "
+            "(do not mix the two; use an empty array when there are none); "
+            "set sufficient to true only when the core information points are supported and no "
+            "high-value unexplored aspect remains; "
+            f"when sufficient=false, next_sub_queries must give 1-{max_next_queries} "
+            "focused retrieval queries containing keywords or section/figure/table anchors "
+            "(prioritize filling gaps and discovered_aspects, rewriting each gap as a short query "
+            "containing a paper title, dataset name, model name, method name, or table or "
+            "section anchor); "
+            "when sufficient=true, give an empty array for next_sub_queries; "
+            "in multi-source comparison questions, evidence from a single source must not "
+            "support a cross-source conclusion; "
+            "when the cited object and the source do not match, mark it partial or contradicted; "
+            "do not mark as supported a passage that is merely on-topic but cannot support the "
+            "claim."
+        )
     return (
         f"原始问题：{query}\n\n"
-        f"信息点清单：\n{checklist_lines or '（空）'}\n\n"
-        f"已收集证据（每条前缀为 chunk_id）：\n{evidence_lines or '（空）'}\n\n"
+        f"信息点清单：\n{checklist_lines or empty}\n\n"
+        f"已收集证据（每条前缀为 chunk_id）：\n{evidence_lines or empty}\n\n"
         "请输出 JSON，格式：\n"
         '{"coverage":[{"checklist_id":"c1","status":"supported|partial|missing|contradicted",'
         '"supporting_chunk_ids":["chunk_id"],"confidence":0.8,"why_missing":"缺什么",'
@@ -364,17 +469,34 @@ def parse_sea(raw: str) -> SeaResult:
 # 三档：supported（直接支撑）/ partial（部分支持·有据推断，软项不阻塞）/
 # unsupported（臆造·矛盾·跨来源张冠李戴，硬违规）。只有硬违规计入告警与降级，
 # partial/info_gap 仅供透明展示——根除「部分可支持→全盘否定 + 告警墙」。
-VERIFY_SYSTEM = (
-    "你是答案校验助手。逐条审计答案中的断言，区分三档支持度："
-    "supported（被证据直接支撑）、partial（证据部分支持或可据证据合理推断、但未被直接断言；"
-    "只要答案对其用了明确的 hedge 措辞即视为允许保留，不算违规）、"
-    "unsupported（证据完全未触及的臆造、与证据矛盾、或跨来源张冠李戴）。"
-    "每条证据都标注了来源文档（来源）：若某断言把某来源文档的发现/方法/局限归到了另一来源，"
-    "一律计入 citation_mismatches。"
-    "supported 为整体判据：仅当不存在任何 "
-    "unsupported_claims/contradictions/citation_mismatches 时才为 true"
-    "（partial 不影响 supported）。只输出 JSON，不要任何额外文字。"
-)
+VERIFY_SYSTEM: dict[PromptLang, str] = {
+    "zh": (
+        "你是答案校验助手。逐条审计答案中的断言，区分三档支持度："
+        "supported（被证据直接支撑）、partial（证据部分支持或可据证据合理推断、但未被直接断言；"
+        "只要答案对其用了明确的 hedge 措辞即视为允许保留，不算违规）、"
+        "unsupported（证据完全未触及的臆造、与证据矛盾、或跨来源张冠李戴）。"
+        "每条证据都标注了来源文档（来源）：若某断言把某来源文档的发现/方法/局限归到了另一来源，"
+        "一律计入 citation_mismatches。"
+        "supported 为整体判据：仅当不存在任何 "
+        "unsupported_claims/contradictions/citation_mismatches 时才为 true"
+        "（partial 不影响 supported）。只输出 JSON，不要任何额外文字。"
+    ),
+    "en": (
+        "You are an answer-verification assistant. Audit the claims in the answer one by one and "
+        "distinguish three levels of support: "
+        "supported (directly supported by the evidence), partial (the evidence partly supports "
+        "it, or it can reasonably be inferred from the evidence but is not directly stated; as "
+        "long as the answer words it with clear hedging it may stay and is not a violation), "
+        "unsupported (a fabrication the evidence does not touch at all, a contradiction of the "
+        "evidence, or a mis-attribution across sources). "
+        "Every evidence item is labeled with its source document (Source): if a claim attributes "
+        "the findings, methods or limitations of one source document to another source, always "
+        "count it in citation_mismatches. "
+        "supported is the overall verdict: it is true only when there are no "
+        "unsupported_claims/contradictions/citation_mismatches at all "
+        "(partial does not affect supported). Output JSON only, with no extra text."
+    ),
+}
 
 
 @dataclass
@@ -410,18 +532,46 @@ def build_verify_prompt(
     evidence: list[DocumentChunk],
     clip: int = _EVIDENCE_TEXT_CLIP,
     source_labels: dict[str, str] | None = None,
+    *,
+    lang: PromptLang,
 ) -> str:
     evidence_lines = "\n".join(
-        f"[{i + 1}]{source_tag(chunk.doc_id, source_labels)} {evidence_text(chunk)[:clip]}"
+        f"[{i + 1}]{source_tag(chunk.doc_id, source_labels, lang)} {evidence_text(chunk)[:clip]}"
         for i, chunk in enumerate(evidence)
     )
+    schema = (
+        '{"supported":true,"complete":true,'
+        '"unsupported_claims":[],"citation_mismatches":[],"contradictions":[],'
+        '"partial_claims":[],"info_gaps":[]}\n'
+    )
+    if lang == "en":
+        return (
+            f"Question: {question}\n\n"
+            f"Answer:\n{answer}\n\n"
+            f"Evidence (each line is prefixed with its number):\n{evidence_lines or '(empty)'}\n\n"
+            f"Output JSON: {schema}"
+            "supported: whether there is no fabrication, contradiction or cross-source mismatch "
+            "at all (partial does not affect supported); "
+            "complete: whether the answer fully answers the question; "
+            "unsupported_claims: list each fabricated claim that the evidence does not support at "
+            "all; "
+            "contradictions: list the claims that conflict with the evidence; "
+            "citation_mismatches: list the claims whose citation number does not match the "
+            "evidence, stating the claim, the citation number and the actual source of that "
+            "number; "
+            "partial_claims: list the claims that the evidence partly supports or that can "
+            "reasonably be inferred from it and that the answer already words with hedging "
+            "(they may stay; do not put them in unsupported_claims); "
+            "info_gaps: list the information points still missing that can directly serve as "
+            "next-round retrieval queries; "
+            "put claims that are on-topic but not directly verifiable in partial_claims rather "
+            "than unsupported_claims."
+        )
     return (
         f"问题：{question}\n\n"
         f"答案：\n{answer}\n\n"
         f"证据（每条前缀为编号）：\n{evidence_lines or '（空）'}\n\n"
-        '请输出 JSON：{"supported":true,"complete":true,'
-        '"unsupported_claims":[],"citation_mismatches":[],"contradictions":[],'
-        '"partial_claims":[],"info_gaps":[]}\n'
+        f"请输出 JSON：{schema}"
         "supported：是否不存在任何臆造/矛盾/跨来源错配（partial 不影响 supported）；"
         "complete：是否完整回答了问题；"
         "unsupported_claims 逐条列出证据完全不支撑的臆造断言；"

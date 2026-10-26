@@ -147,7 +147,7 @@ def test_parse_synth_check_empty_body_raises():
 
 
 def test_synth_check_system_embeds_verdict_contract():
-    system = build_synth_check_system("zh", max_corrective_queries=3)
+    system = build_synth_check_system("zh", max_corrective_queries=3, lang="en")
     assert "===VERDICT===" in system
     assert '"sufficient"' in system
     assert "at most 3" in system
@@ -322,7 +322,7 @@ async def test_answer_question_used_for_synthesis_not_retrieval_query():
     )
     assert retrieval.queries[0] == "rewritten q"
     synth_prompt = llm.prompts[1]
-    assert "Question: 用户原始问题" in synth_prompt
+    assert "问题：用户原始问题" in synth_prompt
     assert "Question: translated retrieval query" not in synth_prompt
 
 

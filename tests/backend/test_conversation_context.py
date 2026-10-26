@@ -38,7 +38,9 @@ def test_recent_turns_pairs_questions_with_answers_and_keeps_the_last_ones() -> 
 
 
 def test_condense_prompt_clips_long_answers() -> None:
-    user, system = build_condense_prompt([("What is a Transformer?", "x" * 5000)], "its limits?")
+    user, system = build_condense_prompt(
+        [("What is a Transformer?", "x" * 5000)], "its limits?", lang="en"
+    )
     assert "Follow-up question: its limits?" in user
     assert "x" * MAX_ANSWER_CHARS + " …" in user and "x" * (MAX_ANSWER_CHARS + 1) not in user
     assert "standalone question" in system

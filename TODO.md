@@ -343,3 +343,13 @@
   - 验证：pytest 1391 passed / 4 skipped（新增 `test_conversation_context.py` 6 项）；ruff；mypy；tsc；eslint；`next build`；
     Playwright：设置菜单三个开关，切换后重新加载仍保持。未验证：接真实模型的多轮问答效果。
     限制：「理解为：…」不存库，重新加载聊天记录后不显示（存库需迁移）。
+- [x] P19 · 提示词按回答语言切换。决策：`zh` / `en` 直接用对应语言；`auto` 跟随问题语言。只翻译不改语义，
+  JSON 字段名与枚举值保持英文；LightRAG 建图提示词不在范围内。
+  - [x] P19.1 语言判定模块（`answer_language` + 问题 → `zh` / `en`）。
+  - [x] P19.2 双语提示词：深度思考、增强召回、答案合成、`api.py` 内联提示词、追问改写、来源标签。
+  - [x] P19.3 `ask()` → orchestrator / 合成函数串联 `lang`。
+  - [x] P19.4 测试：两种语言齐全、占位符与 JSON 字段一致、按 lang 产出；既有测试保持通过。
+  - 验证：pytest 1434 passed / 4 skipped（新增 `test_prompt_language.py` 43 项）；ruff；mypy。
+    逐字对比改动前后：原中文提示词 → 新 zh 版一致，原英文提示词 → 新 en 版一致，差异只有英文里夹的中文标签
+    （「来源」「证据部分支持」等示例）与 SEA 中文版末尾的动作说明改为中文。
+    保留英文：英语召回的翻译提示词（只在中文提问时触发，输出必须是英文）。未做：接真实模型的效果评测（benchmark 后续）。
