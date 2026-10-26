@@ -31,8 +31,16 @@ body {
   background-color: var(--bg);
   color: var(--fg);
   margin: 0;
-  min-height: 100%;
-  overflow-x: hidden;
+  height: 100%;
+}
+
+/* 桌面应用：外框固定在窗口里，不像网页那样整体被拖动或回弹；只有面板内部滚动。
+   各页面都是 100vh + 内部滚动区（落地页自带 fixed 滚动容器），根节点无需滚动。
+   overscroll-behavior: none 同时关掉 macOS 回弹与触控板左右滑动触发的前进 / 后退。 */
+html,
+body {
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 a {

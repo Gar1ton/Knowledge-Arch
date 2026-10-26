@@ -54,6 +54,18 @@ class SourceDocumentStore(ABC):
         ...
 
     @abstractmethod
+    async def rename_collection_references(
+        self, coll_key: str, old_name: str, new_name: str
+    ) -> list[str]:
+        """集合改名后，把按名字记录的引用改到新名字；返回属于该集合（本级）的 doc_id。
+
+        契约：documents.collection 与 lightrag_index_status 只改属于 coll_key 的文档（别处的
+        同名集合不受影响）；集合笔记（scope_type='collection'）、图谱构建记录与 Codex 图谱任务
+        按名字更新。全部在一个事务里完成。
+        """
+        ...
+
+    @abstractmethod
     async def get_collection(self, coll_key: str) -> Collection | None:
         """按 coll_key 取一个集合；不存在返回 None。"""
         ...
@@ -312,8 +324,12 @@ class SourceDocumentStore(ABC):
         sources: list | None = None,
         retrieval_mode: str = "",
         locked: bool = False,
+        meta: dict | None = None,
     ) -> None:
-        """追加一条聊天记录（role='user'|'assistant'）。"""
+        """追加一条聊天记录（role='user'|'assistant'）。
+
+        meta：附加信息（思考过程、改写后的问题等，JSON 可序列化），读历史时原样返回。
+        """
         ...
 
     @abstractmethod

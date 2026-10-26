@@ -333,6 +333,21 @@ class LightRAGCoreRegistry:
             self._workspace_map.pop(collection, None)
             self._save_workspace_map()
 
+    def rename_workspace(self, old: str, new: str) -> bool:
+        """集合改名：workspace 目录不动，只把映射与已打开的实例挪到新名字下。
+
+        新名字已有 workspace（别处同名集合）时不覆盖，返回 False。
+        """
+        if old not in self._workspace_map or new in self._workspace_map:
+            return False
+        self._workspace_map[new] = self._workspace_map.pop(old)
+        if old in self._instances:
+            self._instances[new] = self._instances.pop(old)
+        if old in self._collection_locks:
+            self._collection_locks[new] = self._collection_locks.pop(old)
+        self._save_workspace_map()
+        return True
+
     async def chunk_document(self, collection: str, text: str) -> tuple[list[str], str]:
         """按当前 LightRAG SDK 默认路径生成 LRAG chunk，不复用 Milvus chunk。"""
         rag = await self.get(collection)

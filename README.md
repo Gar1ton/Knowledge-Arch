@@ -8,7 +8,7 @@
 
 *PDF Originals · Zotero Sync · 6-Mode Cited Q&A · Harvard Citations · LightRAG Graph · Notion / R2*
 
-[![version](https://img.shields.io/badge/version-v2.0.1-blueviolet)](https://github.com/Gar1ton/Knowledge-Arch/releases)
+[![version](https://img.shields.io/badge/version-v2.0.3-blueviolet)](https://github.com/Gar1ton/Knowledge-Arch/releases)
 [![license](https://img.shields.io/badge/license-AGPL--3.0-green)](LICENSE)
 [![zh](https://img.shields.io/badge/中文-README__ZH.md-red)](README_ZH.md)
 

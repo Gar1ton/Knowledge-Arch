@@ -548,6 +548,10 @@ export async function listDocuments(opts?: {
   return apiFetch<KrDocument[]>(`/api/documents${qs ? `?${qs}` : ""}`);
 }
 
+export async function getDocument(docId: string): Promise<KrDocument> {
+  return apiFetch<KrDocument>(`/api/documents/${encodeURIComponent(docId)}`);
+}
+
 export async function uploadDocument(
   file: File,
   collection: string = "default",
@@ -690,6 +694,8 @@ export interface ChatMessage {
   locked?: boolean;
   locked_at?: string | null;
   updated_at?: string | null;
+  /** 回答时一并存下的思考过程与改写后的问题（旧记录为空对象）。 */
+  meta?: { thinking_trace?: ThinkingTrace | null; standalone_question?: string };
 }
 
 export async function getChatHistory(conversationId: string): Promise<ChatMessage[]> {

@@ -114,3 +114,19 @@ def test_updater_manifest_keeps_an_existing_generic_linux_entry() -> None:
     _load_updater_script().add_appimage(latest, "sig", "https://x/a.AppImage")
     assert latest["platforms"]["linux-x86_64"]["url"] == "https://x/a.deb"
     assert latest["platforms"]["linux-x86_64-appimage"]["url"] == "https://x/a.AppImage"
+
+
+def test_platform_window_configs_only_change_the_title_bar() -> None:
+    """平台配置按 JSON Merge Patch 整体替换 windows 数组：除标题栏字段外必须与基础配置一致。"""
+    tauri = ROOT / "desktop" / "src-tauri"
+    base = json.loads((tauri / "tauri.conf.json").read_text(encoding="utf-8"))["app"]["windows"][0]
+    title_bar_keys = {
+        "windows": {"decorations", "shadow"},
+        "linux": {"decorations"},
+        "macos": {"titleBarStyle", "hiddenTitle", "trafficLightPosition"},
+    }
+    for platform, extra in title_bar_keys.items():
+        conf = json.loads((tauri / f"tauri.{platform}.conf.json").read_text(encoding="utf-8"))
+        (window,) = conf["app"]["windows"]
+        assert set(window) - set(base) == extra, platform
+        assert {k: v for k, v in window.items() if k not in extra} == base, platform

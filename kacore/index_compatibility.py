@@ -62,6 +62,12 @@ class IndexCompatibilityStore:
         lightrag["reason"] = ""
         self._save()
 
+    def rename_lightrag_collection(self, old: str, new: str) -> None:
+        collections = self._state.get("lightrag", {}).get("collections", {})
+        if old in collections and new not in collections:
+            collections[new] = collections.pop(old)
+            self._save()
+
     def remove_lightrag_collection(self, collection: str) -> None:
         collections = self._state.get("lightrag", {}).get("collections", {})
         if collections.pop(collection, None) is not None:

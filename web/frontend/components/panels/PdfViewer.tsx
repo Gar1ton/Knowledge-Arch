@@ -1,9 +1,12 @@
 "use client";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Icon } from "@/components/ds/Icon";
 import { IconButton } from "@/components/ds/IconButton";
 import { ZoteroAnnotation } from "@/lib/api";
+import { apiUrl, authHeaders } from "@/lib/backend";
 import { useI18n } from "@/lib/i18n";
+import { Z } from "@/lib/zLayers";
 
 interface PdfViewerProps {
   docId: string;
@@ -27,7 +30,8 @@ type PdfPage = {
 };
 
 type PdfDocumentSource = {
-  url: string;
+  // 文件字节由本组件带 token 取回后交给 pdf.js（桌面壳里后端与页面不同源，相对 URL 取不到）。
+  data: Uint8Array;
   // pdfjs v6 把 JBIG2/JPEG2000 解码器迁到 WASM，扫描件 PDF 需要这些资源 URL 才能渲染图像。
   wasmUrl?: string;
   cMapUrl?: string;
@@ -57,9 +61,24 @@ const MIN_SCALE = 0.5;
 const MAX_SCALE = 2.4;
 const SCALE_STEP = 0.15;
 
+const PDF_MAGIC = [0x25, 0x50, 0x44, 0x46, 0x2d]; // "%PDF-"
+
+class NotPdfError extends Error {}
+
+/** 带 token 向后端取原件字节；不是 PDF（如存成 original.pdf 的文本副本）时抛 NotPdfError。 */
+async function fetchPdfBytes(path: string): Promise<Uint8Array> {
+  const res = await fetch(await apiUrl(path), { headers: await authHeaders() });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  if (!PDF_MAGIC.every((b, i) => bytes[i] === b)) throw new NotPdfError();
+  return bytes;
+}
+
 export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
   const { t } = useI18n();
   const [scale, setScale] = useState(1);
+  // 全屏 = 阅读器铺满整个应用窗口（不是系统 F11 全屏）；Esc 或再点一次退出。
+  const [fullscreen, setFullscreen] = useState(false);
   const pagesRef = useRef<Record<number, HTMLDivElement | null>>({});
   const viewportRef = useRef<HTMLDivElement | null>(null);
 
@@ -103,8 +122,10 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
           "pdfjs-dist/build/pdf.worker.mjs",
           import.meta.url,
         ).toString();
+        const data = await fetchPdfBytes(pdfUrl);
+        if (cancelled) return;
         loadingTask = pdfjs.getDocument({
-          url: pdfUrl,
+          data,
           wasmUrl: "/pdfjs/wasm/",
           cMapUrl: "/pdfjs/cmaps/",
           cMapPacked: true,
@@ -123,7 +144,12 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
             pdf: null,
             pageCount: 0,
             loading: false,
-            error: err instanceof Error ? err.message : "PDF load failed",
+            error:
+              err instanceof NotPdfError
+                ? t("pdf_not_a_pdf")
+                : err instanceof Error
+                  ? err.message
+                  : "PDF load failed",
           });
         }
       }
@@ -134,7 +160,7 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
       cancelled = true;
       loadingTask?.destroy?.();
     };
-  }, [pdfUrl]);
+  }, [pdfUrl, t]);
 
   const scrollToPage = useCallback((page: number) => {
     const clamped = Math.max(1, Math.min(pageCount || page, page));
@@ -153,9 +179,21 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
     });
   }, [pdf]);
 
+  // 载入后与切换全屏后（视口宽度变了）都重新适应宽度。
   useEffect(() => {
-    if (pdf) fitWidth();
-  }, [pdf, fitWidth]);
+    if (!pdf) return;
+    const frame = requestAnimationFrame(fitWidth);
+    return () => cancelAnimationFrame(frame);
+  }, [pdf, fitWidth, fullscreen]);
+
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFullscreen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fullscreen]);
 
   const annotatedPages = useMemo(() => {
     const pages = new Set<number>();
@@ -166,7 +204,7 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
     return pages;
   }, [annotations]);
 
-  return (
+  const viewer = (
     <div
       style={{
         height: "100%",
@@ -176,6 +214,7 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
         borderRadius: "var(--radius-lg)",
         overflow: "hidden",
         background: "var(--surface)",
+        ...(fullscreen ? { position: "fixed", inset: 0, zIndex: Z.dialog, borderRadius: 0 } : {}),
       }}
     >
       <div
@@ -232,7 +271,13 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
           label={t("pdf_zoom_in")}
           onClick={() => setScale((value) => Math.min(MAX_SCALE, Number((value + SCALE_STEP).toFixed(2))))}
         />
-        <IconButton name="maximize" label={t("pdf_fit_width")} onClick={fitWidth} />
+        <IconButton name="fitWidth" label={t("pdf_fit_width")} onClick={fitWidth} />
+        <IconButton
+          name={fullscreen ? "minimize" : "maximize"}
+          label={fullscreen ? t("pdf_exit_fullscreen") : t("pdf_fullscreen")}
+          active={fullscreen}
+          onClick={() => setFullscreen((value) => !value)}
+        />
       </div>
 
       <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>
@@ -336,6 +381,8 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
       </div>
     </div>
   );
+  // 全屏时挂到 body，避免被面板的 overflow / transform 困住。
+  return fullscreen && typeof document !== "undefined" ? createPortal(viewer, document.body) : viewer;
 }
 
 function PdfPageCanvas({ pdf, pageNumber, scale }: { pdf: PdfDocument; pageNumber: number; scale: number }) {

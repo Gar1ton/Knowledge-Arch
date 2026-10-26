@@ -9,8 +9,10 @@ import { getCapabilities, getModelRuntime } from "@/lib/api";
 import { deriveWorkflowStatus, type WorkflowStatus } from "@/lib/flowHealth";
 import { deriveModelStatus, type ModelStatus } from "@/lib/modelHealth";
 import { Z } from "@/lib/zLayers";
+import { useShellPlatform, WindowControls } from "./WindowControls";
 
 export function TopBar() {
+  const platform = useShellPlatform();
   const { view, setView, openPrefs } = useConsole();
   const { t } = useI18n();
   const [wfStatus, setWfStatus] = useState<WorkflowStatus>("red");
@@ -63,16 +65,19 @@ export function TopBar() {
     };
   }, []);
 
+  // 桌面壳没有系统标题栏：顶栏空白处可拖动窗口、双击最大化（data-tauri-drag-region）。
+  // macOS 的红绿灯嵌在左侧（tauri.macos.conf.json），这里给它们让出位置。
   return (
     <div
       className="fx-glass"
+      data-tauri-drag-region
       style={{
         height: "var(--topbar-h)",
         flexShrink: 0,
         display: "flex",
         alignItems: "center",
         gap: 10,
-        padding: "0 14px",
+        padding: platform === "mac" ? "0 14px 0 84px" : "0 14px",
         position: "relative",
         zIndex: Z.raised,
         // 工作台三个面板自带边框，顶栏分界线会和面板上沿挤在一起。
@@ -127,7 +132,7 @@ export function TopBar() {
         </span>
       </span>
 
-      <span style={{ flex: 1 }} />
+      <span data-tauri-drag-region style={{ flex: 1, alignSelf: "stretch" }} />
 
       {/* 显存/模型驻留：与数据流共用 wf-pulse-* 呼吸光效，语义为「绿=已让出显存」。 */}
       <span className={`wf-pulse-${modelStatus}`}>
@@ -149,6 +154,7 @@ export function TopBar() {
       >
         <Icon name="settings" size={14} /> {t("topbar_preferences")}
       </Button>
+      <WindowControls />
     </div>
   );
 }

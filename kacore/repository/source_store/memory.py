@@ -83,6 +83,30 @@ class InMemorySourceDocumentStore(SourceDocumentStore):
     async def set_notion_scan_cursor(self, scope: str, cursor: str) -> None:
         self._notion_scan_cursors[scope] = cursor
 
+    async def rename_collection_references(
+        self, coll_key: str, old_name: str, new_name: str
+    ) -> list[str]:
+        doc_ids = sorted(
+            doc_id
+            for doc_id, keys in self._doc_collections.items()
+            if coll_key in keys
+            and doc_id in self._documents
+            and self._documents[doc_id].collection == old_name
+        )
+        for doc_id in doc_ids:
+            self._documents[doc_id].collection = new_name
+            status = self._lightrag_status.get(doc_id)
+            if status and status.get("collection") == old_name:
+                status["collection"] = new_name
+        for note in self._notes.values():
+            if note.scope_type == "collection" and note.scope_key == old_name:
+                note.scope_key = new_name
+                note.collection_name = new_name
+        for record in (*self._build_jobs.values(), *self._codex_graph_tasks.values()):
+            if record.get("collection") == old_name:
+                record["collection"] = new_name
+        return doc_ids
+
     async def upsert_collection(self, collection: Collection) -> None:
         coll_key = collection.coll_key
         if not coll_key:
@@ -433,6 +457,7 @@ class InMemorySourceDocumentStore(SourceDocumentStore):
         sources: list | None = None,
         retrieval_mode: str = "",
         locked: bool = False,
+        meta: dict | None = None,
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         message = {
@@ -445,6 +470,7 @@ class InMemorySourceDocumentStore(SourceDocumentStore):
             "locked": bool(locked),
             "locked_at": now if locked else None,
             "updated_at": now,
+            "meta": copy.deepcopy(meta or {}),
         }
         self._chat_id_seq += 1
         self._chat_history.setdefault(conversation_id, []).append(message)
