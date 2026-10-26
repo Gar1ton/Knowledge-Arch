@@ -1644,12 +1644,35 @@ def _collection_dict(c: object) -> dict:
     }
 
 
+_TEXT_EXTS = frozenset({"md", "markdown", "txt"})
+
+
+def _document_ext(d: object) -> str:
+    """原件类型（界面图标与是否提供 PDF 阅读模式）。
+
+    本地上传的原件一律存成制品包里的 `original.pdf`，文本文件也是；浏览器给 .md 的 MIME
+    又常是 octet-stream。所以这类文件看开头是否为 `%PDF-`，不是就按标题后缀，取不到记 txt。
+    """
+    path = Path(d.file_path)  # type: ignore[attr-defined]
+    ext = path.suffix.lstrip(".").lower()
+    if path.name != "original.pdf" or d.content_type == "application/pdf":  # type: ignore[attr-defined]
+        return ext
+    try:
+        with path.open("rb") as fh:
+            if fh.read(5) == b"%PDF-":
+                return "pdf"
+    except OSError:
+        return ext
+    title_ext = Path(d.title or "").suffix.lstrip(".").lower()  # type: ignore[attr-defined]
+    return title_ext if title_ext in _TEXT_EXTS else "txt"
+
+
 async def _document_dict(api: KnowledgeRepositoryApi, d: object) -> dict:
     chunks = await api.list_document_chunks(d.doc_id)  # type: ignore[attr-defined]
     lightrag_status = await api.get_lightrag_index_status(d.doc_id)  # type: ignore[attr-defined]
     updated_at = d.updated_at.isoformat() if d.updated_at else None  # type: ignore[attr-defined]
     filename = Path(d.file_path).name  # type: ignore[attr-defined]
-    ext = Path(filename).suffix.lstrip(".").lower()
+    ext = _document_ext(d)
     origin = getattr(d, "origin", None)
     origin_val = origin.value if origin is not None else "local"
     lifecycle = getattr(d, "lifecycle_state", None)

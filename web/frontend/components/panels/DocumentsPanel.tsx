@@ -527,7 +527,9 @@ export function DocumentsPanel() {
   const highlightedDoc = highlightedChunk ? docs.find((d) => d.doc_id === highlightedChunk.docId) : null;
   const activeDoc = highlightedDoc ?? selectedDoc ?? null;
   const activeDocId = activeDoc?.doc_id ?? "";
-  const mode = modeState.docId === activeDocId ? modeState.mode : "md";
+  // 只有 PDF 原件才有 PDF 阅读模式（文本原件在库里也叫 original.pdf，后端 ext 已按真实类型给出）。
+  const canReadPdf = activeDoc?.ext?.toLowerCase() === "pdf";
+  const mode = canReadPdf && modeState.docId === activeDocId ? modeState.mode : "md";
 
   // 上传等操作完成后（documentEvents）与刷新键都会重新加载当前列表。
   useEffect(() => {
@@ -583,7 +585,7 @@ export function DocumentsPanel() {
       ]
     : [{ label: title }];
 
-  const right = isReading ? (
+  const right = isReading ? (canReadPdf ? (
     <div
       style={{
         display: "flex",
@@ -616,7 +618,7 @@ export function DocumentsPanel() {
         </button>
       ))}
     </div>
-  ) : (
+  ) : null) : (
     <div style={{ display: "flex", gap: 2 }}>
       <IconButton name="sync" label={t("documents_refresh")} onClick={() => setReloadKey((k) => k + 1)} />
       <IconButton name="search" label={t("documents_search_in_collection")} />

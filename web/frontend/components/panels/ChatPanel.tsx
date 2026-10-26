@@ -317,11 +317,21 @@ function SourceMini({ s, onClick }: { s: AskSource; onClick: () => void }) {
       </span>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ fontSize: 11, fontWeight: 600, color: "var(--heading)" }}>{s.title}</span>
-          <span style={{ fontSize: 9.5, fontFamily: "var(--font-mono)", color: "var(--fg-subtle)" }}>
-            {s.chunk_id}
+          <span
+            title={s.title}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              fontSize: 11,
+              fontWeight: 600,
+              color: "var(--heading)",
+            }}
+          >
+            {s.title}
           </span>
-          <span style={{ flex: 1 }} />
           {s.rrf_score != null && (
             <span style={{ fontSize: 9.5, fontFamily: "var(--font-mono)", color: "var(--accent)" }}>
               RRF {s.rrf_score.toFixed(4)}

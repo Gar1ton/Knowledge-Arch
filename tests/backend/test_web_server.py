@@ -2265,3 +2265,26 @@ async def test_model_unload_route_passes_kinds_through(tmp_path: Path) -> None:
         assert "models" in await resp.json()
     finally:
         await client.close()
+
+
+def test_document_ext_reports_the_real_type_of_original_pdf(tmp_path: Path) -> None:
+    """本地上传的文本原件也存成 original.pdf：按文件头与标题后缀给出真实类型。"""
+    from types import SimpleNamespace
+
+    from web.server import _document_ext
+
+    real = tmp_path / "a" / "original.pdf"
+    real.parent.mkdir()
+    real.write_bytes(b"%PDF-1.7\n...")
+    text = tmp_path / "b" / "original.pdf"
+    text.parent.mkdir()
+    text.write_text("# notes\n")
+
+    def doc(path: Path, title: str, ctype: str = "application/octet-stream") -> object:
+        return SimpleNamespace(file_path=str(path), title=title, content_type=ctype)
+
+    assert _document_ext(doc(real, "paper")) == "pdf"
+    assert _document_ext(doc(text, "notes.md")) == "md"
+    assert _document_ext(doc(text, "Clean Title")) == "txt"
+    assert _document_ext(doc(text, "x", "application/pdf")) == "pdf"  # 声明为 PDF 时照旧
+    assert _document_ext(doc(tmp_path / "zotero" / "paper.epub", "p")) == "epub"

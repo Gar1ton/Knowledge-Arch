@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+## [v2.0.2] — 2026-10-26
+
+### 修复 (Fixed)
+
+- **PDF 显示「Invalid PDF Structure」**：`components/panels/PdfViewer.tsx` 改为带 token 向后端取原件字节再交给 pdf.js
+  （此前用相对 URL，桌面壳里取到的是前端页面）；不是 PDF 时提示改用 MD 模式。
+- **文本原件被当成 PDF**：本地上传的原件都存成 `original.pdf`，`web/server.py` 的 `_document_ext` 按文件头与标题后缀
+  给出真实类型；非 PDF 文档的列表图标正确，阅读时不再提供 PDF 模式（`DocumentsPanel.tsx`）。
+- **聊天来源卡片溢出**：去掉内部分块 ID（`LOCAL_…`），标题过长时省略。
+
+### 新增 (Added)
+
+- **PDF 全屏阅读**：「适应宽度」旁加全屏键，阅读器铺满整个应用窗口，Esc 或再点一次退出；「适应宽度」换用左右箭头图标。
+
 ## [v2.0.1] — 2026-10-26
 
 ### 改进 (Changed) — P19 提示词按回答语言切换

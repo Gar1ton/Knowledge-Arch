@@ -744,6 +744,9 @@ const zh = {
   pdf_zoom_out: "缩小",
   pdf_zoom_in: "放大",
   pdf_fit_width: "适合宽度",
+  pdf_fullscreen: "全屏阅读",
+  pdf_exit_fullscreen: "退出全屏（Esc）",
+  pdf_not_a_pdf: "这篇文档没有 PDF 原件，请用 MD 模式阅读。",
 
   // Zotero 账号变更
   zotero_mirror_reset_ok: "Zotero 本地镜像已重置，新账号同步已启动",
@@ -1627,6 +1630,9 @@ const en: Record<keyof typeof zh, string> = {
   pdf_zoom_out: "Zoom out",
   pdf_zoom_in: "Zoom in",
   pdf_fit_width: "Fit width",
+  pdf_fullscreen: "Full screen",
+  pdf_exit_fullscreen: "Exit full screen (Esc)",
+  pdf_not_a_pdf: "This document has no PDF original; read it in MD mode.",
 
   zotero_mirror_reset_ok: "Local Zotero mirror reset; sync for the new account has started",
   zotero_account_change_title: "Zotero account change detected",
