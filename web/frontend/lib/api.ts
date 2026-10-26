@@ -352,6 +352,15 @@ export interface AskResult {
   thinking_trace?: ThinkingTrace | null;
   /** 多轮对话：追问被改写成的独立问题（检索与生成都用它）；未改写时缺省。 */
   standalone_question?: string;
+  /** 这一轮实际检索的范围（后端回传，与聊天记录 meta.scope 一致）。 */
+  scope?: AnswerScope;
+}
+
+/** 一轮问答所属的知识范围：全文模式是文档，其余是集合（collection 为空 = 全部集合）。 */
+export interface AnswerScope {
+  collection: string;
+  doc_id?: string;
+  doc_title?: string;
 }
 
 /**
@@ -694,8 +703,8 @@ export interface ChatMessage {
   locked?: boolean;
   locked_at?: string | null;
   updated_at?: string | null;
-  /** 回答时一并存下的思考过程与改写后的问题（旧记录为空对象）。 */
-  meta?: { thinking_trace?: ThinkingTrace | null; standalone_question?: string };
+  /** 回答时一并存下的思考过程、改写后的问题与所属范围（旧记录为空对象）。 */
+  meta?: { thinking_trace?: ThinkingTrace | null; standalone_question?: string; scope?: AnswerScope };
 }
 
 export async function getChatHistory(conversationId: string): Promise<ChatMessage[]> {
@@ -728,6 +737,19 @@ export async function estimateGraphBuild(collection?: string): Promise<GraphBuil
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(collection ? { collection } : {}),
   });
+}
+
+export interface LightRAGReadiness {
+  ready: boolean;
+  reason: string;
+  build_available: boolean;
+}
+
+/** 该集合的图谱能否用于检索；聊天里图谱档位只在 ready 时可选。 */
+export async function getLightRAGReadiness(collection: string): Promise<LightRAGReadiness> {
+  return apiFetch<LightRAGReadiness>(
+    `/api/lightrag/readiness?collection=${encodeURIComponent(collection)}`,
+  );
 }
 
 export async function buildGraph(collection?: string): Promise<GraphBuildJob> {
@@ -807,7 +829,15 @@ export async function cancelBuildJob(jobId: string, cleanup = true): Promise<Can
 export async function notionInit(
   parentPageId: string,
   databaseTitle: string
-): Promise<{ status: string; database_id?: string; qa_database_id?: string; message?: string }> {
+): Promise<{
+  status: string;
+  database_id?: string;
+  qa_database_id?: string;
+  message?: string;
+  /** 原库 404（被删 / 移走 / 未授权）后在父页面下新建。 */
+  recreated_articles?: boolean;
+  recreated_qa?: boolean;
+}> {
   return apiFetch("/api/notion/init", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -968,6 +998,8 @@ export async function ask(opts: {
   use_english_retrieval?: boolean;
   /** 多轮对话：结合本会话前几轮理解追问。 */
   use_context?: boolean;
+  /** false = 这一问尽量关闭模型自带的推理（与「深度思考」检索档位无关）。 */
+  model_thinking?: boolean;
   answer_language?: "auto" | "zh" | "en";
   /** 全文检索确认门：正文超阈值时后端返回 409，用户同意后带 true 重发同一请求。 */
   confirmed?: boolean;
@@ -989,6 +1021,7 @@ export async function ask(opts: {
       retrieval_mode: opts.retrieval_mode ?? "default",
       use_english_retrieval: opts.use_english_retrieval ?? false,
       use_context: opts.use_context ?? false,
+      model_thinking: opts.model_thinking ?? true,
       answer_language: opts.answer_language ?? "auto",
       confirmed: opts.confirmed ?? false,
     }),

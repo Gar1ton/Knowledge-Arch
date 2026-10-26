@@ -10,7 +10,13 @@ from notion_tools import notion_client
 from kacore.adapters.notion_rest import NotionMCPError, NotionRestClient
 from kacore.api import KnowledgeRepositoryApi
 from kacore.config import NotionSyncConfig
-from kacore.domain.models import NotionOutboxItem, SourceDocument
+from kacore.domain.models import (
+    NOTION_ENTITY_DOCUMENT,
+    NOTION_PUSH_SYNCED,
+    NotionEntityRecord,
+    NotionOutboxItem,
+    SourceDocument,
+)
 from kacore.notion_sync_job import NOTION_STAGE_PREPARING, NotionSyncJob
 from kacore.pipelines.notion_sync_pipeline import NotionSyncPipeline
 from kacore.repository.source_store.memory import InMemorySourceDocumentStore
@@ -104,23 +110,129 @@ async def test_initialization_preflight_stops_before_creation() -> None:
     caller.assert_not_awaited()
 
 
-@pytest.mark.parametrize("field, role", [("database_id", "Articles"), ("qa_database_id", "QA")])
-async def test_database_404_identifies_target_without_writes(field: str, role: str) -> None:
-    original = NotionMCPError("Could not find database", code="object_not_found", status=404)
+_NOT_FOUND = NotionMCPError("Could not find database", code="object_not_found", status=404)
+
+
+def _adapter_with_missing(*missing: str):
+    """resolve 对 missing 里的 id 报 404，其余返回 source-<id>；建库依次返回 new-*。"""
+
+    async def resolve(database_id: str) -> str:
+        if database_id in missing:
+            raise _NOT_FOUND
+        return f"source-{database_id}"
+
     adapter = notion_client(AsyncMock())
-    adapter.resolve_data_source = AsyncMock(side_effect=original)
+    adapter.resolve_data_source = AsyncMock(side_effect=resolve)
+    adapter.create_database = AsyncMock(side_effect=["new-articles", "new-qa"])
+    adapter.retrieve_data_source = AsyncMock(return_value={"properties": {}})
+    adapter.update_database = AsyncMock()
+    return adapter
+
+
+@pytest.mark.parametrize("field, role", [("database_id", "Articles"), ("qa_database_id", "QA")])
+async def test_push_preflight_404_identifies_target(field: str, role: str) -> None:
+    adapter = _adapter_with_missing("missing-id")
+    config = NotionSyncConfig(enabled=True, **{field: "missing-id"})
+    target = NotionSyncTarget(config, InMemorySourceDocumentStore(), adapter=adapter)
+    with pytest.raises(NotionMCPError) as error:
+        await target.preflight()
+    assert error.value.code == "object_not_found" and error.value.status == 404
+    assert error.value.__cause__ is _NOT_FOUND
+    assert f"Notion {role}" in str(error.value)
+    assert f"notion_sync.{field}=missing-id" in str(error.value)
+    assert "shared" in str(error.value) and "database setup" in str(error.value)
+
+
+async def test_initialize_recreates_404_articles_database() -> None:
+    """回归：404 后点「初始化数据库」不再被预检拦下，失效库在父页面下重建。"""
+    adapter = _adapter_with_missing("gone-articles")
+    config = NotionSyncConfig(
+        enabled=True, parent_page_id="parent", database_id="gone-articles", qa_database_id="qa"
+    )
+    target = NotionSyncTarget(config, InMemorySourceDocumentStore(), adapter=adapter)
+    result = await target.initialize_databases()
+    assert result["status"] == "success"
+    assert result["database_id"] == "new-articles" and result["qa_database_id"] == "qa"
+    assert result["recreated_articles"] is True and result["recreated_qa"] is False
+    assert result["created_articles"] is True and result["created_qa"] is False
+    assert any("gone-articles" in w for w in result["warnings"])
+    assert any("Citations" in w for w in result["warnings"])
+    adapter.create_database.assert_awaited_once()
+    assert adapter.create_database.await_args.kwargs["parent_page_id"] == "parent"
+    assert target.config.database_id == "new-articles"
+    assert target.config.data_source_id == "source-new-articles"
+
+
+async def test_initialize_recreates_both_404_databases() -> None:
+    adapter = _adapter_with_missing("gone-a", "gone-q")
+    config = NotionSyncConfig(
+        enabled=True, parent_page_id="parent", database_id="gone-a", qa_database_id="gone-q"
+    )
+    target = NotionSyncTarget(config, InMemorySourceDocumentStore(), adapter=adapter)
+    result = await target.initialize_databases()
+    assert result["status"] == "success"
+    assert (result["database_id"], result["qa_database_id"]) == ("new-articles", "new-qa")
+    assert result["recreated_articles"] and result["recreated_qa"]
+    qa_props = adapter.create_database.await_args_list[1].kwargs["properties"]
+    assert qa_props["Citations"]["relation"]["data_source_id"] == "source-new-articles"
+
+
+async def test_initialize_404_without_parent_reports_without_writes() -> None:
+    adapter = _adapter_with_missing("gone-articles")
+    config = NotionSyncConfig(enabled=True, database_id="gone-articles")
+    target = NotionSyncTarget(config, InMemorySourceDocumentStore(), adapter=adapter)
+    result = await target.initialize_databases()
+    assert result["status"] == "error" and result["error_code"] == "object_not_found"
+    assert "Articles (gone-articles)" in result["message"] and "parent page" in result["message"]
+    adapter.create_database.assert_not_awaited()
+    adapter.update_database.assert_not_awaited()
+    assert target.config.database_id == "gone-articles"
+
+
+async def test_initialize_still_stops_on_non_404_errors() -> None:
+    adapter = notion_client(AsyncMock())
+    adapter.resolve_data_source = AsyncMock(side_effect=_UNAUTHORIZED)
     adapter.create_database = AsyncMock()
-    config = NotionSyncConfig(enabled=True, parent_page_id="parent", **{field: "missing-id"})
+    config = NotionSyncConfig(enabled=True, parent_page_id="parent", database_id="db")
     target = NotionSyncTarget(config, InMemorySourceDocumentStore(), adapter=adapter)
     with pytest.raises(NotionMCPError) as error:
         await target.initialize_databases()
-    assert error.value.code == "object_not_found" and error.value.status == 404
-    assert error.value.__cause__ is original
-    assert f"Notion {role}" in str(error.value)
-    assert f"notion_sync.{field}=missing-id" in str(error.value)
-    assert "shared" in str(error.value)
+    assert error.value.code == "unauthorized"
     adapter.create_database.assert_not_awaited()
-    assert getattr(target.config, field) == "missing-id"
+
+
+async def test_rebuilt_articles_database_gets_every_document_again() -> None:
+    """重建后旧账本作废：否则指纹相同的文章全被跳过，新库永远是空的。"""
+    store = InMemorySourceDocumentStore()
+    await store.add_document(SourceDocument("d1", "Doc", "/doc.pdf", "pdf", 1, "h", ""))
+    await store.upsert_notion_entity(
+        NotionEntityRecord(
+            entity_type=NOTION_ENTITY_DOCUMENT, entity_key="d1", page_id="old-page",
+            metadata_hash="same", status=NOTION_PUSH_SYNCED,
+        )
+    )
+    adapter = _adapter_with_missing("gone-articles")
+    config = NotionSyncConfig(
+        enabled=True, parent_page_id="parent", database_id="gone-articles", qa_database_id="qa"
+    )
+    pipeline = NotionSyncPipeline(store, NotionSyncTarget(config, store, adapter=adapter))
+    result = await pipeline.initialize_databases()
+    assert result["status"] == "success" and result["recreated_articles"]
+    assert await store.list_notion_entities() == []
+
+
+async def test_reconciling_existing_databases_keeps_the_ledger() -> None:
+    store = InMemorySourceDocumentStore()
+    record = NotionEntityRecord(
+        entity_type=NOTION_ENTITY_DOCUMENT, entity_key="d1", page_id="p", status=NOTION_PUSH_SYNCED
+    )
+    await store.upsert_notion_entity(record)
+    adapter = _adapter_with_missing()
+    config = NotionSyncConfig(enabled=True, database_id="db", qa_database_id="qa")
+    pipeline = NotionSyncPipeline(store, NotionSyncTarget(config, store, adapter=adapter))
+    result = await pipeline.initialize_databases()
+    assert result["status"] == "success" and not result["created"]
+    assert await store.list_notion_entities() == [record]
 
 
 async def test_background_job_exposes_one_preflight_error_without_document_failures() -> None:

@@ -1,8 +1,9 @@
 """Anthropic（Claude）连接客户端，经官方 `anthropic` SDK 调用 Messages API。
 
 - 不发送 temperature / top_p / top_k（当前 API 版本对所有模型都会拒绝）。
-- 不设置 thinking：当前模型缺省即自适应思考；只取 text 块作为答案，thinking 块只用于判断
-  「是否只有推理没有答案」。
+- 缺省不设置 thinking：当前模型缺省即自适应思考；只取 text 块作为答案，thinking 块只用于判断
+  「是否只有推理没有答案」。提问关闭了「模型思考」时按型号追加关闭参数（见 `thinking.py`），
+  被拒（400）就去掉参数重试一次。
 - 对支持的模型默认开启服务端拒答回退（`fallbacks: "default"`）：安全分类器拒答时由 API 在同一
   请求内换模型重跑；只在官方 API 地址上启用（代理 / 第三方网关不一定支持该 beta）。
 - `stop_reason == "refusal"` 映射为 content_filter；`max_tokens` 映射为 length。
@@ -36,6 +37,7 @@ from kacore.providers.base import (
     ProviderClient,
     ProviderError,
 )
+from kacore.providers.thinking import anthropic_thinking_off, thinking_disabled
 from kacore.providers.usage import record_llm_usage
 
 logger = logging.getLogger("AnthropicChat")
@@ -125,12 +127,34 @@ class AnthropicChat(ProviderClient):
     async def generate_result(
         self, prompt: str, system_prompt: str = "", *, allow_mock: bool = True
     ) -> GenerationResult:
+        kwargs: dict[str, Any] = {"max_tokens": _MAX_TOKENS}
+        if system_prompt:
+            kwargs["system"] = system_prompt
+        thinking_off = anthropic_thinking_off(self._model) if thinking_disabled() else {}
+        if thinking_off:
+            try:
+                return await self._generate_once(
+                    prompt, system_prompt, {**kwargs, **thinking_off}, allow_mock=False
+                )
+            except ProviderError as error:
+                if error.status != 400:
+                    if not allow_mock:
+                        raise
+                    return GenerationResult(
+                        text="", status=STATUS_ERROR, provider_id=self._provider_id
+                    )
+                logger.warning(
+                    "Anthropic rejected the thinking-off parameters model=%s; retrying without",
+                    self._model,
+                )
+        return await self._generate_once(prompt, system_prompt, kwargs, allow_mock=allow_mock)
+
+    async def _generate_once(
+        self, prompt: str, system_prompt: str, kwargs: dict[str, Any], *, allow_mock: bool
+    ) -> GenerationResult:
         started = time.monotonic()
         result: GenerationResult | None = None
         try:
-            kwargs: dict[str, Any] = {"max_tokens": _MAX_TOKENS}
-            if system_prompt:
-                kwargs["system"] = system_prompt
             response = await self._create(
                 self._model, [{"role": "user", "content": prompt}], **kwargs
             )

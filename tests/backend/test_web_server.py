@@ -2004,6 +2004,27 @@ async def test_graph_stats_route(tmp_path: Path) -> None:
         await client.close()
 
 
+async def test_lightrag_readiness_route(tmp_path: Path) -> None:
+    """GET /api/lightrag/readiness：聊天据此决定图谱档位；未配置 LightRAG 时不就绪且不可建。"""
+    app = build_app(
+        api=KnowledgeRepositoryApi(source_store=InMemorySourceDocumentStore()),
+        upload_dir=tmp_path / "uploads",
+        token=TOKEN,
+    )
+    client = TestClient(TestServer(app), headers=AUTH)
+    await client.start_server()
+    try:
+        resp = await client.get("/api/lightrag/readiness", params={"collection": "papers"})
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["ready"] is False and body["build_available"] is False
+        assert body["reason"]
+        resp = await client.get("/api/lightrag/readiness")
+        assert (await resp.json())["reason"] == "A collection is required."
+    finally:
+        await client.close()
+
+
 # ── v1.0.0-rc.1 端点健壮性回归 ──────────────────────────────────
 
 

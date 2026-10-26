@@ -3,6 +3,8 @@ OpenRouter / Ollama / LM Studio / vLLM …）。
 
 只用 `POST {base_url}/chat/completions` 与 `GET {base_url}/models` 两个接口；网络错误与 5xx
 有界重试，4xx（密钥 / 地址 / 模型错误）不重试。每次真实尝试都记一次用量账。
+提问关闭了「模型思考」时按服务商追加关闭字段（见 `thinking.py`）；端点拒收（400 / 422）就去掉
+字段立即重试，并记住这个连接不认，之后不再发。
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ from kacore.providers.base import (
     ProviderClient,
     ProviderError,
 )
+from kacore.providers.thinking import openai_compat_thinking_off, thinking_disabled
 from kacore.providers.usage import record_llm_usage
 
 logger = logging.getLogger("OpenAICompatChat")
@@ -41,6 +44,8 @@ logger = logging.getLogger("OpenAICompatChat")
 PROVIDER_LABEL = "openai-compatible"
 # 生成速度低于此值时提示：长 prompt 会显著降低本地模型推理速度。
 _SLOW_TOKENS_PER_SECOND = 8
+# 端点拒收未知字段时的状态码（关闭思考的字段因此被去掉重试）。
+_REJECTED_PARAMS_STATUS = frozenset({400, 422})
 
 
 def classify_http_status(status: int, body: str = "") -> ProviderError:
@@ -102,6 +107,8 @@ class OpenAICompatChat(ProviderClient):
         self._max_retries = max(0, int(max_retries))
         self._retry_backoff_seconds = max(0.0, float(retry_backoff_seconds))
         self._provider_id = provider_id
+        # 端点拒收过关闭思考的字段后置 False，本客户端之后不再发。
+        self._thinking_off_accepted = True
 
     @property
     def model(self) -> str:
@@ -126,12 +133,20 @@ class OpenAICompatChat(ProviderClient):
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
-        payload = {"model": self._model, "messages": messages, "temperature": 0.1}
+        payload: dict[str, Any] = {
+            "model": self._model, "messages": messages, "temperature": 0.1,
+        }
+        thinking_off: dict[str, Any] = {}
+        if thinking_disabled() and self._thinking_off_accepted:
+            thinking_off = openai_compat_thinking_off(self._base_url)
+            payload.update(thinking_off)
         url = f"{self._base_url}/chat/completions"
         attempts = self._max_retries + 1
         last_error: ProviderError | None = None
 
-        for attempt in range(1, attempts + 1):
+        attempt = 0
+        while attempt < attempts:
+            attempt += 1
             started = time.monotonic()
             result: GenerationResult | None = None
             try:
@@ -140,6 +155,18 @@ class OpenAICompatChat(ProviderClient):
                 return result
             except Exception as exc:
                 last_error = classify_exception(exc)
+                if thinking_off and last_error.status in _REJECTED_PARAMS_STATUS:
+                    # 端点不认关闭思考的字段：去掉后立即重试，这次不占重试次数。
+                    logger.warning(
+                        "Endpoint rejected the thinking-off fields %s model=%s; retrying without",
+                        sorted(thinking_off), self._model,
+                    )
+                    for key in thinking_off:
+                        payload.pop(key, None)
+                    thinking_off = {}
+                    self._thinking_off_accepted = False
+                    attempt -= 1
+                    continue
                 logger.warning(
                     "OpenAI-compatible call failed attempt=%d/%d elapsed=%.1fs model=%s code=%s",
                     attempt,

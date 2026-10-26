@@ -89,6 +89,7 @@ from kacore.pipelines.conversation_context import (
 from kacore.pipelines.prompt_language import prompt_lang, uses_chinese
 from kacore.pipelines.retrieval_orchestrator import ChunkSignal, RetrievalScope
 from kacore.providers.base import ModelRef
+from kacore.providers.thinking import model_thinking as thinking_flag
 from kacore.retrieval_modes import (
     FULLTEXT_CONFIRM_THRESHOLD_CHARS,
     MODE_DEEP_THINKING,
@@ -2685,6 +2686,7 @@ class KnowledgeRepositoryApi(
         use_reranker: bool = False,
         doc_id: str | None = None,
         confirmed: bool = False,
+        model_thinking: bool = True,
     ) -> dict:
         """Retrieve evidence and generate one final answer.
 
@@ -2698,6 +2700,9 @@ class KnowledgeRepositoryApi(
         送入 LLM，**不截断**。正文超过 `FULLTEXT_CONFIRM_THRESHOLD_CHARS` 且未 `confirmed`
         时抛 `FullTextConfirmationRequiredError`（询问而非失败），调用方取得用户明确同意后
         带 `confirmed=True` 原样重发。其他模式忽略这两个参数。
+
+        model_thinking=False：本次提问内所有模型调用尽量关闭模型自带的推理（参数按连接换算，
+        见 `providers/thinking.py`）；与 deep_thinking 检索档位无关。
         """
         scope = _build_scope(scope_type, scope_key, scope_library_id)
         # 未显式传 scope 但选了集合：默认按「选中集合 + 所有子目录」检索（含后代），
@@ -2739,6 +2744,13 @@ class KnowledgeRepositoryApi(
             self._require_fulltext_confirmation(
                 fulltext_doc, fulltext_content, len(fulltext_content), confirmed
             )
+
+        # 这一轮问答实际用的知识范围：存进聊天记录、随结果返回，界面按它标注每轮回答，
+        # 不随之后的选中变化。全文模式按文档，其余按集合（空 = 全部集合）。
+        answer_scope: dict[str, str] = {"collection": collection or ""}
+        if fulltext_doc is not None:
+            answer_scope["doc_id"] = fulltext_doc.doc_id
+            answer_scope["doc_title"] = fulltext_doc.title or ""
 
         cid = conversation_id or uuid.uuid4().hex
         ask_start = time.monotonic()
@@ -2787,7 +2799,7 @@ class KnowledgeRepositoryApi(
         # _retrieve_and_generate 读取。
         user_question = question
         standalone_question = ""
-        chat_meta: dict[str, Any] = {}
+        chat_meta: dict[str, Any] = {"scope": answer_scope}
         retrieval_question = question
 
         async def _prepare() -> None:
@@ -2801,9 +2813,9 @@ class KnowledgeRepositoryApi(
             if standalone_question:
                 question = standalone_question
             # 存进聊天记录的附加信息：超时补拉与重启后读历史时恢复「理解为」与思考过程。
-            chat_meta = (
-                {"standalone_question": standalone_question} if standalone_question else {}
-            )
+            chat_meta = {"scope": answer_scope}
+            if standalone_question:
+                chat_meta["standalone_question"] = standalone_question
 
             # 翻译召回查询（当 use_english_retrieval=True 时，将用户问题翻译为英语再送入向量检索）。
             # 仅含中文才翻译：与聊天路径的 _has_cjk 门一致，英文 query 不白耗一次 LLM 调用。
@@ -3258,11 +3270,14 @@ class KnowledgeRepositoryApi(
             }
 
         def _finish(result: dict) -> dict:
+            result["scope"] = answer_scope
             if standalone_question:
                 result["standalone_question"] = standalone_question
             return result
 
         async def _run() -> dict:
+            # 在任务自己的上下文里设：只作用于这一问（含派生的子任务），不漏到别的请求。
+            thinking_flag.set(model_thinking)
             await _prepare()
             return _finish(await _retrieve_and_generate())
 

@@ -1233,6 +1233,12 @@ async def handle_graph_stats(request: web.Request) -> web.Response:
         return web.json_response({"status": "error", "message": str(exc)}, status=500)
 
 
+async def handle_lightrag_readiness(request: web.Request) -> web.Response:
+    """GET /api/lightrag/readiness?collection= — 该集合的图谱能否用于检索（决定聊天图谱档位）。"""
+    collection = request.query.get("collection", "")
+    return web.json_response(await _api(request).get_lightrag_readiness(collection))
+
+
 async def handle_ask_progress(request: web.Request) -> web.Response:
     """GET /api/ask/progress/{cid} — 轮询指定对话的召回进度。"""
     cid = request.match_info.get("cid", "")
@@ -1509,6 +1515,8 @@ async def handle_ask(request: web.Request) -> web.Response:
     retrieval_mode = body.get("retrieval_mode") or "default"
     use_english_retrieval = bool(body.get("use_english_retrieval") or False)
     use_context = bool(body.get("use_context") or False)
+    # 缺省 = 保持模型默认的思考；前端「模型思考」开关关掉时传 false。
+    model_thinking = body.get("model_thinking", True) is not False
     answer_language = str(body.get("answer_language") or "auto")
     # doc_id / confirmed 服务于 retrieval_mode="fulltext"。前端从 v1.0.x 起就一直在发
     # doc_id，但这里从未读取过——全文检索因此始终跑不通（模式名也不在白名单里）。
@@ -1533,6 +1541,7 @@ async def handle_ask(request: web.Request) -> web.Response:
             retrieval_mode=retrieval_mode,
             use_english_retrieval=use_english_retrieval,
             use_context=use_context,
+            model_thinking=model_thinking,
             answer_language=answer_language,
             doc_id=doc_id,
             confirmed=confirmed,
@@ -1880,6 +1889,7 @@ def build_app(
     app.router.add_post("/api/graph/build/{job_id}/resume", handle_graph_build_resume)
     app.router.add_post("/api/graph/build/{job_id}/cancel", handle_graph_build_cancel)
     app.router.add_get("/api/graph/stats", handle_graph_stats)
+    app.router.add_get("/api/lightrag/readiness", handle_lightrag_readiness)
     app.router.add_get("/api/ask/progress/{cid}", handle_ask_progress)
     app.router.add_get("/api/system/info", handle_system_info)
     app.router.add_get("/api/system/models", handle_model_runtime)
