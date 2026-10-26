@@ -4,6 +4,34 @@
 
 ## [Unreleased]
 
+## [v2.0.5] — 2026-10-26
+
+### 新增 (Added)
+
+- **聊天可关闭模型思考**：查询设置弹窗新增「模型思考」开关（默认开，记在本机；`components/panels/ChatPanel.tsx`），
+  关掉后 `/api/ask` 带 `model_thinking: false`。`kacore/api.py` 在这一问自己的任务里设开关
+  （`kacore/providers/thinking.py` 的 contextvar），改写、检索翻译、增强召回 / 深度思考各步与最终生成都按连接换成关闭参数：
+  DashScope / SiliconFlow `enable_thinking`、智谱 / DeepSeek / Moonshot `thinking.type=disabled`、OpenRouter `reasoning.effort=none`、
+  OpenAI 与 Ollama `reasoning_effort=none`，其余（vLLM / LM Studio / 自定义）`chat_template_kwargs.enable_thinking`；
+  Anthropic 按型号，Opus 5.5 / Opus 5 / Sonnet 5.5 / Fable 无法关闭（或与拒答回退冲突）时降为 effort low。
+  端点拒收这些参数时去掉重试一次（`openai_compat.py`、`anthropic.py`），开关只会不起作用，不会让提问失败。
+  建图等后台任务与「深度思考」检索档位不受影响。
+
+### 修复 (Fixed)
+
+- **聊天知识范围与实际检索不对应**：选中文档时范围标签显示该文档，但只有全文模式按文档检索，其余模式按集合
+  （未选集合即全部集合），标签与答案来源对不上。`components/panels/ChatPanel.tsx` 的范围标签改为可点的集合选择器
+  （全部集合 + 按树序缩进的集合），显示的就是这次检索用的范围：全文模式是当前文档，其余是聊天自己选的集合；
+  空闲时跟随左侧点选的集合，中间切换文档不影响。回答进行中范围锁定，左侧 / 中间怎么切都不变。
+  每轮问答都有归属：`kacore/api.py` 的 `ask` 把范围写进聊天记录 `meta.scope` 并随结果返回 `scope`，
+  气泡上显示该轮范围（重启后从历史恢复），「加入笔记」挂到该轮范围。图谱档位改为选了集合即可用，未建图时沿用构建提示。
+- **Notion 库 404 后无法通过「初始化数据库」恢复**：初始化前的预检对已配置库仍做 404 拦截，初始化本身永远跑不到。
+  `kacore/repository/sync_targets/notion.py` 的 `preflight(initialize=True)` 对 404 不再抛错而是报告失效的库，
+  `initialize_databases` 把它当作未配置、在父页面下新建（结果带 `recreated_articles` / `recreated_qa` 与说明；
+  没有父页面时报错且不写远端）。`kacore/pipelines/notion_sync_pipeline.py` 新建 Articles 库后清掉文章推送账本，
+  否则旧账本的指纹会让下一轮推送把所有文章判为已同步、新库一直是空的。推送前预检的 404 报错补充了重建的提示；
+  数据流页初始化成功时区分「已重建」（`components/flow/SyncActions.tsx`）。
+
 ## [v2.0.4] — 2026-10-26
 
 ### 修复 (Fixed)

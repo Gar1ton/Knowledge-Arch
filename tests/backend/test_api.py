@@ -3004,6 +3004,22 @@ async def test_ask_fulltext_under_threshold_runs_without_confirmation(tmp_path: 
     assert result["sources"][0]["doc_id"] == "d1"
 
 
+async def test_ask_fulltext_scope_is_the_document(tmp_path: Path) -> None:
+    """全文模式这一轮的范围是文档本身（界面按它标注回答，不是当时选中的集合）。"""
+    api = await _make_fulltext_api(tmp_path, "short body ", _RecordingFullTextLLM())
+
+    result = await api.ask(
+        question="q", collection="papers", retrieval_mode="fulltext", doc_id="d1",
+        conversation_id="c",
+    )
+
+    doc = await api._source_store.get_document("d1")
+    expected = {"collection": "papers", "doc_id": "d1", "doc_title": doc.title}
+    assert result["scope"] == expected
+    assistant = (await api._source_store.get_chat_messages("c"))[-1]
+    assert assistant["meta"]["scope"] == expected
+
+
 async def test_ask_fulltext_over_threshold_requires_confirmation(tmp_path: Path) -> None:
     """超阈值时抛确认门，且**未调用 LLM、未写入任何 chat_history**。"""
     from kacore.api import FullTextConfirmationRequiredError

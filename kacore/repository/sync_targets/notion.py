@@ -104,9 +104,15 @@ class NotionSyncTarget(SyncTarget):
         """当前生效配置（initialize_databases 后含回填的 database id）。"""
         return self._config
 
-    async def preflight(self, *, initialize: bool = False) -> None:
-        """批次开始前只读检查工具能力和目标，失败不进入逐文档循环。"""
+    async def preflight(self, *, initialize: bool = False) -> set[str]:
+        """批次开始前只读检查工具能力和目标，失败不进入逐文档循环。
+
+        initialize=True（建库）时已配置的库 404 不拦截：返回失效库的配置字段名，
+        由 initialize_databases 重建；否则「404 → 点初始化修复 → 初始化又被 404 拦下」
+        无路可走。其他错误（token 无效、响应不兼容）照常上抛。
+        """
         await self._adapter.check_capabilities(initialize=initialize)
+        missing: set[str] = set()
         for field, role in (("database_id", "Articles"), ("qa_database_id", "QA")):
             database_id = getattr(self._config, field)
             if database_id:
@@ -115,15 +121,19 @@ class NotionSyncTarget(SyncTarget):
                 except NotionMCPError as exc:
                     if not exc.is_not_found:
                         raise
+                    if initialize:
+                        missing.add(field)
+                        continue
                     raise NotionMCPError(
                         f"The Notion {role} database is not accessible "
                         f"(notion_sync.{field}={database_id}). Check the database container ID and "
                         "make sure it is shared with the integration behind the Notion node "
-                        "token; a 404 cannot tell an invalid ID from missing access. Original "
-                        f"error: {exc}",
+                        "token, or run the database setup to create a new one; a 404 cannot "
+                        f"tell an invalid ID from missing access. Original error: {exc}",
                         code=exc.code,
                         status=exc.status,
                     ) from exc
+        return missing
 
     # ── SyncTarget 契约 ─────────────────────────────────────────
 
@@ -202,18 +212,40 @@ class NotionSyncTarget(SyncTarget):
         顺序：先确保 Articles（已配 id 则 retrieve 对账补缺列，未配则新建），
         再确保 QA（新建即带指向 Articles 的 Citations relation）。任一补列/
         relation 失败仅记 warning + degraded，不阻断（对应列走降级路径）。
+        已配置但远端 404 的库（被删、被移走或未授权给 integration）按未配置处理、
+        在父页面下新建，结果带 recreated_* 与 warning；没有父页面时报错，不做半截重建。
         """
         if not self._config.enabled:
             return {"status": "error", "message": "Notion sync is disabled in configuration."}
 
-        await self.preflight(initialize=True)
+        missing = await self.preflight(initialize=True)
         parent = parent_page_id or self._config.parent_page_id
         title = database_title or self._config.database_title
         warnings: list[str] = []
         degraded = False
 
+        roles = {"database_id": "Articles", "qa_database_id": "QA"}
+        stale = {field: getattr(self._config, field) for field in roles if field in missing}
+        if stale and not parent:
+            listed = ", ".join(f"{roles[f]} ({db_id})" for f, db_id in stale.items())
+            return {
+                "status": "error",
+                "error_code": "object_not_found",
+                "message": (
+                    f"These Notion databases are not accessible: {listed}. Set a parent page "
+                    "to create new ones, or share the old databases with the integration behind "
+                    "the Notion node token."
+                ),
+            }
+        for field, db_id in stale.items():
+            warnings.append(
+                f"The Notion {roles[field]} database ({db_id}) was not accessible (deleted, moved "
+                "or not shared with the integration); created a new one. If the old database "
+                "still exists, share it with the integration and put its ID back to use it again."
+            )
+
         # 1) Articles 库
-        articles_id = self._config.database_id
+        articles_id = "" if "database_id" in stale else self._config.database_id
         created_articles = False
         if articles_id:
             try:
@@ -233,8 +265,14 @@ class NotionSyncTarget(SyncTarget):
 
         articles_source_id = await self._adapter.resolve_data_source(articles_id)
         # 2) QA 库（Citations relation 指向 Articles 的 data source）
-        qa_id = self._config.qa_database_id
+        qa_id = "" if "qa_database_id" in stale else self._config.qa_database_id
         created_qa = False
+        if qa_id and "database_id" in stale:
+            # 已有 QA 库的 Citations relation 仍指向旧 Articles 库，补列对账不会改它。
+            warnings.append(
+                "The QA database's Citations column still points to the old Articles database; "
+                "citations to the new one fall back to text."
+            )
         if qa_id:
             try:
                 await self._ensure_database_properties(
@@ -287,6 +325,8 @@ class NotionSyncTarget(SyncTarget):
             "created": created_articles or created_qa,
             "created_articles": created_articles,
             "created_qa": created_qa,
+            "recreated_articles": "database_id" in stale,
+            "recreated_qa": "qa_database_id" in stale,
             "degraded": degraded,
             "warnings": warnings,
             "message": "Notion databases ready.",

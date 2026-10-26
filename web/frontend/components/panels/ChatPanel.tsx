@@ -15,12 +15,12 @@ import { notifyAskSent } from "@/lib/tour";
 import { AnswerMarkdown } from "@/components/panels/AnswerMarkdown";
 import { FullTextConfirmDialog } from "@/components/panels/FullTextConfirmDialog";
 import {
-  AskResult, AskSource, ApiError, AskTaskTimeoutError, FullTextConfirmation, GraphBuildEstimate, ThinkingTrace,
+  AnswerScope, AskResult, AskSource, ApiError, Collection, AskTaskTimeoutError, FullTextConfirmation, GraphBuildEstimate, ThinkingTrace,
   ChatMessage, ask, buildGraph, estimateGraphBuild,
   getChatHistory, clearChatHistory, lockChatAnswer,
   createDocumentNote, createCollectionNote,
   getAskProgress, getDocument, waitForLateAskAnswer, type LiveProgressDetail,
-  getEffectiveConfig, pushNotionNote,
+  getEffectiveConfig, listCollections, pushNotionNote,
 } from "@/lib/api";
 
 // ─── Types ────────────────────────────────────────────────────
@@ -46,11 +46,14 @@ interface Message {
   answerNotice?: string;
   standaloneQuestion?: string;
   pinned?: boolean;
+  /** 这一轮实际检索的范围；之后切换选中不改变它（旧记录没有）。 */
+  scope?: AnswerScope;
 }
 
 interface GraphBuildDialogState {
   question: string;
   collection: string;
+  scope: AnswerScope;
   reason: string;
   estimate?: GraphBuildEstimate;
   canBuild: boolean;
@@ -81,6 +84,36 @@ function retrievalModeLabel(
   // 缺这条会让全文检索的答案（以及历史回放）被兜底标成「Milvus 语义检索」。
   if (mode === "fulltext") return t("chat_retrieval_fulltext");
   return t("chat_retrieval_milvus");
+}
+
+function scopeLabel(
+  scope: AnswerScope,
+  t: (key: I18nKey, vars?: Record<string, string | number>) => string,
+): string {
+  if (scope.doc_id) return scope.doc_title || t("panel_scope_document");
+  return scope.collection || t("panel_all_collections");
+}
+
+/** 集合按树序展开（父在前、子缩进），供范围选择器列出。 */
+function collectionTree(list: Collection[]): { name: string; depth: number }[] {
+  const keys = new Set(list.map((c) => c.coll_key || ""));
+  const byParent: Record<string, Collection[]> = {};
+  for (const c of list) {
+    const parent = c.parent_key && keys.has(c.parent_key) ? c.parent_key : "";
+    (byParent[parent] ||= []).push(c);
+  }
+  const out: { name: string; depth: number }[] = [];
+  const seen = new Set<string>();
+  const walk = (parent: string, depth: number) => {
+    for (const c of (byParent[parent] ?? []).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (seen.has(c.name)) continue;
+      seen.add(c.name);
+      out.push({ name: c.name, depth });
+      if (c.coll_key) walk(c.coll_key, depth + 1);
+    }
+  };
+  walk("", 0);
+  return out;
 }
 
 // 思考过程：默认收起、可点击展开的可折叠区块（与 sources 一致的轻量样式）。
@@ -501,6 +534,24 @@ function MessageBubble({
       >
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 7 }}>
           <Badge tone="accent">{retrievalModeLabel(msg.actualRetrievalMode, t)}</Badge>
+          {msg.scope && (
+            <Badge tone="neutral">
+              <Icon name={msg.scope.doc_id ? "file" : "folder"} size={9} />{" "}
+              <span
+                title={t("chat_scope_answered", { scope: scopeLabel(msg.scope, t) })}
+                style={{
+                  maxWidth: 160,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  display: "inline-block",
+                  verticalAlign: "bottom",
+                }}
+              >
+                {scopeLabel(msg.scope, t)}
+              </span>
+            </Badge>
+          )}
           {msg.pinned && (
             <Badge tone="warn">
               <Icon name="pin" size={9} /> {t("chat_locked")}
@@ -787,6 +838,7 @@ function chatMessagesToMessages(msgs: ChatMessage[]): Message[] {
     pinned: Boolean(m.locked),
     thinkingTrace: m.meta?.thinking_trace ?? undefined,
     standaloneQuestion: m.meta?.standalone_question || undefined,
+    scope: m.meta?.scope ?? undefined,
   }));
 }
 
@@ -797,6 +849,7 @@ export function ChatPanel({ width }: { width?: number }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const historyLoadedRef = useRef<string | null>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
+  const scopeRef = useRef<HTMLButtonElement>(null);
 
   // Collection name (strip prefix)
   const collectionName = selectedCollection
@@ -807,6 +860,19 @@ export function ChatPanel({ width }: { width?: number }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // 聊天自己的知识范围（集合名，null = 全部集合）：范围标签里可直接切换；
+  // 空闲时跟随左侧点选的集合，回答进行中不跟——那一轮的范围已锁定在 pendingScope。
+  const [chatCollection, setChatCollection] = useState<string | null>(null);
+  const [pendingScope, setPendingScope] = useState<AnswerScope | null>(null);
+  const [showScopeMenu, setShowScopeMenu] = useState(false);
+  const [scopeCollections, setScopeCollections] = useState<{ name: string; depth: number }[]>([]);
+  const loadingRef = useRef(false);
+  useEffect(() => {
+    loadingRef.current = loading;
+  }, [loading]);
+  useEffect(() => {
+    if (!loadingRef.current) setChatCollection(collectionName);
+  }, [collectionName]);
   // 深度思考进行中的实时推演详情（轮询 /api/ask/progress 增量更新）。
   const [liveProgress, setLiveProgress] = useState<LiveProgressDetail | null>(null);
   const liveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -817,6 +883,7 @@ export function ChatPanel({ width }: { width?: number }) {
   const [useEnglishRetrieval, toggleEnglishRetrieval] = useStoredToggle("ka-chat-english-retrieval", true);
   const [useContext, toggleUseContext] = useStoredToggle("ka-chat-use-context", true);
   const [showRewrite, toggleShowRewrite] = useStoredToggle("ka-chat-show-rewrite", true);
+  const [modelThinking, toggleModelThinking] = useStoredToggle("ka-chat-model-thinking", true);
   const [answerLanguage, setAnswerLanguage] = useState<"auto" | "zh" | "en">("auto");
   const [showSettings, setShowSettings] = useState(false);
   const [graphBuildDialog, setGraphBuildDialog] = useState<GraphBuildDialogState | null>(null);
@@ -835,6 +902,8 @@ export function ChatPanel({ width }: { width?: number }) {
       alive = false;
     };
   }, [selectedDocId]);
+  // 选中文档时显示标题（内部 ID 形如 LOCAL_<item>_<attachment>，对用户没有意义）。
+  const docTitle = docInfo && docInfo.id === selectedDocId ? docInfo.title : "";
   // 卸载时兜底清除轮询定时器，避免组件被销毁后仍在轮询。
   useEffect(
     () => () => {
@@ -885,11 +954,33 @@ export function ChatPanel({ width }: { width?: number }) {
   }, [messages]);
 
   useEffect(() => {
+    if (loading) return; // 进行中的那一轮已锁定范围与模式
     if (!selectedDocId && retrievalMode === "fulltext") setRetrievalMode(DEFAULT_MODE);
-    if (!collectionName && (retrievalMode === "deep_thinking" || retrievalMode === "graph_mixed" || retrievalMode === "graph_only")) {
+    if (!chatCollection && (retrievalMode === "deep_thinking" || retrievalMode === "graph_mixed" || retrievalMode === "graph_only")) {
       setRetrievalMode(DEFAULT_MODE);
     }
-  }, [selectedDocId, collectionName, retrievalMode]);
+  }, [selectedDocId, chatCollection, retrievalMode, loading]);
+
+  // 范围选择器打开时现取集合列表（改名 / 新建后不必刷新页面）。
+  useEffect(() => {
+    if (!showScopeMenu) return;
+    let alive = true;
+    listCollections()
+      .then((list) => {
+        if (alive) setScopeCollections(collectionTree(list.filter((c) => !c.is_system)));
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [showScopeMenu]);
+
+  function pickScope(name: string | null) {
+    setShowScopeMenu(false);
+    setChatCollection(name);
+    // 全文模式的范围是文档；选了集合就是要按集合问，切回默认档位。
+    if (retrievalMode === "fulltext") setRetrievalMode(DEFAULT_MODE);
+  }
 
   function handleCite(msg: Message, n: number) {
     const src = msg.sources?.find((s) => s.n === n);
@@ -922,11 +1013,14 @@ export function ChatPanel({ width }: { width?: number }) {
       chat_conversation_id: conversationId ?? undefined,
       chat_message_id: msg.id,
     };
+    // 笔记挂到这条回答所属的范围；全部集合的回答与旧记录沿用当前选中。
+    const noteDocId = msg.scope?.doc_id || (msg.scope?.collection ? null : selectedDocId);
+    const noteCollection = msg.scope?.collection || collectionName;
     try {
-      if (selectedDocId) {
-        await createDocumentNote(selectedDocId, body, options);
-      } else if (collectionName) {
-        await createCollectionNote(collectionName, body, options);
+      if (noteDocId) {
+        await createDocumentNote(noteDocId, body, options);
+      } else if (noteCollection) {
+        await createCollectionNote(noteCollection, body, options);
       } else {
         throw new Error("no active note scope");
       }
@@ -935,7 +1029,7 @@ export function ChatPanel({ width }: { width?: number }) {
     } catch {
       /* local fallback below */
     }
-    const key = `kr_notes_${collectionName ?? "global"}`;
+    const key = `kr_notes_${noteCollection ?? "global"}`;
     const existing = JSON.parse(localStorage.getItem(key) ?? "[]") as string[];
     localStorage.setItem(key, JSON.stringify([...existing, body]));
     toast(t("chat_note_saved"), "ok");
@@ -982,6 +1076,7 @@ export function ChatPanel({ width }: { width?: number }) {
     }
     setLiveProgress(null);
     setLoading(false);
+    setPendingScope(null);
     setMessages((prev) => prev.filter((m) => m.pinned));
     Promise.all([...cids].map((c) => clearChatHistory(c, true).catch(() => false))).then((r) => {
       if (interrupted || r.some(Boolean)) toast(t("chat_ask_cancelled"), "info");
@@ -993,17 +1088,26 @@ export function ChatPanel({ width }: { width?: number }) {
     mode: RetrievalMode,
     appendUser: boolean,
     confirmed = false,
+    scopeOverride?: AnswerScope,
   ) {
     if (loading) return;
     if (mode === "fulltext" && !selectedDocId) {
       toast(t("chat_fulltext_requires_doc"), "info");
       return;
     }
+    // 发送这一刻定下本轮范围：之后左侧 / 中间怎么切，这一轮都按它检索、按它标注。
+    const scope: AnswerScope =
+      scopeOverride ??
+      (mode === "fulltext" && selectedDocId
+        ? { collection: chatCollection ?? "", doc_id: selectedDocId, doc_title: docTitle }
+        : { collection: chatCollection ?? "" });
     if (appendUser) {
       setInput("");
-      setMessages((prev) => [...prev, { role: "user", content: question }]);
+      setMessages((prev) => [...prev, { role: "user", content: question, scope }]);
     }
     setLoading(true);
+    loadingRef.current = true;
+    setPendingScope(scope);
     // 预生成 conversation_id：首条消息时前端也能在请求进行中轮询进度（否则拿不到 cid 无法轮询）。
     const cid =
       conversationId ??
@@ -1030,14 +1134,15 @@ export function ChatPanel({ width }: { width?: number }) {
     try {
       const result: AskResult = await ask({
         question,
-        collection: collectionName ?? null,
-        doc_id: mode === "fulltext" ? selectedDocId : null,
+        collection: scope.collection || null,
+        doc_id: mode === "fulltext" ? scope.doc_id ?? null : null,
         top_k: 6,
         conversation_id: cid,
         persona_enabled: personaEnabled,
         retrieval_mode: mode,
         use_english_retrieval: useEnglishRetrieval,
         use_context: useContext,
+        model_thinking: modelThinking,
         answer_language: answerLanguage,
         confirmed,
         signal: abort.signal,
@@ -1056,6 +1161,7 @@ export function ChatPanel({ width }: { width?: number }) {
           thinkingTrace: result.thinking_trace ?? undefined,
           answerNotice: result.answer_notice || undefined,
           standaloneQuestion: result.standalone_question || undefined,
+          scope: result.scope ?? scope,
         },
       ]);
     } catch (err) {
@@ -1067,14 +1173,14 @@ export function ChatPanel({ width }: { width?: number }) {
         (mode === "graph_mixed" || mode === "graph_only") &&
         err instanceof ApiError &&
         (err.body?.status === "lightrag_not_ready" || err.body?.status === "graph_mixed_failed" || err.body?.status === "graph_only_failed") &&
-        collectionName
+        scope.collection
       ) {
         let estimate: GraphBuildEstimate | undefined;
         const canBuild = err.body.build_available === true;
         if (canBuild) {
-          try { estimate = await estimateGraphBuild(collectionName); } catch { /* ignore */ }
+          try { estimate = await estimateGraphBuild(scope.collection); } catch { /* ignore */ }
         }
-        setGraphBuildDialog({ question, collection: collectionName, reason: err.message, estimate, canBuild });
+        setGraphBuildDialog({ question, collection: scope.collection, scope, reason: err.message, estimate, canBuild });
       } else if (
         mode === "fulltext" &&
         err instanceof ApiError &&
@@ -1117,6 +1223,8 @@ export function ChatPanel({ width }: { width?: number }) {
         stopPolling();
         setLiveProgress(null);
         setLoading(false);
+        loadingRef.current = false;
+        setPendingScope(null);
       }
       // 已确认的那次重发无论成败都要收起确认框，否则失败时它会永远停在 loading 态。
       // 刚被 409 打开的（running 未置位）不受影响。
@@ -1135,7 +1243,7 @@ export function ChatPanel({ width }: { width?: number }) {
     if (!graphBuildDialog) return;
     const pending = graphBuildDialog;
     setGraphBuildDialog(null);
-    await submitQuestion(pending.question, "default", false);
+    await submitQuestion(pending.question, "default", false, false, pending.scope);
   }
 
   async function handleGraphBuild() {
@@ -1153,16 +1261,18 @@ export function ChatPanel({ width }: { width?: number }) {
     }
   }
 
-  // Context badge info
-  const isLightRAG = selectedCollection?.startsWith("lr:");
-  const isDoc = !!selectedDocId;
-  const contextTone = isLightRAG ? "violet" : isDoc ? "info" : "accent";
-  const contextIcon = isDoc ? "file" : isLightRAG ? "graph" : "folder";
-  // 选中文档时显示标题（内部 ID 形如 LOCAL_<item>_<attachment>，对用户没有意义）。
-  const docTitle = docInfo && docInfo.id === selectedDocId ? docInfo.title : "";
-  const contextLabel = isDoc
-    ? docTitle || t("panel_scope_document")
-    : collectionName ?? t("panel_all_collections");
+  // 范围标签显示的就是这次提问实际用的范围：进行中显示锁定的那一轮；空闲时全文模式是
+  // 当前文档（标题，不是内部 ID），其余是聊天自己选的集合。
+  const isGraphMode = retrievalMode === "graph_only" || retrievalMode === "graph_mixed";
+  const shownScope: AnswerScope =
+    loading && pendingScope
+      ? pendingScope
+      : retrievalMode === "fulltext" && selectedDocId
+        ? { collection: chatCollection ?? "", doc_id: selectedDocId, doc_title: docTitle }
+        : { collection: chatCollection ?? "" };
+  const contextTone = shownScope.doc_id ? "info" : isGraphMode ? "violet" : "accent";
+  const contextIcon = shownScope.doc_id ? "file" : isGraphMode ? "graph" : "folder";
+  const contextLabel = scopeLabel(shownScope, t);
 
   return (
     <section
@@ -1295,22 +1405,103 @@ export function ChatPanel({ width }: { width?: number }) {
         {/* Context chip */}
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 7 }}>
           <span style={{ fontSize: 10.5, color: "var(--fg-subtle)" }}>{t("panel_scope")}</span>
-          <Badge tone={contextTone}>
-            <Icon name={contextIcon} size={10} />{" "}
-            <span
-              title={contextLabel}
+          <button
+            ref={scopeRef}
+            type="button"
+            data-testid="chat-scope"
+            disabled={loading}
+            aria-haspopup="listbox"
+            aria-expanded={showScopeMenu}
+            title={loading ? t("chat_scope_locked") : t("chat_scope_pick")}
+            onClick={() => setShowScopeMenu((v) => !v)}
+            style={{
+              background: "transparent",
+              border: "none",
+              padding: 0,
+              cursor: loading ? "default" : "pointer",
+              minWidth: 0,
+            }}
+          >
+            <Badge tone={contextTone}>
+              <Icon name={loading ? "clock" : contextIcon} size={10} />{" "}
+              <span
+                title={contextLabel}
+                style={{
+                  maxWidth: 220,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  display: "inline-block",
+                  verticalAlign: "bottom",
+                }}
+              >
+                {contextLabel}
+              </span>
+              {!loading && <span style={{ marginLeft: 3, fontSize: 9 }}>▾</span>}
+            </Badge>
+          </button>
+          <Popover
+            open={showScopeMenu && !loading}
+            anchorRef={scopeRef}
+            side="top"
+            align="start"
+            gap={6}
+            zIndex={Z.dropdown}
+            onClose={() => setShowScopeMenu(false)}
+          >
+            <div
+              role="listbox"
               style={{
-                maxWidth: 220,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-                display: "inline-block",
-                verticalAlign: "bottom",
+                background: "var(--surface)",
+                border: "1px solid var(--border)",
+                borderRadius: 12,
+                padding: 6,
+                boxShadow: "var(--shadow-pop)",
+                minWidth: 220,
+                maxWidth: 320,
+                maxHeight: 320,
+                overflow: "auto",
               }}
             >
-              {contextLabel}
-            </span>
-          </Badge>
+              {retrievalMode === "fulltext" && (
+                <div style={{ fontSize: 10.5, lineHeight: 1.5, color: "var(--fg-subtle)", padding: "4px 8px 6px" }}>
+                  {t("chat_scope_fulltext_hint")}
+                </div>
+              )}
+              {[{ name: null as string | null, depth: 0 }, ...scopeCollections].map(({ name, depth }) => {
+                const selected = retrievalMode !== "fulltext" && chatCollection === name;
+                return (
+                  <button
+                    key={name ?? "__all__"}
+                    type="button"
+                    role="option"
+                    aria-selected={selected}
+                    onClick={() => pickScope(name)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      width: "100%",
+                      padding: "6px 8px",
+                      paddingLeft: 8 + depth * 12,
+                      borderRadius: "var(--radius-md)",
+                      background: selected ? "var(--accent-soft)" : "transparent",
+                      border: "none",
+                      cursor: "pointer",
+                      textAlign: "left",
+                      fontSize: 12,
+                      color: "var(--fg)",
+                    }}
+                  >
+                    <Icon name="folder" size={11} />
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {name ?? t("panel_all_collections")}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </Popover>
         </div>
 
         <form onSubmit={handleSend}>
@@ -1318,7 +1509,7 @@ export function ChatPanel({ width }: { width?: number }) {
             data-tour="ask"
             className={[
               "ask-card",
-              collectionName ? "ask-card--collection" : "",
+              chatCollection ? "ask-card--collection" : "",
               loading ? "ask-card--loading" : "",
             ].filter(Boolean).join(" ")}
             style={{ padding: 8 }}
@@ -1354,7 +1545,7 @@ export function ChatPanel({ width }: { width?: number }) {
                 <IconButton
                   name="settings"
                   label={t("chat_settings_label")}
-                  active={personaEnabled || retrievalMode !== DEFAULT_MODE || showSettings}
+                  active={personaEnabled || retrievalMode !== DEFAULT_MODE || !modelThinking || showSettings}
                   onClick={() => setShowSettings((v) => !v)}
                 />
                 <Popover
@@ -1394,9 +1585,9 @@ export function ChatPanel({ width }: { width?: number }) {
                         [
                           { value: "default" as RetrievalMode,        label: t("chat_retrieval_semantic"), desc: t("chat_retrieval_semantic_desc"), disabled: false },
                           { value: "enhanced" as RetrievalMode,       label: t("chat_retrieval_enhanced"), desc: t("chat_retrieval_enhanced_desc"), disabled: false },
-                          { value: "graph_only" as RetrievalMode,     label: t("chat_retrieval_graph"),    desc: t("chat_retrieval_graph_desc"),    disabled: !isLightRAG },
-                          { value: "graph_mixed" as RetrievalMode, label: t("chat_retrieval_graph_mixed"), desc: t("chat_retrieval_graph_mixed_desc"), disabled: !isLightRAG },
-                          { value: "deep_thinking" as RetrievalMode,  label: t("chat_retrieval_deep"),     desc: t("chat_retrieval_deep_desc"),     disabled: !collectionName },
+                          { value: "graph_only" as RetrievalMode,     label: t("chat_retrieval_graph"),    desc: t("chat_retrieval_graph_desc"),    disabled: !chatCollection },
+                          { value: "graph_mixed" as RetrievalMode, label: t("chat_retrieval_graph_mixed"), desc: t("chat_retrieval_graph_mixed_desc"), disabled: !chatCollection },
+                          { value: "deep_thinking" as RetrievalMode,  label: t("chat_retrieval_deep"),     desc: t("chat_retrieval_deep_desc"),     disabled: !chatCollection },
                           { value: "fulltext" as RetrievalMode,       label: t("chat_retrieval_fulltext"), desc: t("chat_retrieval_fulltext_desc"), disabled: !selectedDocId },
                         ]
                       ).map(({ value, label, desc, disabled }) => {
@@ -1474,6 +1665,12 @@ export function ChatPanel({ width }: { width?: number }) {
                     {useContext && (
                       <ToggleRow label={t("chat_show_rewrite")} on={showRewrite} onToggle={toggleShowRewrite} />
                     )}
+                    <ToggleRow
+                      label={t("chat_model_thinking")}
+                      hint={t("chat_model_thinking_hint")}
+                      on={modelThinking}
+                      onToggle={toggleModelThinking}
+                    />
                     {/* Answer language */}
                     <div
                       style={{ padding: "6px 8px 4px", borderTop: "1px solid var(--border)" }}

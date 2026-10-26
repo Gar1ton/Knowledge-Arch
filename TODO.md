@@ -386,3 +386,26 @@
     验证：pytest 1449 passed / 4 skipped；ruff；mypy；tsc；eslint；`next build`；Playwright：`/api/ask` 挂起时点清空，
     问题消失、提示已中断、发出 DELETE，发送键恢复且能立刻再问。未验证：真实模型下卡住的深度思考（需实际复现）。
   - [x] ④ 版本号 2.0.4。
+- [x] P23 · 2.0.5（2.0.4 之后的修复）。
+  - [x] ① 聊天知识范围与实际检索不对应：选中文档时标签显示文档，但只有全文模式按文档检索，其余模式按集合（或全部集合）。
+    标签改为可点的集合选择器（`ChatPanel.tsx`），显示的就是这次检索用的范围：全文模式是当前文档，其余是聊天自己的集合；
+    空闲时跟随左侧点选的集合，中间切文档不影响；回答进行中范围锁定（标签变灰），左侧 / 中间怎么切都不变。
+    每轮问答记下所属范围：后端 `ask` 写入聊天记录 `meta.scope` 并随结果返回 `scope`，气泡上显示；
+    「加入笔记」挂到该轮的范围。图谱档位改为有集合即可选（未建图时沿用构建提示）。
+    验证：pytest 新增 2 项；tsc；eslint；`next build`；Playwright（真后端，ask 延迟 3s）：选择器列出全部集合与子集合缩进、
+    选中后标签跟随；回答中标签禁用，左侧连点两个集合标签不变；请求体 collection 为所选集合；气泡标注所选集合；
+    回答后左侧点选恢复跟随；刷新后从历史恢复气泡范围。未验证：选中文档 + 全文模式的标签（测试库无文档）。
+  - [x] ② Notion 目标 404 时初始化死锁：`preflight(initialize=True)` 遇到已配置库 404 不再抛错，返回失效字段；
+    `initialize_databases` 把失效库当未配置、在父页面下新建（结果带 `recreated_*` 与 warning；无父页面时报错且不写远端；
+    QA 库保留时提示其 Citations 仍指向旧库）。`NotionSyncPipeline.initialize_databases` 新建 Articles 库后清掉文章推送账本，
+    否则新库会因指纹相同被整批跳过。推送前的预检 404 照旧拦截，报错里加上「可运行建库重建」。前端初始化成功时按是否重建给提示。
+    验证：pytest 1457 passed / 4 skipped（新增 6 项，旧实现下全部失败）；ruff；mypy。未验证：真实 Notion 工作区。
+  - [x] ③ 版本号 2.0.5。
+  - [x] ④ 聊天可关闭模型思考：查询设置弹窗加「模型思考」开关（默认开，记在本机），`/api/ask` 带 `model_thinking`；
+    本轮所有模型调用（改写、翻译、增强召回 / 深度思考各步、生成）经 contextvar（`kacore/providers/thinking.py`）
+    按连接换成各家的关闭参数，端点拒收（400 / 422）时去掉参数重试一次（OpenAI 兼容连接记住不再发）。
+    Anthropic 按型号：Opus 5.5 / Opus 5 / Sonnet 5.5 / Fable 关不掉或与拒答回退冲突，改用 effort low；
+    Haiku 5.5 / Sonnet 5 / Opus 4.8 / 4.7 发 `thinking: disabled`。不影响建图等后台任务与「深度思考」档位。
+    验证：pytest 1482 passed / 4 skipped（新增 `test_model_thinking.py` 24 项与 ask 级 1 项）；ruff；mypy；tsc；eslint；
+    `next build`；Playwright：默认请求带 `model_thinking: true`，关掉后为 false，刷新后开关保持关闭。
+    未验证：各家真实端点是否真的按参数关闭思考（需各自的密钥实测；Moonshot / Ollama 参数依据第三方资料，LM Studio 无请求级参数）。

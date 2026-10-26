@@ -62,7 +62,11 @@ export function NotionActions({
     setBusy("init");
     try {
       const res = await notionInit("", "");
-      if (res.status === "success") { onNotify(t("toast_notion_init_done"), "ok"); onChanged(); }
+      if (res.status === "success") {
+        const recreated = res.recreated_articles || res.recreated_qa;
+        onNotify(t(recreated ? "toast_notion_init_recreated" : "toast_notion_init_done"), recreated ? "info" : "ok");
+        onChanged();
+      }
       else onNotify(res.message || t("toast_init_failed"), "error");
     } catch (err) {
       onNotify(errorText(err, t("toast_init_failed")), "error");

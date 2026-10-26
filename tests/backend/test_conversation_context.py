@@ -163,3 +163,45 @@ async def test_trace_and_rewrite_are_kept_in_chat_history() -> None:
     assistant = [m for m in await store.get_chat_messages("conv") if m["role"] == "assistant"][-1]
     assert assistant["meta"]["standalone_question"] == REWRITTEN
     assert assistant["meta"]["thinking_trace"]["verified"] is True
+
+
+async def test_each_turn_records_the_scope_it_answered_from() -> None:
+    """界面按这份范围标注每轮回答：之后切换选中的集合 / 文档不改变已答问题的归属。"""
+    llm = _RewriteLLM()
+    api, _, store = await _api(llm, history=False)
+
+    result = await _ask(api, use_context=False)
+
+    assert result["scope"] == {"collection": "papers"}
+    assistant = [m for m in await store.get_chat_messages("conv") if m["role"] == "assistant"][-1]
+    assert assistant["meta"]["scope"] == {"collection": "papers"}
+
+
+async def test_model_thinking_switch_reaches_every_call_of_that_question_only() -> None:
+    """关掉「模型思考」：改写与深度思考各步都看到开关；问完后外面的上下文不受影响。"""
+    from kacore.providers.thinking import model_thinking
+
+    seen: list[bool] = []
+
+    class _Seeing(_RewriteLLM):
+        async def generate(self, prompt, system_prompt="", *, allow_mock=True):
+            seen.append(model_thinking.get())
+            return await super().generate(prompt, system_prompt, allow_mock=allow_mock)
+
+    class _SeeingDeep(_RecordingDeep):
+        async def run(self, *args, **kwargs):
+            seen.append(model_thinking.get())
+            return await super().run(*args, **kwargs)
+
+    api, _, _ = await _api(_Seeing(), history=True)
+    api._deep_thinking_orchestrator = _SeeingDeep()
+    await api.ask(
+        question="What are its limitations?", collection="papers", conversation_id="conv",
+        retrieval_mode="deep_thinking", use_context=True, model_thinking=False,
+    )
+    assert seen and not any(seen)
+    assert model_thinking.get() is True
+
+    seen.clear()
+    await _ask(api, use_context=True)
+    assert seen and all(seen)

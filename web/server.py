@@ -1509,6 +1509,8 @@ async def handle_ask(request: web.Request) -> web.Response:
     retrieval_mode = body.get("retrieval_mode") or "default"
     use_english_retrieval = bool(body.get("use_english_retrieval") or False)
     use_context = bool(body.get("use_context") or False)
+    # 缺省 = 保持模型默认的思考；前端「模型思考」开关关掉时传 false。
+    model_thinking = body.get("model_thinking", True) is not False
     answer_language = str(body.get("answer_language") or "auto")
     # doc_id / confirmed 服务于 retrieval_mode="fulltext"。前端从 v1.0.x 起就一直在发
     # doc_id，但这里从未读取过——全文检索因此始终跑不通（模式名也不在白名单里）。
@@ -1533,6 +1535,7 @@ async def handle_ask(request: web.Request) -> web.Response:
             retrieval_mode=retrieval_mode,
             use_english_retrieval=use_english_retrieval,
             use_context=use_context,
+            model_thinking=model_thinking,
             answer_language=answer_language,
             doc_id=doc_id,
             confirmed=confirmed,

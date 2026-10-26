@@ -84,9 +84,15 @@ class NotionSyncPipeline:
         self, parent_page_id: str | None = None, database_title: str | None = None
     ) -> dict[str, Any]:
         try:
-            return await self._target.initialize_databases(parent_page_id, database_title)
+            result = await self._target.initialize_databases(parent_page_id, database_title)
         except NotionMCPError as exc:
             return {"status": "error", "message": str(exc), "error_code": exc.code}
+        if result.get("status") == "success" and result.get("created_articles"):
+            # 新建的 Articles 库是空的，账本里的 page_id 与指纹都指向旧库：不清掉的话下一轮
+            # 推送会因指纹相同把所有文章判为「已同步」跳过，新库永远是空的。
+            for record in await self._store.list_notion_entities(NOTION_ENTITY_DOCUMENT):
+                await self._store.delete_notion_entity(NOTION_ENTITY_DOCUMENT, record.entity_key)
+        return result
 
     # ── 全量增量推送 ────────────────────────────────────────────
 
