@@ -739,6 +739,19 @@ export async function estimateGraphBuild(collection?: string): Promise<GraphBuil
   });
 }
 
+export interface LightRAGReadiness {
+  ready: boolean;
+  reason: string;
+  build_available: boolean;
+}
+
+/** 该集合的图谱能否用于检索；聊天里图谱档位只在 ready 时可选。 */
+export async function getLightRAGReadiness(collection: string): Promise<LightRAGReadiness> {
+  return apiFetch<LightRAGReadiness>(
+    `/api/lightrag/readiness?collection=${encodeURIComponent(collection)}`,
+  );
+}
+
 export async function buildGraph(collection?: string): Promise<GraphBuildJob> {
   return apiFetch<GraphBuildJob>("/api/graph/build", {
     method: "POST",

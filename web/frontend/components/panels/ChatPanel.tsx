@@ -20,7 +20,7 @@ import {
   getChatHistory, clearChatHistory, lockChatAnswer,
   createDocumentNote, createCollectionNote,
   getAskProgress, getDocument, waitForLateAskAnswer, type LiveProgressDetail,
-  getEffectiveConfig, listCollections, pushNotionNote,
+  getEffectiveConfig, getLightRAGReadiness, listCollections, pushNotionNote,
 } from "@/lib/api";
 
 // ─── Types ────────────────────────────────────────────────────
@@ -866,6 +866,8 @@ export function ChatPanel({ width }: { width?: number }) {
   const [pendingScope, setPendingScope] = useState<AnswerScope | null>(null);
   const [showScopeMenu, setShowScopeMenu] = useState(false);
   const [scopeCollections, setScopeCollections] = useState<{ name: string; depth: number }[]>([]);
+  // 聊天所选集合的图谱是否可用于检索：图谱档位只在就绪时可选（以前靠左侧 LightRAG 区的 lr: 前缀）。
+  const [graphReadiness, setGraphReadiness] = useState<{ collection: string; ready: boolean } | null>(null);
   const loadingRef = useRef(false);
   useEffect(() => {
     loadingRef.current = loading;
@@ -953,13 +955,38 @@ export function ChatPanel({ width }: { width?: number }) {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages]);
 
+  // 换集合或打开查询设置时现查图谱就绪度（建图可能刚在左侧完成）。
+  useEffect(() => {
+    if (!chatCollection) return;
+    let alive = true;
+    getLightRAGReadiness(chatCollection)
+      .then((r) => {
+        if (alive) setGraphReadiness({ collection: chatCollection, ready: r.ready });
+      })
+      .catch(() => {
+        if (alive) setGraphReadiness({ collection: chatCollection, ready: false });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [chatCollection, showSettings]);
+  const graphReady = Boolean(
+    chatCollection && graphReadiness?.collection === chatCollection && graphReadiness.ready,
+  );
+  const graphKnownNotReady = Boolean(
+    chatCollection && graphReadiness?.collection === chatCollection && !graphReadiness.ready,
+  );
+
   useEffect(() => {
     if (loading) return; // 进行中的那一轮已锁定范围与模式
     if (!selectedDocId && retrievalMode === "fulltext") setRetrievalMode(DEFAULT_MODE);
     if (!chatCollection && (retrievalMode === "deep_thinking" || retrievalMode === "graph_mixed" || retrievalMode === "graph_only")) {
       setRetrievalMode(DEFAULT_MODE);
     }
-  }, [selectedDocId, chatCollection, retrievalMode, loading]);
+    if (graphKnownNotReady && (retrievalMode === "graph_mixed" || retrievalMode === "graph_only")) {
+      setRetrievalMode(DEFAULT_MODE);
+    }
+  }, [selectedDocId, chatCollection, retrievalMode, loading, graphKnownNotReady]);
 
   // 范围选择器打开时现取集合列表（改名 / 新建后不必刷新页面）。
   useEffect(() => {
@@ -1585,17 +1612,18 @@ export function ChatPanel({ width }: { width?: number }) {
                         [
                           { value: "default" as RetrievalMode,        label: t("chat_retrieval_semantic"), desc: t("chat_retrieval_semantic_desc"), disabled: false },
                           { value: "enhanced" as RetrievalMode,       label: t("chat_retrieval_enhanced"), desc: t("chat_retrieval_enhanced_desc"), disabled: false },
-                          { value: "graph_only" as RetrievalMode,     label: t("chat_retrieval_graph"),    desc: t("chat_retrieval_graph_desc"),    disabled: !chatCollection },
-                          { value: "graph_mixed" as RetrievalMode, label: t("chat_retrieval_graph_mixed"), desc: t("chat_retrieval_graph_mixed_desc"), disabled: !chatCollection },
+                          { value: "graph_only" as RetrievalMode,     label: t("chat_retrieval_graph"),    desc: t("chat_retrieval_graph_desc"),    disabled: !graphReady, hint: graphKnownNotReady ? t("chat_graph_not_ready", { collection: chatCollection ?? "" }) : undefined },
+                          { value: "graph_mixed" as RetrievalMode, label: t("chat_retrieval_graph_mixed"), desc: t("chat_retrieval_graph_mixed_desc"), disabled: !graphReady, hint: graphKnownNotReady ? t("chat_graph_not_ready", { collection: chatCollection ?? "" }) : undefined },
                           { value: "deep_thinking" as RetrievalMode,  label: t("chat_retrieval_deep"),     desc: t("chat_retrieval_deep_desc"),     disabled: !chatCollection },
                           { value: "fulltext" as RetrievalMode,       label: t("chat_retrieval_fulltext"), desc: t("chat_retrieval_fulltext_desc"), disabled: !selectedDocId },
-                        ]
-                      ).map(({ value, label, desc, disabled }) => {
+                        ] as { value: RetrievalMode; label: string; desc: string; disabled: boolean; hint?: string }[]
+                      ).map(({ value, label, desc, disabled, hint }) => {
                         const selected = retrievalMode === value;
                         return (
                           <button
                             key={value}
                             type="button"
+                            title={hint}
                             onClick={() => { if (!disabled) setRetrievalMode(value); }}
                             style={{
                               display: "flex",

@@ -391,7 +391,7 @@
     标签改为可点的集合选择器（`ChatPanel.tsx`），显示的就是这次检索用的范围：全文模式是当前文档，其余是聊天自己的集合；
     空闲时跟随左侧点选的集合，中间切文档不影响；回答进行中范围锁定（标签变灰），左侧 / 中间怎么切都不变。
     每轮问答记下所属范围：后端 `ask` 写入聊天记录 `meta.scope` 并随结果返回 `scope`，气泡上显示；
-    「加入笔记」挂到该轮的范围。图谱档位改为有集合即可选（未建图时沿用构建提示）。
+    「加入笔记」挂到该轮的范围。
     验证：pytest 新增 2 项；tsc；eslint；`next build`；Playwright（真后端，ask 延迟 3s）：选择器列出全部集合与子集合缩进、
     选中后标签跟随；回答中标签禁用，左侧连点两个集合标签不变；请求体 collection 为所选集合；气泡标注所选集合；
     回答后左侧点选恢复跟随；刷新后从历史恢复气泡范围。未验证：选中文档 + 全文模式的标签（测试库无文档）。
@@ -409,3 +409,9 @@
     验证：pytest 1482 passed / 4 skipped（新增 `test_model_thinking.py` 24 项与 ask 级 1 项）；ruff；mypy；tsc；eslint；
     `next build`；Playwright：默认请求带 `model_thinking: true`，关掉后为 false，刷新后开关保持关闭。
     未验证：各家真实端点是否真的按参数关闭思考（需各自的密钥实测；Moonshot / Ollama 参数依据第三方资料，LM Studio 无请求级参数）。
+  - [x] ⑤ 图谱档位（仅图谱 / 图谱混合）只在聊天所选集合的图谱就绪时可选：以前靠左侧 LightRAG 区的 `lr:` 前缀，
+    范围改为聊天自选后这个判断没了，①里临时改成「有集合即可选」不对。新增 `GET /api/lightrag/readiness`
+    （`get_lightrag_readiness` 的只读出口），前端按所选集合查询，未就绪时两档变灰并显示原因。
+    换集合或打开查询设置时重查；已选图谱档位而集合未就绪时回退到默认档位。
+    验证：pytest 1483 passed / 4 skipped（新增路由测试 1 项）；ruff；mypy；tsc；eslint；`next build`；Playwright：
+    无图谱的集合两档变灰并提示去左侧构建，就绪的集合（模拟 ready）可选，选着图谱档位换回无图谱集合时回到增强召回。

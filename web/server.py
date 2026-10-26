@@ -1233,6 +1233,12 @@ async def handle_graph_stats(request: web.Request) -> web.Response:
         return web.json_response({"status": "error", "message": str(exc)}, status=500)
 
 
+async def handle_lightrag_readiness(request: web.Request) -> web.Response:
+    """GET /api/lightrag/readiness?collection= — 该集合的图谱能否用于检索（决定聊天图谱档位）。"""
+    collection = request.query.get("collection", "")
+    return web.json_response(await _api(request).get_lightrag_readiness(collection))
+
+
 async def handle_ask_progress(request: web.Request) -> web.Response:
     """GET /api/ask/progress/{cid} — 轮询指定对话的召回进度。"""
     cid = request.match_info.get("cid", "")
@@ -1883,6 +1889,7 @@ def build_app(
     app.router.add_post("/api/graph/build/{job_id}/resume", handle_graph_build_resume)
     app.router.add_post("/api/graph/build/{job_id}/cancel", handle_graph_build_cancel)
     app.router.add_get("/api/graph/stats", handle_graph_stats)
+    app.router.add_get("/api/lightrag/readiness", handle_lightrag_readiness)
     app.router.add_get("/api/ask/progress/{cid}", handle_ask_progress)
     app.router.add_get("/api/system/info", handle_system_info)
     app.router.add_get("/api/system/models", handle_model_runtime)
