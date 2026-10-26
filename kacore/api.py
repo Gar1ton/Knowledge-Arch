@@ -565,6 +565,18 @@ class AskTaskTimeoutError(RuntimeError):
         self.timeout_seconds = timeout_seconds
 
 
+class AskCancelledError(RuntimeError):
+    """ask() 任务在完成前被 `cancel_ask()` 中断（清空聊天时）。
+
+    任务已取消、不会再写 chat_history；调用方（web 层）据此告诉前端这次提问已放弃，
+    不是失败，也不必再补轮询。
+    """
+
+    def __init__(self, conversation_id: str) -> None:
+        super().__init__(f"ask task was cancelled (conversation_id={conversation_id})")
+        self.conversation_id = conversation_id
+
+
 class FullTextConfirmationRequiredError(RuntimeError):
     """全文读取量超过确认阈值，且调用方尚未显式确认。
 
@@ -743,6 +755,8 @@ class KnowledgeRepositoryApi(
         self._llm_adapter = llm_adapter
         self._managed_documents_dir = managed_documents_dir
         self._progress_store = progress_store
+        # 进行中的 ask 任务（含超时后仍在后台跑的），按 conversation_id 登记，供清空聊天时中断。
+        self._ask_tasks: dict[str, set[asyncio.Task[dict]]] = {}
         self._index_compatibility = index_compatibility
         self._embedding_fingerprint = embedding_fingerprint
         self._secret_store = secret_store
@@ -2413,11 +2427,59 @@ class KnowledgeRepositoryApi(
 
     async def clear_chat_history(
         self, conversation_id: str, preserve_locked: bool = False
-    ) -> None:
-        """删除某会话消息；preserve_locked=True 时保留已锁定回答。"""
+    ) -> bool:
+        """删除某会话消息；preserve_locked=True 时保留已锁定回答。
+
+        先中断该会话进行中的回答，再删记录：否则卡住的任务跑完后会把问答写回已清空的会话。
+        返回是否中断了进行中的回答。
+        """
+        cancelled = await self.cancel_ask(conversation_id)
         await self._source_store.clear_chat_messages(
             conversation_id, preserve_locked=preserve_locked
         )
+        return cancelled
+
+    def _track_ask_task(self, cid: str, task: asyncio.Task[dict]) -> None:
+        """登记进行中的 ask 任务；任务结束（完成 / 失败 / 取消）时自动注销。"""
+        self._ask_tasks.setdefault(cid, set()).add(task)
+
+        def _untrack(done: asyncio.Task[dict]) -> None:
+            tasks = self._ask_tasks.get(cid)
+            if tasks is None:
+                return
+            tasks.discard(done)
+            if not tasks:
+                del self._ask_tasks[cid]
+
+        task.add_done_callback(_untrack)
+
+    async def cancel_ask(self, conversation_id: str) -> bool:
+        """中断某会话进行中的 ask 任务（含超时后仍在后台跑的）；返回是否中断了任务。
+
+        回答只在最后一步写 chat_history，取消后不会再写回；该次请求的证据会话随任务释放，
+        进度条目立即删除，运行事件记为 cancelled。
+        """
+        tasks = [t for t in self._ask_tasks.pop(conversation_id, set()) if not t.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            # 等任务真正退出再返回，调用方随后删记录时不会与它的落库交错；
+            # 个别不响应取消的步骤最多等 5s，之后任务的结果也不会再有人读取。
+            await asyncio.wait(tasks, timeout=5)
+        if self._progress_store is not None:
+            self._progress_store.discard(conversation_id)
+        if not tasks:
+            return False
+        self._runtime_events.finish(
+            operation_id=conversation_id,
+            category="llm",
+            operation="ask",
+            msg="Ask cancelled",
+            status="cancelled",
+            metadata={"conversation_id": conversation_id, "tasks": len(tasks)},
+        )
+        logger.info("ask cancelled: conversation_id=%s tasks=%d", conversation_id, len(tasks))
+        return True
 
     async def get_console_scope_state(
         self, scope_type: str, scope_key: str
@@ -2720,51 +2782,62 @@ class KnowledgeRepositoryApi(
 
         _progress("embed_query", 0)
 
-        # 多轮对话：追问先改写成独立问题，检索与生成都用它；聊天记录保存用户原话。
+        # 多轮改写与检索翻译同样调 LLM、同样可能卡住：放进 _prepare，与检索生成同在
+        # 一个可被 cancel_ask() 中断的任务里。下面几个变量由 _prepare 填好，
+        # _retrieve_and_generate 读取。
         user_question = question
-        standalone_question = (
-            await self._standalone_question(cid, question, answer_language) if use_context else ""
-        )
-        if standalone_question:
-            question = standalone_question
-        # 存进聊天记录的附加信息：超时补拉与重启后读历史时恢复「理解为」与思考过程。
-        chat_meta: dict[str, Any] = (
-            {"standalone_question": standalone_question} if standalone_question else {}
-        )
-
-        # 翻译召回查询（当 use_english_retrieval=True 时，将用户问题翻译为英语再送入向量检索）。
-        # 仅含中文才翻译：与聊天路径的 _has_cjk 门一致，英文 query 不白耗一次 LLM 调用。
-        # fulltext 不做向量召回，retrieval_question 无处可用，翻译纯属白烧一次 LLM 调用。
+        standalone_question = ""
+        chat_meta: dict[str, Any] = {}
         retrieval_question = question
-        if (
-            use_english_retrieval
-            and retrieval_mode != MODE_FULLTEXT
-            and self._llm_adapter is not None
-            and _uses_chinese(question)
-        ):
-            try:
-                prompt = (
-                    "Translate the following query to English for document retrieval."
-                    " Output only the English translation, nothing else:\n\n"
-                    f"{question}"
-                )
-                translated = await self._llm_adapter.generate(
-                    prompt,
-                    system_prompt=(
-                        "You are a translation assistant."
-                        " Output only the English translation, concisely."
-                    ),
-                    allow_mock=False,
-                )
-                if translated and translated.strip():
-                    retrieval_question = translated.strip()
-                    logger.info(
-                        "Query translated for retrieval: %r → %r",
-                        question,
-                        retrieval_question,
+
+        async def _prepare() -> None:
+            nonlocal question, standalone_question, chat_meta, retrieval_question
+            # 多轮对话：追问先改写成独立问题，检索与生成都用它；聊天记录保存用户原话。
+            standalone_question = (
+                await self._standalone_question(cid, question, answer_language)
+                if use_context
+                else ""
+            )
+            if standalone_question:
+                question = standalone_question
+            # 存进聊天记录的附加信息：超时补拉与重启后读历史时恢复「理解为」与思考过程。
+            chat_meta = (
+                {"standalone_question": standalone_question} if standalone_question else {}
+            )
+
+            # 翻译召回查询（当 use_english_retrieval=True 时，将用户问题翻译为英语再送入向量检索）。
+            # 仅含中文才翻译：与聊天路径的 _has_cjk 门一致，英文 query 不白耗一次 LLM 调用。
+            # fulltext 不做向量召回，retrieval_question 无处可用，翻译纯属白烧一次 LLM 调用。
+            retrieval_question = question
+            if (
+                use_english_retrieval
+                and retrieval_mode != MODE_FULLTEXT
+                and self._llm_adapter is not None
+                and _uses_chinese(question)
+            ):
+                try:
+                    prompt = (
+                        "Translate the following query to English for document retrieval."
+                        " Output only the English translation, nothing else:\n\n"
+                        f"{question}"
                     )
-            except Exception as exc:
-                logger.warning("Query translation failed, using original: %s", exc)
+                    translated = await self._llm_adapter.generate(
+                        prompt,
+                        system_prompt=(
+                            "You are a translation assistant."
+                            " Output only the English translation, concisely."
+                        ),
+                        allow_mock=False,
+                    )
+                    if translated and translated.strip():
+                        retrieval_question = translated.strip()
+                        logger.info(
+                            "Query translated for retrieval: %r → %r",
+                            question,
+                            retrieval_question,
+                        )
+                except Exception as exc:
+                    logger.warning("Query translation failed, using original: %s", exc)
 
         async def _retrieve_and_generate() -> dict:
             """检索 + 编排 + 生成 + 落库；被 asyncio.create_task 包一层任务级总超时。
@@ -2773,6 +2846,7 @@ class KnowledgeRepositoryApi(
             继续跑完并照常写入 chat_history（与 v1.0.9 embedding 探针同款「非破坏式
             等待」，见 plugin_initializer._probe_embedding_dimension）；前端超时/断线后
             可通过 /api/ask/progress 与 /api/chat/history 找回这份迟到的答案。
+            唯一会取消它的是 cancel_ask()（清空聊天）：此时不再写库。
             """
             # fulltext: 不做任何召回，整篇 clean.md 直接送 LLM。门禁与读盘已在 ask() 入口
             # 完成（fulltext_doc / fulltext_content 已就绪），这里只负责生成与落库。
@@ -3188,14 +3262,21 @@ class KnowledgeRepositoryApi(
                 result["standalone_question"] = standalone_question
             return result
 
-        timeout_seconds = self._ask_task_timeout_seconds()
-        if timeout_seconds <= 0:
+        async def _run() -> dict:
+            await _prepare()
             return _finish(await _retrieve_and_generate())
 
-        task = asyncio.create_task(_retrieve_and_generate())
-        done, _pending = await asyncio.wait({task}, timeout=timeout_seconds)
+        # 不限时也走任务：登记后清空聊天才能中断它。
+        task = asyncio.create_task(_run())
+        self._track_ask_task(cid, task)
+        timeout_seconds = self._ask_task_timeout_seconds()
+        done, _pending = await asyncio.wait(
+            {task}, timeout=timeout_seconds if timeout_seconds > 0 else None
+        )
         if task in done:
-            return _finish(task.result())
+            if task.cancelled():
+                raise AskCancelledError(cid)
+            return task.result()
 
         # 不取消 task：非破坏式放弃等待，后台继续跑完并照常写 chat_history（见上）。
         task.add_done_callback(

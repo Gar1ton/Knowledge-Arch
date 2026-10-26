@@ -1262,8 +1262,9 @@ async def handle_chat_history_clear(request: web.Request) -> web.Response:
         "yes",
         "on",
     }
-    await _api(request).clear_chat_history(cid, preserve_locked=preserve_locked)
-    return web.json_response({"status": "ok"})
+    # 会先中断该会话进行中的回答；cancelled 告诉前端这次清空是否打断了回答。
+    cancelled = await _api(request).clear_chat_history(cid, preserve_locked=preserve_locked)
+    return web.json_response({"status": "ok", "cancelled": cancelled})
 
 
 async def handle_chat_message_lock(request: web.Request) -> web.Response:
@@ -1514,6 +1515,7 @@ async def handle_ask(request: web.Request) -> web.Response:
     doc_id = str(body.get("doc_id") or "") or None
     confirmed = bool(body.get("confirmed") or False)
     from kacore.api import (
+        AskCancelledError,
         AskTaskTimeoutError,
         FullTextConfirmationRequiredError,
         FullTextDocumentUnavailableError,
@@ -1592,6 +1594,16 @@ async def handle_ask(request: web.Request) -> web.Response:
                 "timeout_seconds": exc.timeout_seconds,
             },
             status=202,
+        )
+    except AskCancelledError as exc:
+        # 409：这次提问被清空聊天中断，任务已取消、不会写库；前端已放弃这次请求，不必补轮询。
+        return web.json_response(
+            {
+                "status": "ask_cancelled",
+                "message": str(exc),
+                "conversation_id": exc.conversation_id,
+            },
+            status=409,
         )
     except ValueError as exc:
         return web.json_response({"status": "error", "message": str(exc)}, status=400)
