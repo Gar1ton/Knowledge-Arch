@@ -27,6 +27,8 @@ class KeyringBackend(Protocol):
 
     def set_password(self, service: str, username: str, password: str) -> None: ...
 
+    def delete_password(self, service: str, username: str) -> None: ...
+
 
 def system_keyring() -> KeyringBackend | None:
     """返回可用的系统钥匙串；没有（如无桌面会话的 Linux / WSL）时返回 None。"""
@@ -92,6 +94,21 @@ class EncryptedSecretStore:
 
     def has_secret(self, name: str) -> bool:
         return bool(self.get_secret(name))
+
+    def forget_master_key(self) -> None:
+        """删除钥匙串里本数据目录的主密钥（「删除全部数据」用）；之后已有密文再也解不开。
+
+        数据目录里的 master.key 与密文文件由调用方随数据目录一起删除。
+        """
+        self._key = None
+        if self._keyring is None:
+            return
+        try:
+            self._keyring.delete_password(KEYRING_SERVICE, self._keyring_user)
+        except Exception as exc:  # noqa: BLE001 - 条目不存在或钥匙串不可用，都不阻止删除数据
+            logger.warning(
+                "Removing the master key from the keychain failed: %s", type(exc).__name__
+            )
 
     def _load_keyring_key(self) -> bytes | None:
         if self._keyring is None:

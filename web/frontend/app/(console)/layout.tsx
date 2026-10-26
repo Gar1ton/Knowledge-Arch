@@ -5,7 +5,7 @@ import { ToastProvider } from "@/components/ui/Toast";
 import { I18nContext, Lang, makeT, useI18n } from "@/lib/i18n";
 import { initColorTheme } from "@/lib/theme";
 import { ConsoleProvider, useConsole } from "@/lib/ConsoleContext";
-import { MENU_PREFERENCES_EVENT, onShellEvent } from "@/lib/backend";
+import { MENU_PREFERENCES_EVENT, onShellEvent, quitApp } from "@/lib/backend";
 import { getSettingsSchema } from "@/lib/settingsApi";
 import { setColorTheme, THEMES, type ThemeName, useTheme } from "@/lib/theme";
 import { applyUiScale, UI_SCALE_KEY, useUiScaleShortcuts } from "@/lib/uiScale";
@@ -66,14 +66,19 @@ type DragTarget = "file" | "chat" | null;
 function ConsoleCanvas() {
   const { noteDocId, selectedDocId, selectedCollection, view, setView, openPrefs } = useConsole();
 
-  // 菜单 Preferences…（桌面壳）与 ⌘, / Ctrl+,（窗口内）都打开偏好设置。
+  // 菜单 / 托盘 Preferences…（桌面壳）与 ⌘, / Ctrl+,（窗口内）都打开偏好设置。
+  // Windows / Linux 没有菜单栏，Ctrl+Q 在这里退出（macOS 的 ⌘Q 由系统菜单处理）。
   useEffect(() => {
     let off: (() => void) | undefined;
     void onShellEvent(MENU_PREFERENCES_EVENT, () => openPrefs("general")).then((f) => { off = f; });
+    const isMac = navigator.userAgent.includes("Mac");
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === ",") {
         e.preventDefault();
         openPrefs("general");
+      } else if (!isMac && e.ctrlKey && !e.altKey && e.key.toLowerCase() === "q") {
+        e.preventDefault();
+        void quitApp();
       }
     };
     window.addEventListener("keydown", onKey);

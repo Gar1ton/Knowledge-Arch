@@ -331,6 +331,11 @@ class _FakeKeyring:
             raise RuntimeError("no keyring daemon")
         self.values[(service, username)] = password
 
+    def delete_password(self, service: str, username: str) -> None:
+        if self.fail:
+            raise RuntimeError("no keyring daemon")
+        del self.values[(service, username)]
+
 
 def test_new_master_key_goes_to_the_keyring_not_a_file(tmp_path: Path) -> None:
     ring = _FakeKeyring()
@@ -340,6 +345,20 @@ def test_new_master_key_goes_to_the_keyring_not_a_file(tmp_path: Path) -> None:
     assert [service for service, _ in ring.values] == [KEYRING_SERVICE]
     reopened = EncryptedSecretStore(tmp_path / "secrets", keyring_backend=ring)
     assert reopened.get_secret("provider.x.api_key") == "value-1"
+
+
+def test_forget_master_key_removes_only_this_data_dirs_keychain_entry(tmp_path: Path) -> None:
+    ring = _FakeKeyring()
+    other = EncryptedSecretStore(tmp_path / "other" / "secrets", keyring_backend=ring)
+    other.set_secret("provider.x.api_key", "keep")
+    store = EncryptedSecretStore(tmp_path / "secrets", keyring_backend=ring)
+    store.set_secret("provider.x.api_key", "value-1")
+    assert len(ring.values) == 2
+
+    store.forget_master_key()
+    assert len(ring.values) == 1
+    assert other.get_secret("provider.x.api_key") == "keep"
+    store.forget_master_key()  # 条目已不存在：不抛错
 
 
 def test_existing_file_key_migrates_into_the_keyring(tmp_path: Path) -> None:

@@ -8,7 +8,7 @@
 
 *PDF 原件库 · Zotero 同步 · 六档检索问答 · Harvard 引用 · LightRAG 图谱 · Notion / R2*
 
-[![version](https://img.shields.io/badge/版本-v2.0.0-blueviolet)](https://github.com/Gar1ton/Knowledge-Arch/releases)
+[![version](https://img.shields.io/badge/版本-v2.0.1-blueviolet)](https://github.com/Gar1ton/Knowledge-Arch/releases)
 [![license](https://img.shields.io/badge/license-AGPL--3.0-green)](LICENSE)
 [![en](https://img.shields.io/badge/English-README.md-blue)](README.md)
 
@@ -131,6 +131,15 @@ Knowledge Arch 以 PDF 等原件为中心管理学术资料：上传与清洗、
 | Linux | `~/.local/share/Knowledge Arch` | `~/.local/state/Knowledge Arch/log` |
 
 在「偏好设置 › 存储」修改数据目录后，日志写入 `<数据目录>/logs`。数据目录包含 SQLite 数据库、原件库、向量与图谱索引、`settings.json`、加密保存的密钥（主密钥优先存入系统钥匙串 keyring，不可用时回退文件）以及已安装的 `extras/` 组件；复制整个目录即可迁移或备份。桌面壳偏好（数据目录覆盖、托盘、开机启动、检查更新）保存在 `<系统配置目录>/Knowledge Arch/shell.json`。
+
+## 卸载与数据
+
+卸载时不会删除数据，除非你主动选择：
+
+- **Windows**：卸载器有「删除应用程序数据」勾选框（默认不勾）。勾选后删除 `%LOCALAPPDATA%\Knowledge Arch`、`%APPDATA%\Knowledge Arch`，以及你自选的数据目录（规则同下）。自动更新永远不会删除数据。
+- **macOS / Linux**：删除应用（拖进废纸篓、`apt remove`、删掉 AppImage）会保留数据。需要清除时，卸载前使用「偏好设置 › 存储 › 删除全部数据…」。
+
+「删除全部数据…」会删除数据、日志与缓存目录、桌面壳偏好以及系统钥匙串里的主密钥，然后退出应用。自选的数据目录里只删除 Knowledge Arch 自己的文件，其他文件保留（选定时为空的目录会整个删除）。两种方式都不会删除 HuggingFace 模型缓存（`~/.cache/huggingface`）、已安装到 Codex / Claude Code 的 skill，以及 R2 上的备份。
 
 ## 开发
 

@@ -1,6 +1,6 @@
 [package]
 name = "knowledge-arch"
-version = "2.0.0"
+version = "2.0.1"
 description = "Knowledge Arch desktop shell"
 authors = ["Knowledge Arch"]
 license = "AGPL-3.0-only"

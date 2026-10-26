@@ -44,9 +44,14 @@ impl Default for ShellPrefs {
     }
 }
 
+/// 壳配置目录（`shell.json` 与卸载器读取的数据目录指针所在处）。
+pub fn config_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join(APP_NAME))
+}
+
 impl ShellPrefs {
     fn path() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join(APP_NAME).join(PREFS_FILE))
+        config_dir().map(|d| d.join(PREFS_FILE))
     }
 
     /// 读取；文件缺失或损坏时返回默认值（不阻止应用启动）。
@@ -102,8 +107,6 @@ impl ShellPrefs {
 }
 
 /// 平台默认数据目录（与 platformdirs.user_data_dir(APP_NAME, appauthor=False) 一致）。
-/// 只有 Windows 的日志目录由它推导；其余平台保留它作为布局说明与测试对照。
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub fn default_data_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     let base = dirs::data_local_dir();
@@ -132,6 +135,24 @@ pub fn default_log_dir() -> PathBuf {
             .join(APP_NAME)
             .join("log")
     }
+}
+
+/// 删除全部数据时整个删除的日志根目录（Linux 的日志在 `<state>/Knowledge Arch/log`）。
+pub fn default_log_root() -> PathBuf {
+    let dir = default_log_dir();
+    if cfg!(all(not(target_os = "macos"), not(target_os = "windows"))) {
+        if let Some(parent) = dir.parent() {
+            return parent.to_path_buf();
+        }
+    }
+    dir
+}
+
+/// 平台缓存目录下的应用目录（后端的字节码缓存，与 platformdirs.user_cache_dir 的根一致）。
+pub fn default_cache_dir() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(APP_NAME)
 }
 
 /// 当前生效的日志目录：有数据目录覆盖时在其下的 logs/。

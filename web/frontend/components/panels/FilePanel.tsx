@@ -5,6 +5,9 @@ import { Z } from "@/lib/zLayers";
 import { Panel } from "@/components/ds/Panel";
 import { IconButton } from "@/components/ds/IconButton";
 import { Icon } from "@/components/ds/Icon";
+import { Select } from "@/components/ds/Select";
+import { formatBytes } from "@/components/flow/SyncActions";
+import { notifyDocumentsChanged } from "@/lib/documentEvents";
 import { useConsole } from "@/lib/ConsoleContext";
 import { listCollections, getActiveBuildJob, getBuildJobHistory, buildGraph, pauseBuildJob, resumeBuildJob, deleteCollection, deleteCollectionByKey, renameCollection, createCollection, uploadDocument, syncZoteroPull, getActiveZoteroSyncJob, backupNow, Collection, GraphBuildJob, BuildJobRecord } from "@/lib/api";
 import { useToast } from "@/components/ui/Toast";
@@ -353,8 +356,6 @@ function ActiveBuildCard({ job, interrupted, onPause, onResumeJob, onResume }: A
     </div>
   );
 }
-
-// ─── Main FilePanel ────────────────────────────────────────────
 
 // ─── Delete Collection Confirmation Dialog ─────────────────────
 
@@ -742,40 +743,87 @@ interface UploadDocumentDialogProps {
   onClose: () => void;
 }
 
+// 与后端 IngestManager 的解析分支一致：PDF 走 pymupdf4llm，md / markdown / txt 按纯文本单页。
+const UPLOAD_EXTENSIONS = [".pdf", ".md", ".markdown", ".txt"];
+
+function isUploadable(file: File): boolean {
+  const name = file.name.toLowerCase();
+  return UPLOAD_EXTENSIONS.some((ext) => name.endsWith(ext));
+}
+
 function UploadDocumentDialog({ defaultCollection, localCollections, onClose }: UploadDocumentDialogProps) {
   const { t } = useI18n();
   const { toast } = useToast();
-  const [file, setFile] = useState<File | null>(null);
-  const [collection, setCollection] = useState(defaultCollection ?? localCollections[0] ?? "");
+  const [files, setFiles] = useState<File[]>([]);
+  const [chosenCollection, setCollection] = useState("");
+  // 未手选时用默认集合；集合列表晚于对话框到达时也能补上。
+  const collection = chosenCollection || defaultCollection || localCollections[0] || "";
   const [uploading, setUploading] = useState(false);
+  const [done, setDone] = useState(0);
+  const [dragOver, setDragOver] = useState(false);
   const inputRef = React.useRef<HTMLInputElement>(null);
 
+  // 追加文件（按「名称 + 大小」去重），不支持的格式提示后忽略。
+  function addFiles(list: FileList | null) {
+    if (!list) return;
+    const picked = Array.from(list);
+    const rejected = picked.filter((f) => !isUploadable(f));
+    if (rejected.length) {
+      toast(t("file_upload_unsupported", { names: rejected.map((f) => f.name).join(", ") }), "error");
+    }
+    setFiles((prev) => {
+      const seen = new Set(prev.map((f) => `${f.name}:${f.size}`));
+      return [...prev, ...picked.filter((f) => isUploadable(f) && !seen.has(`${f.name}:${f.size}`))];
+    });
+  }
+
+  // 逐个上传（后端每个请求一份文件）；失败的留在列表里，全部成功才关闭。
   async function handleUpload() {
-    if (!file) { toast(t("file_upload_no_file"), "error"); return; }
+    if (!files.length) { toast(t("file_upload_no_file"), "error"); return; }
     if (!collection) { toast(t("file_build_no_collection"), "error"); return; }
     setUploading(true);
-    try {
-      await uploadDocument(file, collection);
-      toast(t("file_upload_success").replace("{name}", file.name), "ok");
-      onClose();
-    } catch (err: unknown) {
-      toast(t("file_upload_error").replace("{message}", err instanceof Error ? err.message : String(err)), "error");
-    } finally {
-      setUploading(false);
+    setDone(0);
+    const failed: File[] = [];
+    const errors: string[] = [];
+    for (const file of files) {
+      try {
+        await uploadDocument(file, collection);
+      } catch (err: unknown) {
+        failed.push(file);
+        errors.push(`${file.name}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      setDone((n) => n + 1);
     }
+    setUploading(false);
+    const ok = files.length - failed.length;
+    if (ok) notifyDocumentsChanged();
+    if (!failed.length) {
+      toast(files.length === 1
+        ? t("file_upload_success", { name: files[0].name })
+        : t("file_upload_batch_done", { count: ok }), "ok");
+      onClose();
+      return;
+    }
+    setFiles(failed);
+    toast(ok
+      ? t("file_upload_batch_partial", { ok, failed: failed.length, message: errors.join("; ") })
+      : t("file_upload_error", { message: errors.join("; ") }), "error");
   }
 
   function handleDrop(e: React.DragEvent) {
     e.preventDefault();
-    const dropped = e.dataTransfer.files[0];
-    if (dropped) setFile(dropped);
+    setDragOver(false);
+    if (!uploading) addFiles(e.dataTransfer.files);
   }
 
   if (typeof document === "undefined") return null;
 
+  const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
+  const active = files.length > 0 || dragOver;
+
   return createPortal(
     <div
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onClick={(e) => { if (e.target === e.currentTarget && !uploading) onClose(); }}
       style={{
         position: "fixed", inset: 0, zIndex: Z.dialog,
         background: "rgba(22,23,26,.46)",
@@ -787,7 +835,7 @@ function UploadDocumentDialog({ defaultCollection, localCollections, onClose }: 
         style={{
           background: "var(--surface)", border: "1px solid var(--border)",
           borderRadius: "var(--radius-2xl)", boxShadow: "var(--shadow-pop)",
-          width: 400, maxWidth: "calc(100vw - 32px)",
+          width: 440, maxWidth: "calc(100vw - 32px)",
           padding: "22px 22px 18px",
           animation: "modalIn .18s cubic-bezier(.2,.7,.2,1)",
           display: "flex", flexDirection: "column", gap: 14,
@@ -799,56 +847,77 @@ function UploadDocumentDialog({ defaultCollection, localCollections, onClose }: 
 
         {/* Drop zone */}
         <div
-          onClick={() => inputRef.current?.click()}
+          onClick={() => { if (!uploading) inputRef.current?.click(); }}
           onDrop={handleDrop}
-          onDragOver={(e) => e.preventDefault()}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
           style={{
-            border: `2px dashed ${file ? "var(--accent)" : "var(--border-strong)"}`,
+            border: `2px dashed ${active ? "var(--accent)" : "var(--border-strong)"}`,
             borderRadius: "var(--radius-lg)",
             padding: "20px 16px",
             textAlign: "center",
-            cursor: "pointer",
-            background: file ? "var(--accent-soft)" : "var(--bg-inset)",
+            cursor: uploading ? "default" : "pointer",
+            background: active ? "var(--accent-soft)" : "var(--bg-inset)",
             transition: "all .15s",
           }}
         >
           <input
             ref={inputRef}
             type="file"
-            accept=".pdf,.md,.txt,.docx"
+            multiple
+            accept={UPLOAD_EXTENSIONS.join(",")}
             style={{ display: "none" }}
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) setFile(f); }}
+            onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }}
           />
-          <Icon name="upload" size={20} style={{ color: file ? "var(--accent)" : "var(--fg-subtle)", marginBottom: 6 }} />
-          <div style={{ fontSize: 12, color: file ? "var(--accent)" : "var(--fg-subtle)", lineHeight: 1.5 }}>
-            {file ? file.name : t("file_upload_drop_hint")}
+          <Icon name="upload" size={20} style={{ color: active ? "var(--accent)" : "var(--fg-subtle)", marginBottom: 6 }} />
+          <div style={{ fontSize: 12, color: active ? "var(--accent)" : "var(--fg-subtle)", lineHeight: 1.5 }}>
+            {files.length === 0
+              ? t("file_upload_drop_hint")
+              : files.length === 1
+                ? t("file_upload_selected_one", { size: formatBytes(totalBytes) })
+                : t("file_upload_selected", { count: files.length, size: formatBytes(totalBytes) })}
           </div>
-          {file && (
-            <div style={{ fontSize: 11, color: "var(--fg-subtle)", marginTop: 4 }}>
-              {(file.size / 1024).toFixed(1)} KB
-            </div>
-          )}
         </div>
+
+        {files.length > 0 && (
+          <ul style={{
+            listStyle: "none", margin: 0, padding: 0, maxHeight: 160, overflowY: "auto",
+            display: "flex", flexDirection: "column", gap: 4,
+          }}>
+            {files.map((f) => (
+              <li key={`${f.name}:${f.size}`} style={{
+                display: "flex", alignItems: "center", gap: 8, fontSize: 12,
+                padding: "4px 4px 4px 8px", borderRadius: "var(--radius-md)", background: "var(--bg-inset)",
+              }}>
+                <Icon name="doc" size={13} style={{ color: "var(--fg-subtle)", flexShrink: 0 }} />
+                <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--fg)" }}>
+                  {f.name}
+                </span>
+                <span style={{ color: "var(--fg-subtle)", flexShrink: 0 }}>{formatBytes(f.size)}</span>
+                {!uploading && (
+                  <IconButton
+                    name="x" size={22} label={t("file_upload_remove")}
+                    onClick={() => setFiles((prev) => prev.filter((x) => x !== f))}
+                  />
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
 
         {/* Collection selector */}
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <label style={{ fontSize: 12, fontWeight: 500, color: "var(--fg-muted)" }}>
             {t("file_upload_collection_label")}
           </label>
-          <select
+          <Select
             value={collection}
-            onChange={(e) => setCollection(e.target.value)}
-            style={{
-              height: 32, padding: "0 10px",
-              border: "1px solid var(--border-strong)", borderRadius: "var(--radius-md)",
-              background: "var(--surface)", color: "var(--fg)",
-              fontSize: 12.5, fontFamily: "inherit", outline: "none",
-            }}
-          >
-            {localCollections.map((c) => (
-              <option key={c} value={c}>{c}</option>
-            ))}
-          </select>
+            onChange={setCollection}
+            options={localCollections.map((c) => ({ value: c, label: c }))}
+            size="md"
+            disabled={uploading}
+            style={{ width: "100%" }}
+          />
         </div>
 
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
@@ -858,20 +927,20 @@ function UploadDocumentDialog({ defaultCollection, localCollections, onClose }: 
               background: "var(--bg-inset)", border: "1px solid var(--border-strong)",
               color: "var(--fg-muted)", borderRadius: "var(--radius-xl)",
               padding: "7px 16px", fontSize: 12.5, fontWeight: 500,
-              cursor: "pointer", fontFamily: "inherit",
+              cursor: uploading ? "not-allowed" : "pointer", fontFamily: "inherit",
             }}
           >
             {t("btn_cancel")}
           </button>
           <button
-            type="button" onClick={handleUpload} disabled={!file || uploading}
+            type="button" onClick={handleUpload} disabled={!files.length || uploading}
             style={{
-              background: file && !uploading ? "var(--accent)" : "var(--bg-inset)",
+              background: files.length && !uploading ? "var(--accent)" : "var(--bg-inset)",
               border: "1px solid transparent",
-              color: file && !uploading ? "var(--accent-fg, #fff)" : "var(--fg-subtle)",
+              color: files.length && !uploading ? "var(--accent-fg, #fff)" : "var(--fg-subtle)",
               borderRadius: "var(--radius-xl)", padding: "7px 16px",
               fontSize: 12.5, fontWeight: 600,
-              cursor: file && !uploading ? "pointer" : "not-allowed",
+              cursor: files.length && !uploading ? "pointer" : "not-allowed",
               fontFamily: "inherit",
               display: "flex", alignItems: "center", gap: 6,
             }}
@@ -883,7 +952,7 @@ function UploadDocumentDialog({ defaultCollection, localCollections, onClose }: 
                   border: "2px solid rgba(255,255,255,0.4)", borderTopColor: "#fff",
                   animation: "spin .6s linear infinite", display: "inline-block",
                 }} />
-                {t("file_upload_uploading")}
+                {t("file_upload_progress", { done, total: files.length })}
               </>
             ) : t("file_upload_btn")}
           </button>

@@ -350,6 +350,8 @@ export interface AskResult {
   retrieval_engines: string[];
   fallback_reason?: string | null;
   thinking_trace?: ThinkingTrace | null;
+  /** 多轮对话：追问被改写成的独立问题（检索与生成都用它）；未改写时缺省。 */
+  standalone_question?: string;
 }
 
 /**
@@ -956,6 +958,8 @@ export async function ask(opts: {
     | "fulltext"
     | "deep_thinking";
   use_english_retrieval?: boolean;
+  /** 多轮对话：结合本会话前几轮理解追问。 */
+  use_context?: boolean;
   answer_language?: "auto" | "zh" | "en";
   /** 全文检索确认门：正文超阈值时后端返回 409，用户同意后带 true 重发同一请求。 */
   confirmed?: boolean;
@@ -973,6 +977,7 @@ export async function ask(opts: {
       persona_enabled: opts.persona_enabled ?? false,
       retrieval_mode: opts.retrieval_mode ?? "default",
       use_english_retrieval: opts.use_english_retrieval ?? false,
+      use_context: opts.use_context ?? false,
       answer_language: opts.answer_language ?? "auto",
       confirmed: opts.confirmed ?? false,
     }),

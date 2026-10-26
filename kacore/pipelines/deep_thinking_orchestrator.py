@@ -40,8 +40,9 @@ from kacore.pipelines.deep_thinking_prompts import (
 )
 from kacore.pipelines.deep_thinking_view import live_detail
 from kacore.pipelines.evidence_session import current_evidence_session, evidence_request
+from kacore.pipelines.llm_json import JSON_RETRY_SUFFIX, llm_json_call
 from kacore.pipelines.llm_json import est_tokens as _est_tokens
-from kacore.pipelines.llm_json import llm_json_call
+from kacore.pipelines.prompt_language import PromptLang, prompt_lang
 from kacore.utils.cutoff import adaptive_cutoff
 
 if TYPE_CHECKING:
@@ -108,6 +109,8 @@ class DeepThinkingOrchestrator:
 
         # 阶段0：baseline 先行（纯 embedding+SQL，无 LLM）——LLM 全挂也能据此回退。
         final_question = answer_question or query
+        # 提示词语言跟回答语言（auto 跟随用户原问题，而不是英语召回翻译后的 query）。
+        lang = prompt_lang(answer_language, final_question)
         _progress("deep_baseline", 10)
         baseline_outcome = await self._retrieval.retrieve_with_outcome(
             collection, query, self._cfg.wide_top_k, scope
@@ -129,7 +132,10 @@ class DeepThinkingOrchestrator:
         # 阶段1：PLAN（合并 checklist + sub_queries）。
         try:
             (items, sub_queries), plan_calls, tokens = await self._llm_json(
-                build_plan_prompt(query, self._cfg.max_sub_queries), PLAN_SYSTEM, parse_plan
+                build_plan_prompt(query, self._cfg.max_sub_queries, lang=lang),
+                PLAN_SYSTEM[lang],
+                parse_plan,
+                lang,
             )
             est_tokens += tokens
             calls_used += plan_calls
@@ -186,9 +192,11 @@ class DeepThinkingOrchestrator:
                         self._cfg.sea_evidence_clip,
                         sea_labels,
                         max_next_queries=self._cfg.max_sub_queries,
+                        lang=lang,
                     ),
-                    SEA_SYSTEM,
+                    SEA_SYSTEM[lang],
                     parse_sea,
+                    lang,
                 )
             except JsonContractError as exc:
                 # calls/tokens 来自异常上携带的重试耗尽前真实消费，不再硬编码为 1/0。
@@ -581,6 +589,7 @@ class DeepThinkingOrchestrator:
         hard: list[str] = []
         soft: list[str] = []
         cache = labels_cache if labels_cache is not None else {}
+        lang = prompt_lang(answer_language, answer_question)
         for vround in range(self._cfg.max_verify_rounds + 1):
             # 每条证据标注来源文档，合成与校验同享，防跨文档知识串线（跨轮缓存）。
             source_labels = await self._labels((c.doc_id for c in final), cache)
@@ -609,9 +618,11 @@ class DeepThinkingOrchestrator:
                         final,
                         self._cfg.verify_evidence_clip,
                         source_labels,
+                        lang=lang,
                     ),
-                    VERIFY_SYSTEM,
+                    VERIFY_SYSTEM[lang],
                     parse_verify,
+                    lang,
                 )
                 est_tokens += vtokens
             except JsonContractError as exc:
@@ -643,11 +654,15 @@ class DeepThinkingOrchestrator:
         return answer, status, False, hard, soft, final, est_tokens
 
     async def _llm_json(
-        self, prompt: str, system: str, parse_fn: Callable[[str], T]
+        self, prompt: str, system: str, parse_fn: Callable[[str], T], lang: PromptLang
     ) -> tuple[T, int, int]:
-        """薄委派到公共 llm_json_call（与 enhanced_recall 共用调用纪律）。"""
+        """薄委派到公共 llm_json_call（与 enhanced_recall 共用调用纪律）。
+
+        重试提醒与提示词同语言。
+        """
         return await llm_json_call(
-            self._llm, prompt, system, parse_fn, self._cfg.json_max_retries
+            self._llm, prompt, system, parse_fn, self._cfg.json_max_retries,
+            retry_suffix=JSON_RETRY_SUFFIX[lang],
         )
 
     def _over_budget(self, calls_used: int, est_tokens: int) -> bool:

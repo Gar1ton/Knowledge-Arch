@@ -76,11 +76,17 @@ from kacore.notion_sync_job import (
     NotionSyncJob,
 )
 from kacore.pipelines.agent_evidence import AGENT_EVIDENCE_MODES
-from kacore.pipelines.answer_synthesis import with_user_system_prompt
+from kacore.pipelines.answer_synthesis import context_prompt, rag_rules, with_user_system_prompt
 from kacore.pipelines.citation_rendering import (
     annotate_sources,
     render_answer_with_references,
 )
+from kacore.pipelines.conversation_context import (
+    build_condense_prompt,
+    clean_rewrite,
+    recent_turns,
+)
+from kacore.pipelines.prompt_language import prompt_lang, uses_chinese
 from kacore.pipelines.retrieval_orchestrator import ChunkSignal, RetrievalScope
 from kacore.providers.base import ModelRef
 from kacore.retrieval_modes import (
@@ -247,7 +253,7 @@ def _serialize_deep_thinking(outcome: Any) -> dict:
 
 def _uses_chinese(text: str) -> bool:
     """粗略判断文本是否包含中文，用于 answer_language=auto 的警告语言。"""
-    return any("\u4e00" <= ch <= "\u9fff" for ch in text)
+    return uses_chinese(text)
 
 
 def _reference_heading(answer_language: str, question: str) -> str:
@@ -256,7 +262,7 @@ def _reference_heading(answer_language: str, question: str) -> str:
 
 def _answers_in_chinese(answer_language: str, question: str) -> bool:
     """答案正文里的固定文案（兜底说明、参考文献标题）跟随回答语言；auto 按提问语言判断。"""
-    return answer_language == "zh" or (answer_language == "auto" and _uses_chinese(question))
+    return prompt_lang(answer_language, question) == "zh"
 
 
 def _est_context_tokens(text: str) -> int:
@@ -2428,6 +2434,7 @@ class KnowledgeRepositoryApi(
         content: str,
         answer_language: str,
         progress: Any,
+        user_question: str,
     ) -> dict:
         """全文检索分支：整篇正文 → 答案 + 单条 Harvard 引用 + 落库（供 ask 内部调用）。
 
@@ -2501,7 +2508,7 @@ class KnowledgeRepositoryApi(
 
         stored_answer = f"{answer_notice}\n\n---\n\n{answer}" if answer_notice else answer
         try:
-            await self._source_store.add_chat_message(cid, "user", question)
+            await self._source_store.add_chat_message(cid, "user", user_question)
             await self._source_store.add_chat_message(
                 cid, "assistant", stored_answer, sources=sources, retrieval_mode=MODE_FULLTEXT
             )
@@ -2544,6 +2551,7 @@ class KnowledgeRepositoryApi(
         conversation_id: str | None = None,
         retrieval_mode: str = "default",
         use_english_retrieval: bool = False,
+        use_context: bool = False,
         answer_language: str = "auto",
         scope_type: str = "",
         scope_key: str = "",
@@ -2557,6 +2565,9 @@ class KnowledgeRepositoryApi(
 
         candidate_k / use_reranker：研究路径用——候选池宽召回 + cross-encoder 重排再取 top_k
         （仅 default 模式生效；默认 answer top_k 不变）。reranker 为 passthrough 时自动退回 RRF。
+
+        use_context：多轮对话。本会话已有问答时先把追问改写成独立问题（检索与生成都用它），
+        结果里带 `standalone_question`；聊天记录保存用户原话。改写失败退回原问题。
 
         doc_id / confirmed：全文检索（`retrieval_mode="fulltext"`）用——把该文档整篇 clean.md
         送入 LLM，**不截断**。正文超过 `FULLTEXT_CONFIRM_THRESHOLD_CHARS` 且未 `confirmed`
@@ -2646,6 +2657,14 @@ class KnowledgeRepositoryApi(
 
         _progress("embed_query", 0)
 
+        # 多轮对话：追问先改写成独立问题，检索与生成都用它；聊天记录保存用户原话。
+        user_question = question
+        standalone_question = (
+            await self._standalone_question(cid, question, answer_language) if use_context else ""
+        )
+        if standalone_question:
+            question = standalone_question
+
         # 翻译召回查询（当 use_english_retrieval=True 时，将用户问题翻译为英语再送入向量检索）。
         # 仅含中文才翻译：与聊天路径的 _has_cjk 门一致，英文 query 不白耗一次 LLM 调用。
         # fulltext 不做向量召回，retrieval_question 无处可用，翻译纯属白烧一次 LLM 调用。
@@ -2698,6 +2717,7 @@ class KnowledgeRepositoryApi(
                     content=fulltext_content,
                     answer_language=answer_language,
                     progress=_progress,
+                    user_question=user_question,
                 )
 
             if retrieval_mode in {MODE_GRAPH_MIXED, MODE_GRAPH_ONLY}:
@@ -2732,22 +2752,12 @@ class KnowledgeRepositoryApi(
                 _progress("llm_generate", 80)
                 t_llm = time.monotonic()
                 if self._llm_adapter is not None and lightrag_context:
-                    if answer_language == "zh":
-                        lang_instr = "Answer in Chinese (中文)."
-                    elif answer_language == "en":
-                        lang_instr = "Answer in English."
-                    else:
-                        lang_instr = "Answer in the same language as the question."
+                    lang = prompt_lang(answer_language, question)
                     system_prompt = with_user_system_prompt(
                         self._answer_system_prompt(),
-                        "You are a helpful academic assistant. "
-                        "Answer the question based solely on the provided context. "
-                        "If the context is insufficient, state the limitation clearly "
-                        "and only answer what the context supports. "
-                        "Do not fill gaps with outside knowledge. "
-                        f"{lang_instr}",
+                        rag_rules(lang, answer_language, cite=False),
                     )
-                    user_prompt = f"Context:\n\n{lightrag_context}\n\nQuestion: {question}"
+                    user_prompt = context_prompt(lang, lightrag_context, question)
                     answer = await self._llm_adapter.generate(
                         user_prompt, system_prompt=system_prompt
                     )
@@ -2759,7 +2769,7 @@ class KnowledgeRepositoryApi(
                     )
                 _progress("done", 100)
                 try:
-                    await self._source_store.add_chat_message(cid, "user", question)
+                    await self._source_store.add_chat_message(cid, "user", user_question)
                     await self._source_store.add_chat_message(
                         cid, "assistant", answer, sources=[], retrieval_mode="lightrag_only"
                     )
@@ -2941,38 +2951,21 @@ class KnowledgeRepositoryApi(
                 answer = deep_answer
                 citable = True
             elif self._llm_adapter is not None and has_evidence:
-                if answer_language == "zh":
-                    lang_instr = "Answer in Chinese (中文)."
-                elif answer_language == "en":
-                    lang_instr = "Answer in English."
-                else:
-                    lang_instr = "Answer in the same language as the question."
-                rag_rules = (
-                    "You are a helpful academic assistant. "
-                    "Answer the question based solely on the provided context. "
-                    "If the context is insufficient, state the limitation clearly "
-                    "and only answer what the context supports. "
-                    "Do not fill gaps with outside knowledge. "
-                    f"Cite sources using [n] notation (e.g. [1], [2]). "
-                    f"{lang_instr}"
-                )
+                lang = prompt_lang(answer_language, question)
+                rules = rag_rules(lang, answer_language, cite=True)
                 # deep / enhanced 的兜底合成保持原样，只有普通检索路径叠加用户系统提示。
                 system_prompt = (
-                    rag_rules
+                    rules
                     if retrieval_mode in {MODE_DEEP_THINKING, MODE_ENHANCED}
-                    else with_user_system_prompt(self._answer_system_prompt(), rag_rules)
+                    else with_user_system_prompt(self._answer_system_prompt(), rules)
                 )
 
+                graph_label = "[LightRAG 图谱资料]" if lang == "zh" else "[LightRAG Context]"
                 graph_header = (
-                    f"[LightRAG Context]\n{lightrag_context}\n\n---\n\n"
-                    if lightrag_context
-                    else ""
+                    f"{graph_label}\n{lightrag_context}\n\n---\n\n" if lightrag_context else ""
                 )
-                user_prompt = (
-                    "Context:\n\n"
-                    + graph_header
-                    + "\n\n---\n\n".join(context_parts)
-                    + f"\n\nQuestion: {question}"
+                user_prompt = context_prompt(
+                    lang, graph_header + "\n\n---\n\n".join(context_parts), question
                 )
                 generic_result = await self._llm_adapter.generate_result(
                     user_prompt, system_prompt=system_prompt
@@ -3076,7 +3069,7 @@ class KnowledgeRepositoryApi(
                     sources[0]["request_trace"] = deep_outcome.evidence_trace
             stored_answer = f"{answer_notice}\n\n---\n\n{answer}" if answer_notice else answer
             try:
-                await self._source_store.add_chat_message(cid, "user", question)
+                await self._source_store.add_chat_message(cid, "user", user_question)
                 await self._source_store.add_chat_message(
                     cid, "assistant", stored_answer,
                     sources=[s for s in sources],
@@ -3113,14 +3106,19 @@ class KnowledgeRepositoryApi(
                 "thinking_trace": _serialize_deep_thinking(deep_outcome) if deep_outcome else None,
             }
 
+        def _finish(result: dict) -> dict:
+            if standalone_question:
+                result["standalone_question"] = standalone_question
+            return result
+
         timeout_seconds = self._ask_task_timeout_seconds()
         if timeout_seconds <= 0:
-            return await _retrieve_and_generate()
+            return _finish(await _retrieve_and_generate())
 
         task = asyncio.create_task(_retrieve_and_generate())
         done, _pending = await asyncio.wait({task}, timeout=timeout_seconds)
         if task in done:
-            return task.result()
+            return _finish(task.result())
 
         # 不取消 task：非破坏式放弃等待，后台继续跑完并照常写 chat_history（见上）。
         task.add_done_callback(
@@ -3151,6 +3149,36 @@ class KnowledgeRepositoryApi(
             },
         )
         raise AskTaskTimeoutError(cid, timeout_seconds)
+
+    async def _standalone_question(self, cid: str, question: str, answer_language: str) -> str:
+        """多轮对话：结合本会话最近几轮把追问改写成独立问题。
+
+        首轮、无 LLM、失败或改写无变化时返回空串（调用方照原问题走）。
+        """
+        if self._llm_adapter is None:
+            return ""
+        try:
+            turns = recent_turns(await self._source_store.get_chat_messages(cid))
+        except Exception as exc:
+            logger.warning("Reading the conversation for a follow-up failed: %s", exc)
+            return ""
+        if not turns:
+            return ""
+        user_prompt, system_prompt = build_condense_prompt(
+            turns, question, lang=prompt_lang(answer_language, question)
+        )
+        try:
+            text = await self._llm_adapter.generate(
+                user_prompt, system_prompt=system_prompt, allow_mock=False
+            )
+        except Exception as exc:
+            logger.warning("Rewriting the follow-up failed; using the question as asked: %s", exc)
+            return ""
+        rewritten = clean_rewrite(text)
+        if not rewritten or rewritten == question.strip():
+            return ""
+        logger.info("Follow-up rewritten: %r -> %r", question[:80], rewritten[:120])
+        return rewritten
 
     async def _resolve_ask_collections(
         self, collection: str | None, scope: RetrievalScope | None = None

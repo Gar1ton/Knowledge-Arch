@@ -42,6 +42,11 @@ class SettingsApiMixin:
             raise RuntimeError("settings store is not configured")
         return self._settings_store
 
+    def forget_master_key(self) -> dict[str, Any]:
+        """「删除全部数据」的第一步：删掉钥匙串里的主密钥；数据目录随后由桌面壳删除。"""
+        self._require_settings().secrets.forget_master_key()
+        return {"status": "ok"}
+
     def _require_registry(self) -> ProviderRegistry:
         if self._provider_registry is None:
             raise RuntimeError("provider registry is not configured")

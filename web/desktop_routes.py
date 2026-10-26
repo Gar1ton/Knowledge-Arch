@@ -1,4 +1,5 @@
-"""桌面版新增的 HTTP 路由：可选组件（偏好设置 › 组件）与旧版插件数据导入（欢迎页）。
+"""桌面版新增的 HTTP 路由：可选组件（偏好设置 › 组件）、旧版插件数据导入（欢迎页）
+与「删除全部数据」的主密钥清除。
 
 与 `server.py` 同样只做 HTTP↔`kacore/api` 的翻译；拆成独立模块是因为 server.py 已超出
 文件大小红线。门面经 `register_desktop_routes(app, api_of)` 注入的取值函数获得
@@ -103,6 +104,15 @@ def register_desktop_routes(app: web.Application, api_of: ApiOf) -> None:
         except (LegacyImportError, RuntimeError) as exc:
             return _import_error(exc)
 
+    # ── 删除全部数据 ──────────────────────────────────────────────
+
+    async def forget_master_key(request: web.Request) -> web.Response:
+        """POST /api/secrets/forget-master-key — 删除钥匙串里的主密钥；文件由桌面壳随后删除。"""
+        try:
+            return web.json_response(api_of(request).forget_master_key())
+        except RuntimeError as exc:
+            return _error(str(exc), 501)
+
     app.router.add_get("/api/components", components_list)
     app.router.add_post("/api/components/{key}/install", component_install)
     app.router.add_delete("/api/components/{key}", component_uninstall)
@@ -110,6 +120,7 @@ def register_desktop_routes(app: web.Application, api_of: ApiOf) -> None:
     app.router.add_post("/api/legacy-import", legacy_start)
     app.router.add_get("/api/legacy-import", legacy_status)
     app.router.add_delete("/api/legacy-import", legacy_discard)
+    app.router.add_post("/api/secrets/forget-master-key", forget_master_key)
 
 
 __all__ = ["register_desktop_routes"]
