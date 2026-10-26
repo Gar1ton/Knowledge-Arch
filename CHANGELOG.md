@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [v2.0.1] — 2026-10-26
+
 ### 改进 (Changed) — P19 提示词按回答语言切换
 
 - **`kacore/pipelines/prompt_language.py`**：回答语言 zh / en 直接决定提示词语言，auto 跟随问题语言。
