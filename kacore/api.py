@@ -133,6 +133,10 @@ LIGHTRAG_BUILD_CIRCUIT_BREAKER_THRESHOLD = 3
 CODEX_GRAPH_TASK_FINAL = "completed"
 CODEX_GRAPH_TASK_RETRYABLE = ("pending", "error", "processing")
 ZOTERO_SYNC_TERMINAL_VISIBLE_SECONDS = 30.0
+# 图谱构建任务仍在进行的状态（集合改名期间不允许）。
+_GRAPH_JOB_ACTIVE_STATUSES = frozenset(
+    {"queued", "running", "pause_requested", "paused", "waiting_agent"}
+)
 NOTION_SYNC_TERMINAL_VISIBLE_SECONDS = 30.0
 
 
@@ -975,11 +979,68 @@ class KnowledgeRepositoryApi(
         if not new_name:
             raise ValueError("The collection name cannot be empty.")
         col = await self._assert_local_editable(coll_key)
+        if new_name == col.name:
+            return
         await self._assert_name_unique_under_parent(
             new_name, col.parent_key, exclude_key=coll_key
         )
+        old_name = col.name
+        if self._graph_build_running(old_name):
+            raise ValueError(
+                "A knowledge graph is being built for this collection; rename it after the "
+                "build finishes."
+            )
         col.name = new_name
         await self._source_store.upsert_collection(col)
+        await self._cascade_collection_rename(coll_key, old_name, new_name)
+
+    def _graph_build_running(self, collection: str) -> bool:
+        return any(
+            job.collection == collection and job.status in _GRAPH_JOB_ACTIVE_STATUSES
+            for job in self._graph_build_jobs.values()
+        )
+
+    async def _cascade_collection_rename(self, coll_key: str, old_name: str, new_name: str) -> None:
+        """文档、索引标签、笔记与图谱都按集合名字记录归属：改名后全部跟到新名字。"""
+        doc_ids = await self._source_store.rename_collection_references(
+            coll_key, old_name, new_name
+        )
+        for doc_id in doc_ids:
+            await self._sync_milvus_collection_move(doc_id, new_name)
+        # 别处还有同名集合时，旧名字的图谱仍属于它们，不搬。
+        if any(c.name == old_name for c in await self._source_store.list_collections()):
+            return
+        if self._lightrag_registry is not None:
+            self._lightrag_registry.rename_workspace(old_name, new_name)
+        if self._index_compatibility is not None:
+            self._index_compatibility.rename_lightrag_collection(old_name, new_name)
+        logger.info(
+            "Collection renamed %r -> %r: %d documents re-tagged", old_name, new_name, len(doc_ids)
+        )
+
+    async def repair_renamed_collections(self) -> int:
+        """修复旧版改名留下的断链：文档记录的集合名已不存在、且它只属于一个本地集合时，
+        按改名处理（文档、索引标签、笔记、图谱映射跟到该集合现在的名字）。返回修复的文档数。
+        """
+        collections = {c.coll_key: c for c in await self._source_store.list_collections()}
+        names = {c.name for c in collections.values()}
+        targets: dict[tuple[str, str], int] = {}
+        for doc in await self._source_store.list_documents():
+            if not doc.collection or doc.collection in names:
+                continue
+            local = [
+                k for k in doc.collection_keys if k in collections and not collections[k].read_only
+            ]
+            if len(local) == 1:
+                key = (local[0], doc.collection)
+                targets[key] = targets.get(key, 0) + 1
+        repaired = 0
+        for (coll_key, old_name), count in targets.items():
+            await self._cascade_collection_rename(coll_key, old_name, collections[coll_key].name)
+            repaired += count
+        if repaired:
+            logger.info("Repaired %d documents left behind by earlier collection renames", repaired)
+        return repaired
 
     async def move_collection(self, coll_key: str, new_parent_key: str = "") -> None:
         """移动本地集合到新父级（new_parent_key 为空=提升为顶层）。防环 + 只读校验。"""
@@ -2435,6 +2496,7 @@ class KnowledgeRepositoryApi(
         answer_language: str,
         progress: Any,
         user_question: str,
+        chat_meta: dict[str, Any],
     ) -> dict:
         """全文检索分支：整篇正文 → 答案 + 单条 Harvard 引用 + 落库（供 ask 内部调用）。
 
@@ -2510,7 +2572,8 @@ class KnowledgeRepositoryApi(
         try:
             await self._source_store.add_chat_message(cid, "user", user_question)
             await self._source_store.add_chat_message(
-                cid, "assistant", stored_answer, sources=sources, retrieval_mode=MODE_FULLTEXT
+                cid, "assistant", stored_answer, sources=sources, retrieval_mode=MODE_FULLTEXT,
+                meta=chat_meta,
             )
         except Exception as exc:
             logger.warning("Failed to persist chat history: %s", exc)
@@ -2664,6 +2727,10 @@ class KnowledgeRepositoryApi(
         )
         if standalone_question:
             question = standalone_question
+        # 存进聊天记录的附加信息：超时补拉与重启后读历史时恢复「理解为」与思考过程。
+        chat_meta: dict[str, Any] = (
+            {"standalone_question": standalone_question} if standalone_question else {}
+        )
 
         # 翻译召回查询（当 use_english_retrieval=True 时，将用户问题翻译为英语再送入向量检索）。
         # 仅含中文才翻译：与聊天路径的 _has_cjk 门一致，英文 query 不白耗一次 LLM 调用。
@@ -2718,6 +2785,7 @@ class KnowledgeRepositoryApi(
                     answer_language=answer_language,
                     progress=_progress,
                     user_question=user_question,
+                    chat_meta=chat_meta,
                 )
 
             if retrieval_mode in {MODE_GRAPH_MIXED, MODE_GRAPH_ONLY}:
@@ -2771,7 +2839,8 @@ class KnowledgeRepositoryApi(
                 try:
                     await self._source_store.add_chat_message(cid, "user", user_question)
                     await self._source_store.add_chat_message(
-                        cid, "assistant", answer, sources=[], retrieval_mode="lightrag_only"
+                        cid, "assistant", answer, sources=[], retrieval_mode="lightrag_only",
+                        meta=chat_meta,
                     )
                 except Exception as exc:
                     logger.warning("Failed to persist chat history: %s", exc)
@@ -3074,6 +3143,14 @@ class KnowledgeRepositoryApi(
                     cid, "assistant", stored_answer,
                     sources=[s for s in sources],
                     retrieval_mode=actual_mode,
+                    meta={
+                        **chat_meta,
+                        **(
+                            {"thinking_trace": _serialize_deep_thinking(deep_outcome)}
+                            if deep_outcome
+                            else {}
+                        ),
+                    },
                 )
             except Exception as exc:
                 logger.warning("Failed to persist chat history: %s", exc)

@@ -151,3 +151,15 @@ async def test_rewrite_failure_falls_back_to_the_question_as_asked() -> None:
     assert llm.rewrite_calls == 1
     assert deep.query == "What are its limitations?"
     assert "standalone_question" not in result
+
+
+async def test_trace_and_rewrite_are_kept_in_chat_history() -> None:
+    """超时补拉与重启后读历史时，思考过程与「理解为」从聊天记录的 meta 恢复。"""
+    llm = _RewriteLLM()
+    api, _, store = await _api(llm, history=True)
+
+    await _ask(api, use_context=True)
+
+    assistant = [m for m in await store.get_chat_messages("conv") if m["role"] == "assistant"][-1]
+    assert assistant["meta"]["standalone_question"] == REWRITTEN
+    assert assistant["meta"]["thinking_trace"]["verified"] is True

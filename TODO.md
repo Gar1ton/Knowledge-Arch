@@ -361,3 +361,14 @@
   - [x] 版本号 2.0.2。
   - 验证：pytest 1435 passed / 4 skipped；ruff；mypy；tsc；eslint；`next build`；Playwright：真 PDF 渲染 3 页、
     全屏铺满并重新适应宽度、Esc 退出、.md 文档无 PDF 切换。未验证：桌面壳里实测（需出包）。
+- [x] P21 · 2.0.3（含未单独发布的 2.0.2）。
+  - [x] ① 聊天记录存 `meta`（思考过程、改写后的问题），超时补拉与重启后仍在；迁移 026。
+  - [x] ② 聊天来源面板可折叠（默认收起）；知识范围标签显示文档标题而非内部 ID（新增 `GET /api/documents/{doc_id}`）。
+  - [x] ③ 集合改名级联：documents / lightrag_index_status / 集合笔记 / 图谱构建记录 / 向量标签 / LightRAG 映射；
+    构建中拒绝改名；启动时修复已损坏的归属；前端选中项跟随新名字。
+  - [x] ④ 未就绪的 Zotero / R2 / LightRAG 按钮变灰，点击提示去数据流页配置；去掉 Zotero 区无操作的「+」。
+  - [x] ⑤ Windows / Linux 去掉系统标题栏，窗口按钮并入顶栏 Preferences 右侧；macOS 红绿灯嵌入顶栏左侧（Overlay）。
+  - [x] ⑥ 外框固定：html / body 不滚动、关闭回弹，只有面板内部滚动。
+  - 验证：pytest 1445 passed / 4 skipped；ruff；mypy；tsc；eslint；`next build`；Playwright：改名后 5 篇仍在且选中跟随、
+    未配置按钮变灰与提示、范围标签显示标题、滚轮下根节点不动而面板内部可滚。
+    未验证：桌面壳里的自绘标题栏（三平台）、窗口拖动 / 双击最大化、真实模型下思考过程的存取（需出包实测）。

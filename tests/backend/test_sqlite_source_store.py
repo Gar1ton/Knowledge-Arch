@@ -764,3 +764,12 @@ async def test_notion_revision_waits_for_local_transaction_commit(
         await asyncio.sleep(0)
         assert not task.done()
     assert await task == await sqlite_store.get_notion_local_revision()
+
+
+async def test_chat_message_meta_round_trips(sqlite_store: SQLiteSourceDocumentStore) -> None:
+    await sqlite_store.add_chat_message("conv", "user", "q")
+    meta = {"standalone_question": "Q?", "thinking_trace": {"rounds": []}}
+    await sqlite_store.add_chat_message("conv", "assistant", "a", meta=meta)
+    messages = await sqlite_store.get_chat_messages("conv")
+    assert messages[0]["meta"] == {}
+    assert messages[1]["meta"] == meta

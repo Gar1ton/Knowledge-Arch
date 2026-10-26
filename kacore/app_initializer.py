@@ -671,6 +671,11 @@ class AppInitializer:
 
         await asyncio.to_thread(commit_applied_restore, self._data_dir)
         await asyncio.to_thread(commit_applied_legacy_import, self._data_dir)
+        if self.api is not None:
+            try:
+                await self.api.repair_renamed_collections()
+            except Exception as exc:  # 修复失败不阻止启动；下次启动再试
+                logger.warning("Repairing renamed collections failed: %s", exc)
         logger.info(
             "AppInitializer.initialize() finished in %.1fs", time.monotonic() - init_started
         )

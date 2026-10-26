@@ -2288,3 +2288,15 @@ def test_document_ext_reports_the_real_type_of_original_pdf(tmp_path: Path) -> N
     assert _document_ext(doc(text, "Clean Title")) == "txt"
     assert _document_ext(doc(text, "x", "application/pdf")) == "pdf"  # 声明为 PDF 时照旧
     assert _document_ext(doc(tmp_path / "zotero" / "paper.epub", "p")) == "epub"
+
+
+async def test_get_single_document_route_does_not_shadow_static_routes(tmp_path: Path) -> None:
+    client = await _client(tmp_path)
+    try:
+        resp = await client.get("/api/documents/d1")
+        assert resp.status == 200 and (await resp.json())["doc_id"] == "d1"
+        assert (await client.get("/api/documents/missing")).status == 404
+        resp = await client.get("/api/documents/pending-reindex-count")
+        assert resp.status == 200 and "doc_id" not in await resp.json()
+    finally:
+        await client.close()

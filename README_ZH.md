@@ -8,7 +8,7 @@
 
 *PDF 原件库 · Zotero 同步 · 六档检索问答 · Harvard 引用 · LightRAG 图谱 · Notion / R2*
 
-[![version](https://img.shields.io/badge/版本-v2.0.2-blueviolet)](https://github.com/Gar1ton/Knowledge-Arch/releases)
+[![version](https://img.shields.io/badge/版本-v2.0.3-blueviolet)](https://github.com/Gar1ton/Knowledge-Arch/releases)
 [![license](https://img.shields.io/badge/license-AGPL--3.0-green)](LICENSE)
 [![en](https://img.shields.io/badge/English-README.md-blue)](README.md)
 

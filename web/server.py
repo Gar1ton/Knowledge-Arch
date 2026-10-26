@@ -667,6 +667,15 @@ async def handle_collection_notes_post(request: web.Request) -> web.Response:
     return web.json_response(note, status=201)
 
 
+async def handle_get_document(request: web.Request) -> web.Response:
+    """GET /api/documents/{doc_id} — 单篇文档（聊天的知识范围标签据此显示标题）。"""
+    api = _api(request)
+    doc = await api.get_document(request.match_info["doc_id"])
+    if doc is None:
+        return web.json_response({"error": "document not found"}, status=404)
+    return web.json_response(await _document_dict(api, doc))
+
+
 async def handle_download_document(request: web.Request) -> web.StreamResponse:
     doc_id = request.match_info["doc_id"]
     doc = await _api(request).get_document(doc_id)
@@ -1882,6 +1891,8 @@ def build_app(
     app.router.add_patch(
         "/api/chat/history/{conv_id}/messages/{msg_idx}/lock", handle_chat_message_lock
     )
+    # 动态段最后注册：aiohttp 按注册顺序匹配，放前面会截走 /api/documents/pending-reindex-count 等。
+    app.router.add_get("/api/documents/{doc_id}", handle_get_document)
 
     from web.desktop_routes import register_desktop_routes
 

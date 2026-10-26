@@ -242,6 +242,7 @@ def _row_to_chat_message(row: tuple) -> dict:
         "locked": bool(row[6]),
         "locked_at": row[7],
         "updated_at": row[8],
+        "meta": _loads_dict(row[9]),
     }
 
 
@@ -296,6 +297,43 @@ class SQLiteSourceDocumentStore(SourceDocumentStore):
             parent_key=row[7],
             library_id=row[8],
         )
+
+    @_locked_write
+    async def rename_collection_references(
+        self, coll_key: str, old_name: str, new_name: str
+    ) -> list[str]:
+        async with self._db.execute(
+            "SELECT d.doc_id FROM documents d JOIN document_collections dc ON dc.doc_id = d.doc_id "
+            "WHERE dc.coll_key = ? AND d.collection = ? ORDER BY d.doc_id",
+            (coll_key, old_name),
+        ) as cursor:
+            doc_ids = [row[0] for row in await cursor.fetchall()]
+        member = "SELECT doc_id FROM document_collections WHERE coll_key = ?"
+        try:
+            await self._db.execute(
+                "UPDATE documents SET collection = ? "
+                f"WHERE collection = ? AND doc_id IN ({member})",
+                (new_name, old_name, coll_key),
+            )
+            await self._db.execute(
+                "UPDATE lightrag_index_status SET collection = ? "
+                f"WHERE collection = ? AND doc_id IN ({member})",
+                (new_name, old_name, coll_key),
+            )
+            await self._db.execute(
+                "UPDATE scoped_notes SET scope_key = ?, collection_name = ? "
+                "WHERE scope_type = 'collection' AND scope_key = ?",
+                (new_name, new_name, old_name),
+            )
+            for table in ("graph_build_jobs", "codex_graph_tasks"):
+                await self._db.execute(
+                    f"UPDATE {table} SET collection = ? WHERE collection = ?", (new_name, old_name)
+                )
+            await self._db.commit()
+        except Exception:
+            await self._db.rollback()
+            raise
+        return doc_ids
 
     @_locked_write
     async def upsert_collection(self, collection: Collection) -> None:
@@ -1371,14 +1409,15 @@ class SQLiteSourceDocumentStore(SourceDocumentStore):
         sources: list | None = None,
         retrieval_mode: str = "",
         locked: bool = False,
+        meta: dict | None = None,
     ) -> None:
         now = _format_dt(datetime.now(timezone.utc))
         await self._db.execute(
             """
             INSERT INTO chat_history
                 (conversation_id, role, content, sources, retrieval_mode, created_at,
-                 locked, locked_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 locked, locked_at, updated_at, meta)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 conversation_id,
@@ -1390,6 +1429,7 @@ class SQLiteSourceDocumentStore(SourceDocumentStore):
                 int(locked),
                 now if locked else None,
                 now,
+                json.dumps(meta or {}, ensure_ascii=False),
             ),
         )
         await self._db.commit()
@@ -1398,7 +1438,7 @@ class SQLiteSourceDocumentStore(SourceDocumentStore):
         async with self._db.execute(
             """
             SELECT id, role, content, sources, retrieval_mode, created_at,
-                   locked, locked_at, updated_at
+                   locked, locked_at, updated_at, meta
               FROM chat_history WHERE conversation_id = ?
              ORDER BY id ASC
             """,
@@ -1440,7 +1480,7 @@ class SQLiteSourceDocumentStore(SourceDocumentStore):
         async with self._db.execute(
             """
             SELECT id, role, content, sources, retrieval_mode, created_at,
-                   locked, locked_at, updated_at
+                   locked, locked_at, updated_at, meta
               FROM chat_history
              WHERE id = ?
             """,

@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+## [v2.0.3] — 2026-10-26
+
+### 修复 (Fixed)
+
+- **思考过程在答案完成后消失**：深度思考超时后前端从聊天记录补拉答案，而记录里不存思考过程。迁移 `026_chat_history_meta.sql`
+  给聊天记录加 `meta`，回答时存下思考过程与「理解为」，补拉与重启后恢复。
+- **集合改名后文件从列表消失、按该集合检索为空**：归属与索引都按集合名字记录，改名只改了集合本身。`rename_collection` 现在
+  在一个事务里级联文档、LightRAG 索引状态、集合笔记、图谱构建记录（`rename_collection_references`），向量库重新打标签，
+  LightRAG workspace 映射跟随；图谱构建中拒绝改名。启动时 `repair_renamed_collections` 修复旧版改名留下的断链。
+- **聊天知识范围标签显示内部 ID 并溢出**：改为显示文档标题（新增 `GET /api/documents/{doc_id}`），过长省略。
+- **界面像网页一样整体被拖动**：`app/globals.css` 固定 html / body、关闭回弹，只有面板内部滚动。
+
+### 改进 (Changed)
+
+- **聊天来源可折叠**：与思考过程一样默认收起，标题显示条数。
+- **未配置的功能按钮变灰**：Zotero 同步、R2 备份、LightRAG 构建按 `/api/capabilities` 显示就绪状态，点击时现查，
+  仍未就绪就提示去数据流页设置（`lib/featureReadiness.ts`）；去掉 Zotero 区无操作的「+」。
+- **自绘标题栏**：Windows / Linux 去掉系统标题栏（`tauri.windows.conf.json` / `tauri.linux.conf.json`），最小化 / 最大化 / 关闭并入顶栏
+  Preferences 右侧（`components/layout/WindowControls.tsx`），顶栏空白处可拖动、双击最大化；macOS 用 Overlay 标题栏，红绿灯嵌入顶栏左侧。
+
 ## [v2.0.2] — 2026-10-26
 
 ### 修复 (Fixed)

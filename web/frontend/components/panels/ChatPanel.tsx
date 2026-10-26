@@ -19,7 +19,7 @@ import {
   ChatMessage, ask, buildGraph, estimateGraphBuild,
   getChatHistory, clearChatHistory, lockChatAnswer,
   createDocumentNote, createCollectionNote,
-  getAskProgress, waitForLateAskAnswer, type LiveProgressDetail,
+  getAskProgress, getDocument, waitForLateAskAnswer, type LiveProgressDetail,
   getEffectiveConfig, pushNotionNote,
 } from "@/lib/api";
 
@@ -81,6 +81,71 @@ function retrievalModeLabel(
 }
 
 // 思考过程：默认收起、可点击展开的可折叠区块（与 sources 一致的轻量样式）。
+/** 答案下方的引用来源：与思考过程一样可折叠，默认收起（正文里点 [n] 仍可直接打开）。 */
+function SourcesSection({
+  sources,
+  onCite,
+  t,
+}: {
+  sources: AskSource[];
+  onCite: (n: number) => void;
+  t: (key: I18nKey, vars?: Record<string, string | number>) => string;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border)" }}>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          width: "100%",
+          background: "transparent",
+          border: "none",
+          padding: 0,
+          cursor: "pointer",
+          textAlign: "left",
+        }}
+      >
+        <Icon name="quote" size={11} />
+        <span
+          style={{
+            fontSize: 9.5,
+            fontWeight: 700,
+            letterSpacing: ".06em",
+            textTransform: "uppercase",
+            color: "var(--fg-subtle)",
+          }}
+        >
+          {t("chat_sources_title", { n: sources.length })}
+        </span>
+        <span
+          style={{
+            marginLeft: "auto",
+            fontSize: 11,
+            color: "var(--fg-subtle)",
+            transform: open ? "rotate(90deg)" : "none",
+            transition: "transform .15s",
+          }}
+        >
+          ▸
+        </span>
+      </button>
+      {open && (
+        <>
+          <div style={{ fontSize: 10, color: "var(--fg-subtle)", marginTop: 4 }}>{t("chat_sources_open")}</div>
+          {sources.map((s) => (
+            <SourceMini key={s.n} s={s} onClick={() => onCite(s.n)} />
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
 function ThinkingTraceView({
   trace,
   t,
@@ -462,23 +527,7 @@ function MessageBubble({
           </div>
         )}
         {msg.sources && msg.sources.length > 0 && (
-          <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border)" }}>
-            <div
-              style={{
-                fontSize: 9.5,
-                fontWeight: 700,
-                letterSpacing: ".06em",
-                textTransform: "uppercase",
-                color: "var(--fg-subtle)",
-                marginBottom: 2,
-              }}
-            >
-              {t("chat_sources_open")}
-            </div>
-            {msg.sources.map((s) => (
-              <SourceMini key={s.n} s={s} onClick={() => onCite(s.n)} />
-            ))}
-          </div>
+          <SourcesSection sources={msg.sources} onCite={onCite} t={t} />
         )}
         {msg.thinkingTrace && <ThinkingTraceView trace={msg.thinkingTrace} t={t} />}
       </div>
@@ -733,6 +782,8 @@ function chatMessagesToMessages(msgs: ChatMessage[]): Message[] {
     actualRetrievalMode: m.retrieval_mode || undefined,
     id: m.id,
     pinned: Boolean(m.locked),
+    thinkingTrace: m.meta?.thinking_trace ?? undefined,
+    standaloneQuestion: m.meta?.standalone_question || undefined,
   }));
 }
 
@@ -766,6 +817,19 @@ export function ChatPanel({ width }: { width?: number }) {
   const [graphBuildDialog, setGraphBuildDialog] = useState<GraphBuildDialogState | null>(null);
   const [fullTextDialog, setFullTextDialog] = useState<FullTextConfirmDialogState | null>(null);
   const [notionEnabled, setNotionEnabled] = useState(false);
+  const [docInfo, setDocInfo] = useState<{ id: string; title: string } | null>(null);
+  useEffect(() => {
+    if (!selectedDocId) return;
+    let alive = true;
+    getDocument(selectedDocId)
+      .then((doc) => {
+        if (alive) setDocInfo({ id: doc.doc_id, title: doc.title || doc.filename || "" });
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [selectedDocId]);
   // 卸载时兜底清除轮询定时器，避免组件被销毁后仍在轮询。
   useEffect(
     () => () => {
@@ -1056,8 +1120,10 @@ export function ChatPanel({ width }: { width?: number }) {
   const isDoc = !!selectedDocId;
   const contextTone = isLightRAG ? "violet" : isDoc ? "info" : "accent";
   const contextIcon = isDoc ? "file" : isLightRAG ? "graph" : "folder";
+  // 选中文档时显示标题（内部 ID 形如 LOCAL_<item>_<attachment>，对用户没有意义）。
+  const docTitle = docInfo && docInfo.id === selectedDocId ? docInfo.title : "";
   const contextLabel = isDoc
-    ? (selectedDocId ?? "").slice(0, 24)
+    ? docTitle || t("panel_scope_document")
     : collectionName ?? t("panel_all_collections");
 
   return (
@@ -1192,7 +1258,20 @@ export function ChatPanel({ width }: { width?: number }) {
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 7 }}>
           <span style={{ fontSize: 10.5, color: "var(--fg-subtle)" }}>{t("panel_scope")}</span>
           <Badge tone={contextTone}>
-            <Icon name={contextIcon} size={10} /> {contextLabel}
+            <Icon name={contextIcon} size={10} />{" "}
+            <span
+              title={contextLabel}
+              style={{
+                maxWidth: 220,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                display: "inline-block",
+                verticalAlign: "bottom",
+              }}
+            >
+              {contextLabel}
+            </span>
           </Badge>
         </div>
 

@@ -8,10 +8,11 @@ import { Icon } from "@/components/ds/Icon";
 import { Select } from "@/components/ds/Select";
 import { formatBytes } from "@/components/flow/SyncActions";
 import { notifyDocumentsChanged } from "@/lib/documentEvents";
+import { useFeatureReadiness, type Feature } from "@/lib/featureReadiness";
 import { useConsole } from "@/lib/ConsoleContext";
 import { listCollections, getActiveBuildJob, getBuildJobHistory, buildGraph, pauseBuildJob, resumeBuildJob, deleteCollection, deleteCollectionByKey, renameCollection, createCollection, uploadDocument, syncZoteroPull, getActiveZoteroSyncJob, backupNow, Collection, GraphBuildJob, BuildJobRecord } from "@/lib/api";
 import { useToast } from "@/components/ui/Toast";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, type I18nKey } from "@/lib/i18n";
 
 // ─── Sub-components ───────────────────────────────────────────
 
@@ -658,7 +659,7 @@ function NewCollectionDialog({ onClose, onCreated, parentKey, parentName }: NewC
 interface RenameCollectionDialogProps {
   collection: Collection;
   onClose: () => void;
-  onRenamed: () => void;
+  onRenamed: (newName: string) => void;
 }
 
 function RenameCollectionDialog({ collection, onClose, onRenamed }: RenameCollectionDialogProps) {
@@ -673,7 +674,7 @@ function RenameCollectionDialog({ collection, onClose, onRenamed }: RenameCollec
     setSaving(true);
     try {
       await renameCollection(collection.coll_key || "", next);
-      onRenamed();
+      onRenamed(next);
       onClose();
     } catch (err: unknown) {
       toast(err instanceof Error ? err.message : String(err), "error");
@@ -968,6 +969,22 @@ function UploadDocumentDialog({ defaultCollection, localCollections, onClose }: 
 
 export function FilePanel() {
   const { selectedCollection, setSelectedCollection, setSelectedDocId } = useConsole();
+  const { ready, ensure } = useFeatureReadiness();
+  const FEATURE_LABEL: Record<Feature, I18nKey> = {
+    zotero: "feature_zotero",
+    r2: "feature_r2",
+    graph: "feature_graph",
+  };
+  // 未就绪的功能按钮显示为灰色；点击时现查一次，仍未就绪就提示去数据流页配置。
+  const dimmed = (feature: Feature): React.CSSProperties | undefined =>
+    ready[feature] === false ? { opacity: 0.4 } : undefined;
+  async function whenReady(feature: Feature, action: () => void | Promise<void>) {
+    if (ready[feature] === false && !(await ensure(feature))) {
+      toast(t("feature_not_configured", { feature: t(FEATURE_LABEL[feature]) }), "info");
+      return;
+    }
+    await action();
+  }
   const { toast } = useToast();
   const { t } = useI18n();
   const [collections, setCollections] = useState<Collection[]>([]);
@@ -1246,8 +1263,8 @@ export function FilePanel() {
         label={t("file_build_start")}
         size={12}
         side="left"
-        style={baseStyle}
-        onClick={(e) => { e.stopPropagation(); startBuild(collectionName); }}
+        style={{ ...baseStyle, ...dimmed("graph") }}
+        onClick={(e) => { e.stopPropagation(); void whenReady("graph", () => startBuild(collectionName)); }}
       />
     );
   }
@@ -1263,25 +1280,26 @@ export function FilePanel() {
           <IconButton
             name="graph"
             label={t("file_action_lightrag_build")}
-            onClick={() => {
+            style={dimmed("graph")}
+            onClick={() => void whenReady("graph", () => {
               const name = selectedCollection?.replace(/^(z:|l:|lr:)/, "");
               if (!name) { toast(t("file_build_no_collection"), "error"); return; }
               if (buildJob && isActiveBuildStatus(buildJob.status)) {
                 toast(t("file_build_active_exists"), "error");
                 return;
               }
-              startBuild(name);
-            }}
+              void startBuild(name);
+            })}
           />
-          <IconButton name="cloud" label={t("file_action_r2_backup")} onClick={async () => {
+          <IconButton name="cloud" label={t("file_action_r2_backup")} style={dimmed("r2")} onClick={() => void whenReady("r2", async () => {
             try {
               await backupNow(false);
               toast(t("r2_full_backup_started"), "ok");
             } catch (err: unknown) {
               toast(err instanceof Error ? err.message : String(err), "error");
             }
-          }} />
-          <IconButton name="download" label={t("file_action_zotero_sync")} onClick={() => handleZoteroSync(true)} />
+          })} />
+          <IconButton name="download" label={t("file_action_zotero_sync")} style={dimmed("zotero")} onClick={() => void whenReady("zotero", () => handleZoteroSync(true))} />
         </>
       }
     >
@@ -1292,8 +1310,7 @@ export function FilePanel() {
           label={t("file_zotero_sync")}
           actions={
             <>
-              <IconButton name="download" label={t("file_action_zotero_sync")} size={14} onClick={() => handleZoteroSync(true)} />
-              <IconButton name="plus" label={t("file_action_new_collection")} size={14} />
+              <IconButton name="download" label={t("file_action_zotero_sync")} size={14} style={dimmed("zotero")} onClick={() => void whenReady("zotero", () => handleZoteroSync(true))} />
             </>
           }
         />
@@ -1360,7 +1377,7 @@ export function FilePanel() {
                 interrupted={interruptedJob}
                 onPause={pauseBuild}
                 onResumeJob={resumeBuild}
-                onResume={(col) => { startBuild(col); }}
+                onResume={(col) => { void whenReady("graph", () => startBuild(col)); }}
               />
             )}
             {lightragCollections.map((c) => {
@@ -1430,7 +1447,16 @@ export function FilePanel() {
       <RenameCollectionDialog
         collection={renamingCollection}
         onClose={() => setRenamingCollection(null)}
-        onRenamed={() => listCollections().then(setCollections).catch(() => {})}
+        onRenamed={(newName) => {
+          // 选中的是被改名的集合时跟到新名字（选中键按名字记），文档列表随之刷新。
+          for (const prefix of ["l:", "lr:"]) {
+            if (selectedCollection === `${prefix}${renamingCollection.name}`) {
+              setSelectedCollection(`${prefix}${newName}`);
+            }
+          }
+          notifyDocumentsChanged();
+          listCollections().then(setCollections).catch(() => {});
+        }}
       />
     )}
 

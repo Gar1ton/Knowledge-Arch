@@ -7,6 +7,10 @@
 export const DESKTOP_ZH = {
   topbar_workspace: "工作台",
   topbar_preferences: "偏好设置",
+  window_minimize: "最小化",
+  window_maximize: "最大化",
+  window_restore: "还原",
+  window_close: "关闭",
   prefs_shortcut_hint: "偏好设置（⌘, / Ctrl+,）",
   prefs_title: "偏好设置",
   prefs_group_general: "通用",
@@ -341,6 +345,10 @@ export const DESKTOP_ZH = {
 export const DESKTOP_EN: Record<keyof typeof DESKTOP_ZH, string> = {
   topbar_workspace: "Workspace",
   topbar_preferences: "Preferences",
+  window_minimize: "Minimize",
+  window_maximize: "Maximize",
+  window_restore: "Restore",
+  window_close: "Close",
   prefs_shortcut_hint: "Preferences (⌘, / Ctrl+,)",
   prefs_title: "Preferences",
   prefs_group_general: "General",
