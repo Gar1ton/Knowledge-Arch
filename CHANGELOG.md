@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 新增 (Added) — P18 多轮对话
+
+- **追问结合上下文**：`kacore/pipelines/conversation_context.py` 取本会话最近 3 轮（答案截断），`ask(use_context=True)`
+  在已有问答时先让 LLM 把追问改写成独立问题，检索与生成都用改写结果，六种模式通用；聊天记录保存原话，
+  结果带 `standalone_question`；首轮不改写，改写失败退回原问题。`/api/ask` 增加 `use_context`。
+- **聊天设置**：`components/panels/ChatPanel.tsx` 在「使用英语召回」下加「启用上下文（多轮对话）」与「显示改写后的问题」，
+  三个开关记在本机（默认开）；答案下方显示「理解为：…」。
+
 ### 新增 (Added) — P17 卸载与数据
 
 - **Windows 卸载器真正删除数据**：`desktop/src-tauri/windows/hooks.nsh`（`tauri.conf.json` 的 `installerHooks`）在勾选

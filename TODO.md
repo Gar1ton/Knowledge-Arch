@@ -335,3 +335,11 @@
 - [x] 文档列表刷新：Documents 面板搜索键旁加刷新键；上传成功后经 `lib/documentEvents.ts` 通知列表重新加载；
   未选集合（All Documents）时真正列出全部文档（此前不请求、恒为 0 篇）。上传框的目标集合改为派生值，去掉 effect 里的 setState。
   验证：tsc；eslint；`next build`；Playwright：All Documents 列出已有 3 篇，上传后不刷新页面即出现第 4 篇。
+- [x] P18 · 多轮对话。决策：先把追问改写成独立问题（检索与生成都用改写结果，存库保留原话）；默认开；
+  「使用英语召回」「启用上下文」「显示改写后的问题」三个开关记在本机。
+  - [x] P18.1 `kacore/pipelines/conversation_context.py` + `ask(use_context=...)`：有前几轮时用 LLM 改写，失败回退原问题。
+  - [x] P18.2 `/api/ask` 的 `use_context`；ChatPanel 开关与「理解为：…」显示；i18n。
+  - [x] P18.3 测试：纯函数、首轮 / 关闭不改写、检索用改写结果、存库原话、失败回退。
+  - 验证：pytest 1391 passed / 4 skipped（新增 `test_conversation_context.py` 6 项）；ruff；mypy；tsc；eslint；`next build`；
+    Playwright：设置菜单三个开关，切换后重新加载仍保持。未验证：接真实模型的多轮问答效果。
+    限制：「理解为：…」不存库，重新加载聊天记录后不显示（存库需迁移）。

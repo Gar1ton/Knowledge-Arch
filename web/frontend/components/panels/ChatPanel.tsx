@@ -1,5 +1,5 @@
 "use client";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Badge } from "@/components/ds/Badge";
 import { Icon } from "@/components/ds/Icon";
@@ -41,6 +41,7 @@ interface Message {
   actualRetrievalMode?: string;
   thinkingTrace?: ThinkingTrace;
   answerNotice?: string;
+  standaloneQuestion?: string;
   pinned?: boolean;
 }
 
@@ -370,6 +371,7 @@ function MessageBubble({
   onSaveNote,
   onPushNotion,
   notionEnabled,
+  showRewrite,
 }: {
   msg: Message;
   onCite: (n: number) => void;
@@ -377,6 +379,7 @@ function MessageBubble({
   onSaveNote: () => void;
   onPushNotion?: () => void;
   notionEnabled?: boolean;
+  showRewrite?: boolean;
 }) {
   const [hover, setHover] = useState(false);
   const { t } = useI18n();
@@ -443,6 +446,11 @@ function MessageBubble({
           </div>
         )}
         <AnswerMarkdown text={msg.content} sources={msg.sources} onCite={onCite} />
+        {showRewrite && msg.standaloneQuestion && (
+          <div style={{ marginTop: 8, fontSize: 11, lineHeight: 1.5, color: "var(--fg-subtle)" }}>
+            {t("chat_understood_as", { question: msg.standaloneQuestion })}
+          </div>
+        )}
         {msg.sources && msg.sources.length > 0 && (
           <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border)" }}>
             <div
@@ -625,6 +633,78 @@ function GraphBuildDialog({
 
 const CONV_KEY = "kr_conversation_id";
 
+/** 聊天设置里记在本机的开关（重启应用后保持上次选择）。 */
+function useStoredToggle(key: string, fallback: boolean): [boolean, () => void] {
+  const [value, setValue] = useState(() => {
+    if (typeof window === "undefined") return fallback;
+    try {
+      const stored = localStorage.getItem(key);
+      return stored === null ? fallback : stored === "1";
+    } catch {
+      return fallback;
+    }
+  });
+  const toggle = useCallback(() => {
+    setValue((current) => {
+      const next = !current;
+      try {
+        localStorage.setItem(key, next ? "1" : "0");
+      } catch {
+        /* 存储不可用时只在本次会话生效 */
+      }
+      return next;
+    });
+  }, [key]);
+  return [value, toggle];
+}
+
+function ToggleRow({ label, hint, on, onToggle }: { label: string; hint?: string; on: boolean; onToggle: () => void }) {
+  return (
+    <div
+      role="switch"
+      aria-checked={on}
+      title={hint}
+      onClick={onToggle}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "6px 8px",
+        cursor: "pointer",
+        borderTop: "1px solid var(--border)",
+        fontSize: 12,
+        color: "var(--fg)",
+      }}
+    >
+      <span>{label}</span>
+      <div
+        style={{
+          width: 28,
+          height: 16,
+          borderRadius: 8,
+          background: on ? "var(--accent)" : "var(--border-strong)",
+          position: "relative",
+          transition: "background .15s",
+          flexShrink: 0,
+        }}
+      >
+        <div
+          style={{
+            position: "absolute",
+            top: 2,
+            left: on ? 12 : 2,
+            width: 12,
+            height: 12,
+            borderRadius: "50%",
+            background: "white",
+            transition: "left .15s",
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function getOrCreateConvId(): string {
   if (typeof window === "undefined") return crypto.randomUUID();
   const stored = localStorage.getItem(CONV_KEY);
@@ -668,7 +748,9 @@ export function ChatPanel({ width }: { width?: number }) {
   const liveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [retrievalMode, setRetrievalMode] = useState<RetrievalMode>("default");
   const personaEnabled = false;
-  const [useEnglishRetrieval, setUseEnglishRetrieval] = useState(true);
+  const [useEnglishRetrieval, toggleEnglishRetrieval] = useStoredToggle("ka-chat-english-retrieval", true);
+  const [useContext, toggleUseContext] = useStoredToggle("ka-chat-use-context", true);
+  const [showRewrite, toggleShowRewrite] = useStoredToggle("ka-chat-show-rewrite", true);
   const [answerLanguage, setAnswerLanguage] = useState<"auto" | "zh" | "en">("auto");
   const [showSettings, setShowSettings] = useState(false);
   const [graphBuildDialog, setGraphBuildDialog] = useState<GraphBuildDialogState | null>(null);
@@ -857,6 +939,7 @@ export function ChatPanel({ width }: { width?: number }) {
         persona_enabled: personaEnabled,
         retrieval_mode: mode,
         use_english_retrieval: useEnglishRetrieval,
+        use_context: useContext,
         answer_language: answerLanguage,
         confirmed,
       });
@@ -872,6 +955,7 @@ export function ChatPanel({ width }: { width?: number }) {
           actualRetrievalMode: result.actual_retrieval_mode,
           thinkingTrace: result.thinking_trace ?? undefined,
           answerNotice: result.answer_notice || undefined,
+          standaloneQuestion: result.standalone_question || undefined,
         },
       ]);
     } catch (err) {
@@ -1051,6 +1135,7 @@ export function ChatPanel({ width }: { width?: number }) {
               onSaveNote={() => handleSaveNote(msg)}
               onPushNotion={() => handlePushNotion(msg, i)}
               notionEnabled={notionEnabled && msg.role === "assistant"}
+              showRewrite={showRewrite}
             />
           ))
         )}
@@ -1252,45 +1337,16 @@ export function ChatPanel({ width }: { width?: number }) {
                         );
                       })}
                     </div>
-                    {/* English retrieval toggle */}
-                    <div
-                      onClick={() => setUseEnglishRetrieval((v) => !v)}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        padding: "6px 8px",
-                        cursor: "pointer",
-                        borderTop: "1px solid var(--border)",
-                        fontSize: 12,
-                        color: "var(--fg)",
-                      }}
-                    >
-                      <span>{t("chat_use_english_retrieval")}</span>
-                      <div
-                        style={{
-                          width: 28,
-                          height: 16,
-                          borderRadius: 8,
-                          background: useEnglishRetrieval ? "var(--accent)" : "var(--border-strong)",
-                          position: "relative",
-                          transition: "background .15s",
-                        }}
-                      >
-                        <div
-                          style={{
-                            position: "absolute",
-                            top: 2,
-                            left: useEnglishRetrieval ? 12 : 2,
-                            width: 12,
-                            height: 12,
-                            borderRadius: "50%",
-                            background: "white",
-                            transition: "left .15s",
-                          }}
-                        />
-                      </div>
-                    </div>
+                    <ToggleRow label={t("chat_use_english_retrieval")} on={useEnglishRetrieval} onToggle={toggleEnglishRetrieval} />
+                    <ToggleRow
+                      label={t("chat_use_context")}
+                      hint={t("chat_use_context_hint")}
+                      on={useContext}
+                      onToggle={toggleUseContext}
+                    />
+                    {useContext && (
+                      <ToggleRow label={t("chat_show_rewrite")} on={showRewrite} onToggle={toggleShowRewrite} />
+                    )}
                     {/* Answer language */}
                     <div
                       style={{ padding: "6px 8px 4px", borderTop: "1px solid var(--border)" }}
