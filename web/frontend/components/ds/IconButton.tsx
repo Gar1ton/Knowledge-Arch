@@ -28,6 +28,7 @@ export function IconButton({
   return (
     <Tooltip label={label} side={side}>
       <button
+        type="button"
         onClick={onClick}
         aria-label={label}
         onMouseEnter={() => setHover(true)}

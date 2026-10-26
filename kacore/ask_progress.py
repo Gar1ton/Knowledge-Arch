@@ -60,6 +60,10 @@ class ProgressStore:
             result["detail"] = entry["detail"]
         return result
 
+    def discard(self, conversation_id: str) -> None:
+        """立即删除某对话的进度（回答被中断时用，不等 TTL）。"""
+        self._store.pop(conversation_id, None)
+
     def _gc(self) -> None:
         """清除超时记录。"""
         now = time.time()

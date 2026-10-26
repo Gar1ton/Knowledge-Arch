@@ -33,6 +33,9 @@ type RetrievalMode =
   | "fulltext"
   | "deep_thinking";
 
+// 默认档位：enhanced 不需要集合；模式失效时的回退与设置键高亮都以它为基准。
+const DEFAULT_MODE: RetrievalMode = "enhanced";
+
 interface Message {
   id?: number;
   role: "user" | "assistant";
@@ -807,7 +810,9 @@ export function ChatPanel({ width }: { width?: number }) {
   // 深度思考进行中的实时推演详情（轮询 /api/ask/progress 增量更新）。
   const [liveProgress, setLiveProgress] = useState<LiveProgressDetail | null>(null);
   const liveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [retrievalMode, setRetrievalMode] = useState<RetrievalMode>("default");
+  // 进行中的提问（请求本身 + 超时后的补轮询）→ 所属会话；清空聊天时全部中止。
+  const askAbortsRef = useRef(new Map<AbortController, string>());
+  const [retrievalMode, setRetrievalMode] = useState<RetrievalMode>(DEFAULT_MODE);
   const personaEnabled = false;
   const [useEnglishRetrieval, toggleEnglishRetrieval] = useStoredToggle("ka-chat-english-retrieval", true);
   const [useContext, toggleUseContext] = useStoredToggle("ka-chat-use-context", true);
@@ -880,9 +885,9 @@ export function ChatPanel({ width }: { width?: number }) {
   }, [messages]);
 
   useEffect(() => {
-    if (!selectedDocId && retrievalMode === "fulltext") setRetrievalMode("default");
+    if (!selectedDocId && retrievalMode === "fulltext") setRetrievalMode(DEFAULT_MODE);
     if (!collectionName && (retrievalMode === "deep_thinking" || retrievalMode === "graph_mixed" || retrievalMode === "graph_only")) {
-      setRetrievalMode("default");
+      setRetrievalMode(DEFAULT_MODE);
     }
   }, [selectedDocId, collectionName, retrievalMode]);
 
@@ -963,8 +968,24 @@ export function ChatPanel({ width }: { width?: number }) {
   }
 
   function clearChat() {
-    if (conversationId) clearChatHistory(conversationId, true).catch(() => {});
+    // 进行中的回答一并打断：中止请求与补轮询、停进度轮询、恢复发送键；
+    // 后端任务由 DELETE /api/chat/history 取消，不会再把问答写回。
+    const pending = askAbortsRef.current;
+    const interrupted = pending.size > 0;
+    const cids = new Set(pending.values());
+    if (conversationId) cids.add(conversationId);
+    pending.forEach((_cid, controller) => controller.abort());
+    pending.clear();
+    if (liveTimerRef.current) {
+      clearInterval(liveTimerRef.current);
+      liveTimerRef.current = null;
+    }
+    setLiveProgress(null);
+    setLoading(false);
     setMessages((prev) => prev.filter((m) => m.pinned));
+    Promise.all([...cids].map((c) => clearChatHistory(c, true).catch(() => false))).then((r) => {
+      if (interrupted || r.some(Boolean)) toast(t("chat_ask_cancelled"), "info");
+    });
   }
 
   async function submitQuestion(
@@ -1003,6 +1024,9 @@ export function ChatPanel({ width }: { width?: number }) {
         liveTimerRef.current = null;
       }
     };
+    const abort = new AbortController();
+    askAbortsRef.current.set(abort, cid);
+    let recovering = false;
     try {
       const result: AskResult = await ask({
         question,
@@ -1016,7 +1040,9 @@ export function ChatPanel({ width }: { width?: number }) {
         use_context: useContext,
         answer_language: answerLanguage,
         confirmed,
+        signal: abort.signal,
       });
+      if (abort.signal.aborted) return; // 清空聊天时答案恰好到达：已放弃，不再渲染
       setFullTextDialog(null);
       setConversationId(result.conversation_id);
       if (typeof window !== "undefined") localStorage.setItem(CONV_KEY, result.conversation_id);
@@ -1033,6 +1059,10 @@ export function ChatPanel({ width }: { width?: number }) {
         },
       ]);
     } catch (err) {
+      // 被清空聊天中断（本页中止，或后端已取消任务）：不是错误，不提示。
+      if (abort.signal.aborted || (err instanceof ApiError && err.body?.status === "ask_cancelled")) {
+        return;
+      }
       if (
         (mode === "graph_mixed" || mode === "graph_only") &&
         err instanceof ApiError &&
@@ -1063,8 +1093,11 @@ export function ChatPanel({ width }: { width?: number }) {
         toast(t("chat_ask_still_running"), "info");
         setConversationId(recoverCid);
         if (typeof window !== "undefined") localStorage.setItem(CONV_KEY, recoverCid);
-        waitForLateAskAnswer(recoverCid)
+        recovering = true;
+        askAbortsRef.current.set(abort, recoverCid);
+        waitForLateAskAnswer(recoverCid, { signal: abort.signal })
           .then((history) => {
+            if (abort.signal.aborted) return;
             if (history) {
               setMessages(chatMessagesToMessages(history));
               toast(t("chat_ask_recovered"), "ok");
@@ -1072,14 +1105,19 @@ export function ChatPanel({ width }: { width?: number }) {
               toast(t("chat_ask_recover_failed"), "info");
             }
           })
-          .catch(() => {});
+          .catch(() => {})
+          .finally(() => askAbortsRef.current.delete(abort));
       } else {
         toast(err instanceof ApiError ? err.message : t("error_generic"), "error");
       }
     } finally {
-      stopPolling();
-      setLiveProgress(null);
-      setLoading(false);
+      if (!recovering) askAbortsRef.current.delete(abort);
+      // 被清空中断时 clearChat 已复位这些状态，且可能已开始下一次提问，不能再动它们。
+      if (!abort.signal.aborted) {
+        stopPolling();
+        setLiveProgress(null);
+        setLoading(false);
+      }
       // 已确认的那次重发无论成败都要收起确认框，否则失败时它会永远停在 loading 态。
       // 刚被 409 打开的（running 未置位）不受影响。
       setFullTextDialog((prev) => (prev?.running ? null : prev));
@@ -1316,7 +1354,7 @@ export function ChatPanel({ width }: { width?: number }) {
                 <IconButton
                   name="settings"
                   label={t("chat_settings_label")}
-                  active={personaEnabled || retrievalMode !== "default" || showSettings}
+                  active={personaEnabled || retrievalMode !== DEFAULT_MODE || showSettings}
                   onClick={() => setShowSettings((v) => !v)}
                 />
                 <Popover

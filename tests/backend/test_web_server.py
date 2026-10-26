@@ -1333,6 +1333,46 @@ async def test_chat_lock_route_and_preserve_locked_clear(tmp_path: Path) -> None
         await client.close()
 
 
+async def test_clear_chat_history_interrupts_running_ask(tmp_path: Path) -> None:
+    """进行中的提问被清空中断：/api/ask 返回 409 ask_cancelled，DELETE 报告 cancelled。"""
+    import asyncio
+
+    from kacore.domain.deep_thinking import DeepThinkingOutcome
+
+    started = asyncio.Event()
+
+    class _Hanging:
+        async def run(self, collection, query, scope=None, progress=None,
+                      answer_language="auto", answer_question=None):
+            started.set()
+            await asyncio.sleep(30)
+            return DeepThinkingOutcome(evidence=[], answer="", verified=True)
+
+    api = await _make_api()
+    api._deep_thinking_orchestrator = _Hanging()  # type: ignore[assignment]
+    client = TestClient(TestServer(build_app(api=api, upload_dir=tmp_path, token=TOKEN)),
+                        headers=AUTH)
+    await client.start_server()
+    try:
+        ask = asyncio.create_task(client.post("/api/ask", json={
+            "question": "q", "collection": "papers", "conversation_id": "conv",
+            "retrieval_mode": "deep_thinking",
+        }))
+        await asyncio.wait_for(started.wait(), timeout=5)
+
+        clear = await client.delete("/api/chat/history?conversation_id=conv")
+        assert clear.status == 200
+        assert await clear.json() == {"status": "ok", "cancelled": True}
+
+        resp = await asyncio.wait_for(ask, timeout=5)
+        assert resp.status == 409
+        assert (await resp.json())["status"] == "ask_cancelled"
+        history = await client.get("/api/chat/history?conversation_id=conv")
+        assert (await history.json())["messages"] == []
+    finally:
+        await client.close()
+
+
 async def test_console_scope_state_routes(tmp_path: Path) -> None:
     client = await _client(tmp_path)
     try:

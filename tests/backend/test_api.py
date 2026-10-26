@@ -1878,6 +1878,113 @@ async def test_ask_task_timeout_lets_background_task_finish_and_persist() -> Non
     )
 
 
+class _HangingDeepThinking:
+    """模拟卡住的深度思考：开始后一直挂着，记录是否被取消。"""
+
+    def __init__(self, hang_seconds: float = 30.0) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = False
+        self._hang_seconds = hang_seconds
+
+    async def run(
+        self,
+        collection,
+        query,
+        scope=None,
+        progress=None,
+        answer_language="auto",
+        answer_question=None,
+    ):
+        from kacore.domain.deep_thinking import DeepThinkingOutcome
+
+        if progress is not None:
+            progress("deep_round", 40)
+        self.started.set()
+        try:
+            await asyncio.sleep(self._hang_seconds)
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        return DeepThinkingOutcome(
+            evidence=[DocumentChunk("c0", "d1", 0, "ev", "h0")],
+            answer="不该出现的答案 [1]",
+            verified=True,
+            actual_mode="milvus_deep",
+        )
+
+
+async def _hanging_ask_api(orchestrator: _HangingDeepThinking):
+    from kacore.ask_progress import ProgressStore
+
+    store = InMemorySourceDocumentStore()
+    await store.add_document(_doc("d1", "papers"))
+    progress = ProgressStore()
+    api = KnowledgeRepositoryApi(
+        source_store=store,
+        retrieval_orchestrator=StaticRetriever({"papers": []}),
+        deep_thinking_orchestrator=orchestrator,  # type: ignore[arg-type]
+        progress_store=progress,
+    )
+    return api, store, progress
+
+
+async def test_clear_chat_history_cancels_running_ask() -> None:
+    """清空聊天时中断卡住的回答：ask() 抛 AskCancelledError，不写库，进度条目即删。"""
+    from kacore.api import AskCancelledError
+
+    orchestrator = _HangingDeepThinking()
+    api, store, progress = await _hanging_ask_api(orchestrator)
+    pending = asyncio.create_task(
+        api.ask(
+            question="q",
+            collection="papers",
+            conversation_id="conv",
+            retrieval_mode="deep_thinking",
+        )
+    )
+    await asyncio.wait_for(orchestrator.started.wait(), timeout=2)
+    assert progress.get("conv") is not None
+
+    assert await api.clear_chat_history("conv") is True
+
+    with pytest.raises(AskCancelledError):
+        await pending
+    assert orchestrator.cancelled is True
+    assert progress.get("conv") is None
+    assert api._ask_tasks == {}
+    assert await store.get_chat_messages("conv") == []
+
+
+async def test_clear_chat_history_cancels_late_ask_after_timeout() -> None:
+    """超时后仍在后台跑的回答也能被清空中断，不会在清空之后把问答写回会话。"""
+    from kacore.api import AskTaskTimeoutError
+
+    orchestrator = _HangingDeepThinking(hang_seconds=0.2)
+    api, store, _progress = await _hanging_ask_api(orchestrator)
+    api._ask_task_timeout_seconds = lambda: 0.02  # type: ignore[method-assign]
+
+    with pytest.raises(AskTaskTimeoutError):
+        await api.ask(
+            question="q",
+            collection="papers",
+            conversation_id="conv",
+            retrieval_mode="deep_thinking",
+        )
+    assert await api.clear_chat_history("conv") is True
+
+    await asyncio.sleep(0.3)  # 越过原本会落库的时间点
+    assert orchestrator.cancelled is True
+    assert await store.get_chat_messages("conv") == []
+
+
+async def test_clear_chat_history_without_running_ask_reports_no_cancel() -> None:
+    api, store, _progress = await _hanging_ask_api(_HangingDeepThinking())
+    await store.add_chat_message("conv", "user", "q")
+
+    assert await api.clear_chat_history("conv") is False
+    assert await store.get_chat_messages("conv") == []
+
+
 class _MockDeepThinking:
     def __init__(self, outcome) -> None:
         self._outcome = outcome

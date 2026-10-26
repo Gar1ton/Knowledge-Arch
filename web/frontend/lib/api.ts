@@ -708,13 +708,15 @@ export async function getChatHistory(conversationId: string): Promise<ChatMessag
 export async function clearChatHistory(
   conversationId: string,
   preserveLocked = false,
-): Promise<void> {
+): Promise<boolean> {
   const qs = new URLSearchParams({ conversation_id: conversationId });
   if (preserveLocked) qs.set("preserve_locked", "true");
-  await apiFetch<{ status: string }>(
+  const res = await apiFetch<{ status: string; cancelled?: boolean }>(
     `/api/chat/history?${qs}`,
     { method: "DELETE" }
   );
+  // 后端先中断该会话进行中的回答再删记录；cancelled 表示这次确实打断了回答。
+  return Boolean(res.cancelled);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -969,10 +971,13 @@ export async function ask(opts: {
   answer_language?: "auto" | "zh" | "en";
   /** 全文检索确认门：正文超阈值时后端返回 409，用户同意后带 true 重发同一请求。 */
   confirmed?: boolean;
+  /** 清空聊天时中止这次请求（后端任务由 DELETE /api/chat/history 一并取消）。 */
+  signal?: AbortSignal;
 }): Promise<AskResult> {
   const result = await apiFetch<AskResult | AskTaskTimeoutBody>("/api/ask", {
     method: "POST",
     timeoutMs: ASK_TIMEOUT_MS,
+    signal: opts.signal,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       question: opts.question,
@@ -1036,7 +1041,7 @@ export async function getAskProgress(conversationId: string): Promise<AskProgres
  */
 export async function waitForLateAskAnswer(
   conversationId: string,
-  opts?: { maxWaitMs?: number; intervalMs?: number },
+  opts?: { maxWaitMs?: number; intervalMs?: number; signal?: AbortSignal },
 ): Promise<ChatMessage[] | null> {
   const maxWaitMs = opts?.maxWaitMs ?? 15 * 60_000;
   const intervalMs = opts?.intervalMs ?? 3_000;
@@ -1044,6 +1049,7 @@ export async function waitForLateAskAnswer(
 
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, intervalMs));
+    if (opts?.signal?.aborted) return null; // 清空聊天：这份答案已被放弃
     const progress = await getAskProgress(conversationId);
     if (progress !== null && progress.stage !== "done") continue; // 仍在跑，继续等
     // stage="done" 或进度记录已不存在（TTL 过期，大概率早已跑完）：去历史里找答案。

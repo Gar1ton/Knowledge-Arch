@@ -372,3 +372,17 @@
   - 验证：pytest 1445 passed / 4 skipped；ruff；mypy；tsc；eslint；`next build`；Playwright：改名后 5 篇仍在且选中跟随、
     未配置按钮变灰与提示、范围标签显示标题、滚轮下根节点不动而面板内部可滚。
     未验证：桌面壳里的自绘标题栏（三平台）、窗口拖动 / 双击最大化、真实模型下思考过程的存取（需出包实测）。
+- [x] P22 · 2.0.4（2.0.3 之后的修复）。
+  - [x] ① 聊天输入框写好内容后点「查询设置」直接把问题发出去：`components/ds/IconButton.tsx` 的按钮没写 `type`，
+    在表单里默认是 submit；改为 `type="button"`。
+    验证：tsc；eslint；Playwright：填好问题后开关设置、切检索模式、拨开关，均不发 `/api/ask`，输入保留；回车仍发送。
+    撤掉修复时同一流程会发出 1 次请求并清空输入框。
+  - [x] ② 聊天默认检索档位改为 enhanced（`ChatPanel.tsx` 的 `DEFAULT_MODE`）；模式失效时回退到它，设置键高亮也以它为基准。
+    后端 `/api/ask` 未传 `retrieval_mode` 时仍是 default，只改界面默认。
+    验证：tsc；eslint；Playwright：打开设置默认选中 Enhanced recall。
+  - [x] ③ 清空聊天时打断进行中的回答：后端按 conversation_id 登记 ask 任务，`clear_chat_history` 先取消再删记录
+    （清进度条目、运行事件记为 cancelled，不让任务跑完后写回）；前端清空时中止请求、停轮询与补轮询、恢复发送键。
+    多轮改写与检索翻译并入同一个可中断任务；不限时（task_timeout_seconds=0）也走任务。
+    验证：pytest 1449 passed / 4 skipped；ruff；mypy；tsc；eslint；`next build`；Playwright：`/api/ask` 挂起时点清空，
+    问题消失、提示已中断、发出 DELETE，发送键恢复且能立刻再问。未验证：真实模型下卡住的深度思考（需实际复现）。
+  - [x] ④ 版本号 2.0.4。

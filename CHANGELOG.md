@@ -4,6 +4,23 @@
 
 ## [Unreleased]
 
+## [v2.0.4] — 2026-10-26
+
+### 修复 (Fixed)
+
+- **改查询设置时把已写好的问题发出去**：聊天框里的设置键（`components/ds/IconButton.tsx`）没写按钮类型，在表单里默认是提交键，
+  点开设置就会发送输入框里的内容。`IconButton` 改为 `type="button"`，输入与设置互不干扰。
+- **深度思考卡住时清空记录无效**：回答在后台任务里跑，清空只删了已存记录，任务跑完又把问答写回，前端补轮询也会把它拉回来，
+  发送键一直转圈。现在 `kacore/api.py` 按会话登记进行中的回答（`cancel_ask`），`clear_chat_history` 先中断再删记录：
+  任务取消后不再落库，进度条目（`ask_progress.ProgressStore.discard`）即删，运行事件记为 cancelled；多轮改写与检索翻译
+  也并入同一个可中断任务。被中断的 `/api/ask` 返回 409 `ask_cancelled`，`DELETE /api/chat/history` 多返回 `cancelled`。
+  前端（`ChatPanel.tsx`、`lib/api.ts`）清空时中止请求与超时补轮询、恢复发送键并提示已中断。
+
+### 改进 (Changed)
+
+- **聊天默认检索档位改为 enhanced**：`components/panels/ChatPanel.tsx` 的 `DEFAULT_MODE`；取消选中文档或集合导致当前模式不可用时
+  也回退到 enhanced。后端 `/api/ask` 不传模式时的默认值不变。
+
 ## [v2.0.3] — 2026-10-26
 
 ### 修复 (Fixed)
