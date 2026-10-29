@@ -29,13 +29,15 @@ SCOPE_COLLECTION = "collection"
 SCOPE_ITEM = "item"
 SCOPE_TAG = "tag"
 SCOPE_LIBRARY = "library"
-# 子作用域（item/tag）窄于 collection workspace，禁用 LightRAG 图谱通道以防越界泄漏。
-_GRAPH_BLOCKED_SCOPES = frozenset({SCOPE_ITEM, SCOPE_TAG})
+# 单篇文档（按 doc_id，本地与 Zotero 文档通用；item 只认 Zotero 条目）。
+SCOPE_DOCUMENT = "document"
+# 子作用域（item/tag/document）窄于 collection workspace，禁用 LightRAG 图谱通道以防越界泄漏。
+_GRAPH_BLOCKED_SCOPES = frozenset({SCOPE_ITEM, SCOPE_TAG, SCOPE_DOCUMENT})
 
 
 @dataclass
 class RetrievalScope:
-    """检索作用域（Zotero item/collection/tag/library 维度的硬过滤约束）。
+    """检索作用域（Zotero item/collection/tag/library 与单篇 document 维度的硬过滤约束）。
 
     scope_type 为空表示「按 KB collection 检索」（无额外 doc 级硬过滤，沿用原行为）。
     其余类型经 zotero 镜像解析为 allowed_document_ids，在 RRF 前对所有通道强制过滤（review #3）。
@@ -47,7 +49,7 @@ class RetrievalScope:
 
     @property
     def blocks_graph(self) -> bool:
-        """item/tag 子作用域窄于 collection，应禁用 LightRAG 图谱通道。"""
+        """item/tag/document 子作用域窄于 collection，应禁用 LightRAG 图谱通道。"""
         return self.scope_type in _GRAPH_BLOCKED_SCOPES
 
 
@@ -129,11 +131,16 @@ class RetrievalOrchestrator:
         """把作用域解析为 allowed_document_ids（None 表示不施加 doc 级硬过滤）。
 
         item → 该 item_key 的文档；collection → 含后代集合的全部条目文档；
-        tag → 带该标签的条目文档；library → 该库全部文档。均仅取 ACTIVE（排除 detached）。
+        tag → 带该标签的条目文档；library → 该库全部文档；document → 该 doc_id 本身。
+        均仅取 ACTIVE（排除 detached）。
         """
         if scope is None or not scope.scope_type:
             return None
         store = self._source_store
+        if scope.scope_type == SCOPE_DOCUMENT:
+            doc = await store.get_document(scope.scope_key)
+            active = doc is not None and doc.lifecycle_state == DocumentLifecycle.ACTIVE
+            return {scope.scope_key} if active else set()
         lib = scope.library_id or "1"
         if scope.scope_type == SCOPE_LIBRARY:
             docs = await store.list_documents()
@@ -363,9 +370,10 @@ class RetrievalOrchestrator:
     async def retrieve_lightrag_context(
         self, collection: str, query: str, scope: RetrievalScope | None = None
     ) -> str:
-        # item/tag 子作用域窄于 collection workspace，图谱上下文无法按 doc 硬过滤 → 拒绝以防泄漏。
+        # item/tag/document 子作用域窄于 collection workspace，图谱上下文无法按 doc 硬过滤
+        # → 拒绝以防泄漏。
         if scope is not None and scope.blocks_graph:
-            raise RuntimeError("LightRAG graph context unavailable for item/tag scope")
+            raise RuntimeError("LightRAG graph context unavailable for item/tag/document scope")
         if self._lightrag_registry is None:
             raise RuntimeError("LightRAG Core registry is not configured")
         if not self._embedding_fingerprint or not self._index_compatibility:

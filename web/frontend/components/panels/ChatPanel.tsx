@@ -116,6 +116,44 @@ function collectionTree(list: Collection[]): { name: string; depth: number }[] {
   return out;
 }
 
+/** 范围菜单里的单篇文档项：小字说明（当前浏览 / 已选定）+ 文档标题。 */
+function ScopeDocOption({ label, title, selected, onClick }: {
+  label: string;
+  title: string;
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="option"
+      aria-selected={selected}
+      onClick={onClick}
+      title={title}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        width: "100%",
+        padding: "6px 8px",
+        borderRadius: "var(--radius-md)",
+        background: selected ? "var(--accent-soft)" : "transparent",
+        border: "none",
+        cursor: "pointer",
+        textAlign: "left",
+        fontSize: 12,
+        color: "var(--fg)",
+      }}
+    >
+      <Icon name="file" size={11} />
+      <span style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+        <span style={{ fontSize: 10, color: "var(--fg-subtle)" }}>{label}</span>
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</span>
+      </span>
+    </button>
+  );
+}
+
 // 思考过程：默认收起、可点击展开的可折叠区块（与 sources 一致的轻量样式）。
 /** 答案下方的引用来源：与思考过程一样可折叠，默认收起（正文里点 [n] 仍可直接打开）。 */
 function SourcesSection({
@@ -906,6 +944,9 @@ export function ChatPanel({ width }: { width?: number }) {
   }, [selectedDocId]);
   // 选中文档时显示标题（内部 ID 形如 LOCAL_<item>_<attachment>，对用户没有意义）。
   const docTitle = docInfo && docInfo.id === selectedDocId ? docInfo.title : "";
+  // 范围菜单里点「当前浏览的文档」时钉住的那一篇：是一次性的切换，之后中间换文档、左侧点集合都不改它，
+  // 直到在范围菜单里另选（集合，或再点一次换成新打开的文档）。
+  const [pinnedDoc, setPinnedDoc] = useState<{ id: string; title: string } | null>(null);
   // 卸载时兜底清除轮询定时器，避免组件被销毁后仍在轮询。
   useEffect(
     () => () => {
@@ -970,23 +1011,25 @@ export function ChatPanel({ width }: { width?: number }) {
       alive = false;
     };
   }, [chatCollection, showSettings]);
+  // 单篇文档范围下图谱档位不可用（图谱按集合建，无法只取一篇）。
   const graphReady = Boolean(
-    chatCollection && graphReadiness?.collection === chatCollection && graphReadiness.ready,
+    !pinnedDoc && chatCollection && graphReadiness?.collection === chatCollection && graphReadiness.ready,
   );
   const graphKnownNotReady = Boolean(
     chatCollection && graphReadiness?.collection === chatCollection && !graphReadiness.ready,
   );
+  // 全文模式读的文档：钉住的那篇优先，否则是中间正在打开的。
+  const fulltextDocId = pinnedDoc?.id ?? selectedDocId;
 
   useEffect(() => {
     if (loading) return; // 进行中的那一轮已锁定范围与模式
-    if (!selectedDocId && retrievalMode === "fulltext") setRetrievalMode(DEFAULT_MODE);
-    if (!chatCollection && (retrievalMode === "deep_thinking" || retrievalMode === "graph_mixed" || retrievalMode === "graph_only")) {
+    const graphMode = retrievalMode === "graph_mixed" || retrievalMode === "graph_only";
+    if (!fulltextDocId && retrievalMode === "fulltext") setRetrievalMode(DEFAULT_MODE);
+    if (!chatCollection && !pinnedDoc && (retrievalMode === "deep_thinking" || graphMode)) {
       setRetrievalMode(DEFAULT_MODE);
     }
-    if (graphKnownNotReady && (retrievalMode === "graph_mixed" || retrievalMode === "graph_only")) {
-      setRetrievalMode(DEFAULT_MODE);
-    }
-  }, [selectedDocId, chatCollection, retrievalMode, loading, graphKnownNotReady]);
+    if ((graphKnownNotReady || pinnedDoc) && graphMode) setRetrievalMode(DEFAULT_MODE);
+  }, [fulltextDocId, pinnedDoc, chatCollection, retrievalMode, loading, graphKnownNotReady]);
 
   // 范围选择器打开时现取集合列表（改名 / 新建后不必刷新页面）。
   useEffect(() => {
@@ -1004,9 +1047,16 @@ export function ChatPanel({ width }: { width?: number }) {
 
   function pickScope(name: string | null) {
     setShowScopeMenu(false);
+    setPinnedDoc(null);
     setChatCollection(name);
     // 全文模式的范围是文档；选了集合就是要按集合问，切回默认档位。
     if (retrievalMode === "fulltext") setRetrievalMode(DEFAULT_MODE);
+  }
+
+  // 钉住这一刻中间打开的文档（标题未取到时按「当前文档」显示）。
+  function pickViewingDoc() {
+    setShowScopeMenu(false);
+    if (selectedDocId) setPinnedDoc({ id: selectedDocId, title: docTitle });
   }
 
   function handleCite(msg: Message, n: number) {
@@ -1118,16 +1168,19 @@ export function ChatPanel({ width }: { width?: number }) {
     scopeOverride?: AnswerScope,
   ) {
     if (loading) return;
-    if (mode === "fulltext" && !selectedDocId) {
+    if (mode === "fulltext" && !fulltextDocId) {
       toast(t("chat_fulltext_requires_doc"), "info");
       return;
     }
     // 发送这一刻定下本轮范围：之后左侧 / 中间怎么切，这一轮都按它检索、按它标注。
+    // 钉住了文档就按那一篇（各档位都是）；否则全文模式按打开的文档，其余按聊天所选集合。
     const scope: AnswerScope =
       scopeOverride ??
-      (mode === "fulltext" && selectedDocId
-        ? { collection: chatCollection ?? "", doc_id: selectedDocId, doc_title: docTitle }
-        : { collection: chatCollection ?? "" });
+      (pinnedDoc
+        ? { collection: "", doc_id: pinnedDoc.id, doc_title: pinnedDoc.title }
+        : mode === "fulltext" && selectedDocId
+          ? { collection: chatCollection ?? "", doc_id: selectedDocId, doc_title: docTitle }
+          : { collection: chatCollection ?? "" });
     if (appendUser) {
       setInput("");
       setMessages((prev) => [...prev, { role: "user", content: question, scope }]);
@@ -1162,7 +1215,8 @@ export function ChatPanel({ width }: { width?: number }) {
       const result: AskResult = await ask({
         question,
         collection: scope.collection || null,
-        doc_id: mode === "fulltext" ? scope.doc_id ?? null : null,
+        // 全文模式读这篇；其他档位后端按这篇限定检索（图谱档位在单篇范围下不可选）。
+        doc_id: scope.doc_id ?? null,
         top_k: 6,
         conversation_id: cid,
         persona_enabled: personaEnabled,
@@ -1288,18 +1342,25 @@ export function ChatPanel({ width }: { width?: number }) {
     }
   }
 
-  // 范围标签显示的就是这次提问实际用的范围：进行中显示锁定的那一轮；空闲时全文模式是
-  // 当前文档（标题，不是内部 ID），其余是聊天自己选的集合。
+  // 范围标签显示的就是这次提问实际用的范围：进行中显示锁定的那一轮；空闲时是钉住的文档，
+  // 或全文模式下的当前文档（标题，不是内部 ID），其余是聊天自己选的集合。
   const isGraphMode = retrievalMode === "graph_only" || retrievalMode === "graph_mixed";
   const shownScope: AnswerScope =
     loading && pendingScope
       ? pendingScope
-      : retrievalMode === "fulltext" && selectedDocId
-        ? { collection: chatCollection ?? "", doc_id: selectedDocId, doc_title: docTitle }
-        : { collection: chatCollection ?? "" };
+      : pinnedDoc
+        ? { collection: "", doc_id: pinnedDoc.id, doc_title: pinnedDoc.title }
+        : retrievalMode === "fulltext" && selectedDocId
+          ? { collection: chatCollection ?? "", doc_id: selectedDocId, doc_title: docTitle }
+          : { collection: chatCollection ?? "" };
   const contextTone = shownScope.doc_id ? "info" : isGraphMode ? "violet" : "accent";
   const contextIcon = shownScope.doc_id ? "file" : isGraphMode ? "graph" : "folder";
   const contextLabel = scopeLabel(shownScope, t);
+  const graphHint = pinnedDoc
+    ? t("chat_graph_single_doc")
+    : graphKnownNotReady
+      ? t("chat_graph_not_ready", { collection: chatCollection ?? "" })
+      : undefined;
 
   return (
     <section
@@ -1490,13 +1551,36 @@ export function ChatPanel({ width }: { width?: number }) {
                 overflow: "auto",
               }}
             >
-              {retrievalMode === "fulltext" && (
+              {retrievalMode === "fulltext" && !pinnedDoc && (
                 <div style={{ fontSize: 10.5, lineHeight: 1.5, color: "var(--fg-subtle)", padding: "4px 8px 6px" }}>
                   {t("chat_scope_fulltext_hint")}
                 </div>
               )}
+              {(selectedDocId || pinnedDoc) && (
+                <div style={{ borderBottom: "1px solid var(--border)", paddingBottom: 4, marginBottom: 4 }}>
+                  {pinnedDoc && pinnedDoc.id !== selectedDocId && (
+                    <ScopeDocOption
+                      label={t("chat_scope_pinned_doc")}
+                      title={pinnedDoc.title || t("panel_scope_document")}
+                      selected
+                      onClick={() => setShowScopeMenu(false)}
+                    />
+                  )}
+                  {selectedDocId && (
+                    <ScopeDocOption
+                      label={t("chat_scope_viewing_doc")}
+                      title={docTitle || t("panel_scope_document")}
+                      selected={pinnedDoc?.id === selectedDocId}
+                      onClick={pickViewingDoc}
+                    />
+                  )}
+                  <div style={{ fontSize: 10.5, lineHeight: 1.5, color: "var(--fg-subtle)", padding: "2px 8px 4px" }}>
+                    {t("chat_scope_doc_hint")}
+                  </div>
+                </div>
+              )}
               {[{ name: null as string | null, depth: 0 }, ...scopeCollections].map(({ name, depth }) => {
-                const selected = retrievalMode !== "fulltext" && chatCollection === name;
+                const selected = !pinnedDoc && retrievalMode !== "fulltext" && chatCollection === name;
                 return (
                   <button
                     key={name ?? "__all__"}
@@ -1612,10 +1696,10 @@ export function ChatPanel({ width }: { width?: number }) {
                         [
                           { value: "default" as RetrievalMode,        label: t("chat_retrieval_semantic"), desc: t("chat_retrieval_semantic_desc"), disabled: false },
                           { value: "enhanced" as RetrievalMode,       label: t("chat_retrieval_enhanced"), desc: t("chat_retrieval_enhanced_desc"), disabled: false },
-                          { value: "graph_only" as RetrievalMode,     label: t("chat_retrieval_graph"),    desc: t("chat_retrieval_graph_desc"),    disabled: !graphReady, hint: graphKnownNotReady ? t("chat_graph_not_ready", { collection: chatCollection ?? "" }) : undefined },
-                          { value: "graph_mixed" as RetrievalMode, label: t("chat_retrieval_graph_mixed"), desc: t("chat_retrieval_graph_mixed_desc"), disabled: !graphReady, hint: graphKnownNotReady ? t("chat_graph_not_ready", { collection: chatCollection ?? "" }) : undefined },
-                          { value: "deep_thinking" as RetrievalMode,  label: t("chat_retrieval_deep"),     desc: t("chat_retrieval_deep_desc"),     disabled: !chatCollection },
-                          { value: "fulltext" as RetrievalMode,       label: t("chat_retrieval_fulltext"), desc: t("chat_retrieval_fulltext_desc"), disabled: !selectedDocId },
+                          { value: "graph_only" as RetrievalMode,     label: t("chat_retrieval_graph"),    desc: t("chat_retrieval_graph_desc"),    disabled: !graphReady, hint: graphHint },
+                          { value: "graph_mixed" as RetrievalMode, label: t("chat_retrieval_graph_mixed"), desc: t("chat_retrieval_graph_mixed_desc"), disabled: !graphReady, hint: graphHint },
+                          { value: "deep_thinking" as RetrievalMode,  label: t("chat_retrieval_deep"),     desc: t("chat_retrieval_deep_desc"),     disabled: !chatCollection && !pinnedDoc },
+                          { value: "fulltext" as RetrievalMode,       label: t("chat_retrieval_fulltext"), desc: t("chat_retrieval_fulltext_desc"), disabled: !fulltextDocId },
                         ] as { value: RetrievalMode; label: string; desc: string; disabled: boolean; hint?: string }[]
                       ).map(({ value, label, desc, disabled, hint }) => {
                         const selected = retrievalMode === value;

@@ -316,8 +316,10 @@ async def handle_shutdown(request: web.Request) -> web.Response:
 
 
 async def handle_list_collections(request: web.Request) -> web.Response:
-    cols = await _api(request).list_collections()
-    return web.json_response([_collection_dict(c) for c in cols])
+    api = _api(request)
+    cols = await api.list_collections()
+    default_name = api.default_collection_name()
+    return web.json_response([_collection_dict(c, default_name) for c in cols])
 
 
 async def handle_create_collection(request: web.Request) -> web.Response:
@@ -1518,8 +1520,8 @@ async def handle_ask(request: web.Request) -> web.Response:
     # 缺省 = 保持模型默认的思考；前端「模型思考」开关关掉时传 false。
     model_thinking = body.get("model_thinking", True) is not False
     answer_language = str(body.get("answer_language") or "auto")
-    # doc_id / confirmed 服务于 retrieval_mode="fulltext"。前端从 v1.0.x 起就一直在发
-    # doc_id，但这里从未读取过——全文检索因此始终跑不通（模式名也不在白名单里）。
+    # doc_id：全文模式读整篇；其他模式把检索限定在这一篇（见 KnowledgeRepositoryApi.ask）。
+    # confirmed 只服务于 retrieval_mode="fulltext"。
     doc_id = str(body.get("doc_id") or "") or None
     confirmed = bool(body.get("confirmed") or False)
     from kacore.api import (
@@ -1656,7 +1658,7 @@ async def handle_ask_evidence(request: web.Request) -> web.Response:
 # ── 序列化 helper（domain → JSON-safe dict）─────────────────────
 
 
-def _collection_dict(c: object) -> dict:
+def _collection_dict(c: object, default_name: str = "") -> dict:
     from kacore.api import SYSTEM_COLLECTION_UNCATEGORIZED
 
     origin = getattr(c, "origin", None)
@@ -1665,6 +1667,8 @@ def _collection_dict(c: object) -> dict:
         "name": c.name,  # type: ignore[attr-defined]
         "description": c.description,  # type: ignore[attr-defined]
         "is_system": c.name == SYSTEM_COLLECTION_UNCATEGORIZED,  # type: ignore[attr-defined]
+        # 默认集合：界面不提供删除 / 改名（后端同样按名字拒绝）。
+        "is_default": bool(default_name) and c.name == default_name,  # type: ignore[attr-defined]
         "origin": origin_val,
         "read_only": bool(getattr(c, "read_only", False)) or origin_val == "zotero",
         "zotero_collection_key": getattr(c, "zotero_collection_key", ""),

@@ -362,12 +362,13 @@ function ActiveBuildCard({ job, interrupted, onPause, onResumeJob, onResume }: A
 
 interface DeleteDialogProps {
   collectionName: string;
+  defaultCollectionName: string;
   onConfirm: () => void;
   onCancel: () => void;
   deleting: boolean;
 }
 
-function DeleteCollectionDialog({ collectionName, onConfirm, onCancel, deleting }: DeleteDialogProps) {
+function DeleteCollectionDialog({ collectionName, defaultCollectionName, onConfirm, onCancel, deleting }: DeleteDialogProps) {
   const { t } = useI18n();
   const [inputValue, setInputValue] = useState("");
   const canConfirm = inputValue === collectionName && !deleting;
@@ -431,7 +432,7 @@ function DeleteCollectionDialog({ collectionName, onConfirm, onCancel, deleting 
               {t("file_delete_title")}
             </div>
             <div style={{ fontSize: 12, color: "var(--fg-muted)", marginTop: 4, lineHeight: 1.5 }}>
-              {t("file_delete_warning")}
+              {t("file_delete_warning", { default: defaultCollectionName })}
             </div>
           </div>
         </div>
@@ -1150,16 +1151,20 @@ export function FilePanel() {
                   style={badgeBtnStyle}
                   onClick={(e) => { e.stopPropagation(); setNewCollectionParent(c); setShowNewCollection(true); }}
                 />
-                <IconButton
-                  name="edit" label={t("file_action_rename_collection")} size={13} side="left"
-                  style={badgeBtnStyle}
-                  onClick={(e) => { e.stopPropagation(); setRenamingCollection(c); }}
-                />
-                <IconButton
-                  name="trash" label={t("file_action_delete_collection")} size={13} side="left"
-                  style={badgeBtnStyle}
-                  onClick={(e) => { e.stopPropagation(); setDeletingCollection(c); }}
-                />
+                {!c.is_default && (
+                  <>
+                    <IconButton
+                      name="edit" label={t("file_action_rename_collection")} size={13} side="left"
+                      style={badgeBtnStyle}
+                      onClick={(e) => { e.stopPropagation(); setRenamingCollection(c); }}
+                    />
+                    <IconButton
+                      name="trash" label={t("file_action_delete_collection")} size={13} side="left"
+                      style={badgeBtnStyle}
+                      onClick={(e) => { e.stopPropagation(); setDeletingCollection(c); }}
+                    />
+                  </>
+                )}
               </span>
             ) : null
           }
@@ -1407,6 +1412,7 @@ export function FilePanel() {
     {deletingCollection && (
       <DeleteCollectionDialog
         collectionName={deletingCollection.name}
+        defaultCollectionName={collections.find((c) => c.is_default)?.name ?? "default"}
         deleting={deleteInProgress}
         onCancel={() => setDeletingCollection(null)}
         onConfirm={async () => {

@@ -87,7 +87,7 @@ from kacore.pipelines.conversation_context import (
     recent_turns,
 )
 from kacore.pipelines.prompt_language import prompt_lang, uses_chinese
-from kacore.pipelines.retrieval_orchestrator import ChunkSignal, RetrievalScope
+from kacore.pipelines.retrieval_orchestrator import SCOPE_DOCUMENT, ChunkSignal, RetrievalScope
 from kacore.providers.base import ModelRef
 from kacore.providers.thinking import model_thinking as thinking_flag
 from kacore.retrieval_modes import (
@@ -120,6 +120,7 @@ from kacore.zotero_sync_job import (
 
 logger = logging.getLogger("KnowledgeRepositoryApi")
 
+# 旧版删除集合时收容孤儿文档的系统集合；现在孤儿文档进默认集合，启动时把它并回默认集合。
 SYSTEM_COLLECTION_UNCATEGORIZED = "_uncategorized"
 MILVUS_INDEX_MAX_ATTEMPTS = 3
 MILVUS_INDEX_RETRY_DELAYS = (0.5, 1.5)
@@ -872,25 +873,40 @@ class KnowledgeRepositoryApi(
                 Collection(name=name, description=description, created_at=_now())
             )
 
-    async def _ensure_system_collections(self) -> None:
-        """确保系统集合（_uncategorized 等）存在，幂等。"""
-        await self._source_store.upsert_collection(
-            Collection(
-                name=SYSTEM_COLLECTION_UNCATEGORIZED,
-                description="Uncategorized documents (system collection, cannot be deleted)",
-                created_at=_now(),
+    def default_collection_name(self) -> str:
+        """默认集合（`source_store.default_collection`）：上传与笔记的落点，也收容删除集合后无归属的文档。"""
+        if self._config is None:
+            return "default"
+        return self._config.get_source_store_config().default_collection
+
+    async def _ensure_default_collection(self) -> Collection:
+        """确保默认集合存在（启动时已建；被旧版删掉时补建），返回它。"""
+        name = self.default_collection_name()
+        col = await self._source_store.get_collection_by_name(name)
+        if col is None:
+            await self._source_store.upsert_collection(
+                Collection(name=name, description="Default collection", created_at=_now())
             )
-        )
+            col = await self._source_store.get_collection_by_name(name)
+        assert col is not None
+        return col
+
+    def _assert_not_default_collection(self, name: str, action: str) -> None:
+        # 启动时会按名字补建默认集合，删掉或改名只会多出一个空的 default，故直接拒绝。
+        if name == self.default_collection_name():
+            raise ValueError(
+                f"The default collection '{name}' cannot be {action}; it holds uploads, notes "
+                "and documents left without a collection."
+            )
 
     @serialized_processing
     async def delete_collection(self, name: str) -> bool:
-        """删除集合。非空集合的文档将迁入 _uncategorized 系统集合。返回 False 表示 name 不存在。
+        """删除集合。非空集合的文档迁入默认集合。返回 False 表示 name 不存在。
 
-        只读保护：Zotero 同步来源的集合（origin=zotero）禁止用户侧删除，仅允许删除手动创建的集合。
+        只读保护：Zotero 同步来源的集合（origin=zotero）禁止用户侧删除，仅允许删除手动创建的集合；
+        默认集合不可删除。
         """
-        if name == SYSTEM_COLLECTION_UNCATEGORIZED:
-            raise ValueError(f"The system collection '{SYSTEM_COLLECTION_UNCATEGORIZED}' cannot "
-                "be deleted.")
+        self._assert_not_default_collection(name, "deleted")
         existing = {c.name: c for c in await self._source_store.list_collections()}
         target = existing.get(name)
         if target is not None and target.origin is DocumentOrigin.ZOTERO:
@@ -898,8 +914,11 @@ class KnowledgeRepositoryApi(
                 f"Collection '{name}' comes from Zotero sync and is read-only; it cannot be "
                 "deleted manually."
             )
+        return await self._delete_collection_into_default(name)
 
-        await self._ensure_system_collections()
+    async def _delete_collection_into_default(self, name: str) -> bool:
+        """按名字删除集合，文档（主归属与多归属）迁入默认集合；不做权限校验。"""
+        fallback = (await self._ensure_default_collection()).name
         moving_docs = await self._source_store.list_documents(collection=name)
         if self._lightrag_registry is not None and self._lightrag_registry.has_workspace(name):
             try:
@@ -908,9 +927,9 @@ class KnowledgeRepositoryApi(
                 logger.error("Failed to remove LightRAG workspace %s: %s", name, exc)
         if self._index_compatibility is not None:
             self._index_compatibility.remove_lightrag_collection(name)
-        await self._source_store.move_documents_to_collection(name, SYSTEM_COLLECTION_UNCATEGORIZED)
+        await self._source_store.move_documents_to_collection(name, fallback)
         for doc in moving_docs:
-            await self._mark_lightrag_pending(doc.doc_id, SYSTEM_COLLECTION_UNCATEGORIZED)
+            await self._mark_lightrag_pending(doc.doc_id, fallback)
 
         if self._config:
             vdb = self._config.get_vector_db_config()
@@ -920,9 +939,7 @@ class KnowledgeRepositoryApi(
                         assert self._vector_store is not None
                         await self._vector_store.delete_collection(name)
                         for doc in moving_docs:
-                            await self._sync_milvus_collection_move(
-                                doc.doc_id, SYSTEM_COLLECTION_UNCATEGORIZED
-                            )
+                            await self._sync_milvus_collection_move(doc.doc_id, fallback)
                     except Exception as exc:
                         self._mark_milvus_incompatible(
                             f"Milvus collection delete failed: {exc}"
@@ -996,6 +1013,7 @@ class KnowledgeRepositoryApi(
         col = await self._assert_local_editable(coll_key)
         if new_name == col.name:
             return
+        self._assert_not_default_collection(col.name, "renamed")
         await self._assert_name_unique_under_parent(
             new_name, col.parent_key, exclude_key=coll_key
         )
@@ -1057,6 +1075,22 @@ class KnowledgeRepositoryApi(
             logger.info("Repaired %d documents left behind by earlier collection renames", repaired)
         return repaired
 
+    async def merge_legacy_uncategorized(self) -> int:
+        """旧版删除集合时把无归属的文档放进 `_uncategorized` 系统集合：并回默认集合并删掉它。
+
+        幂等：没有该集合时什么都不做。返回迁回默认集合的文档数。
+        """
+        legacy = SYSTEM_COLLECTION_UNCATEGORIZED
+        if await self._source_store.get_collection_by_name(legacy) is None:
+            return 0
+        moved = len(await self._source_store.list_documents(collection=legacy))
+        await self._delete_collection_into_default(legacy)
+        logger.info(
+            "Merged %d documents from the legacy %r collection into %r",
+            moved, legacy, self.default_collection_name(),
+        )
+        return moved
+
     async def move_collection(self, coll_key: str, new_parent_key: str = "") -> None:
         """移动本地集合到新父级（new_parent_key 为空=提升为顶层）。防环 + 只读校验。"""
         col = await self._assert_local_editable(coll_key)
@@ -1083,41 +1117,39 @@ class KnowledgeRepositoryApi(
         await self._source_store.upsert_collection(col)
 
     async def delete_collection_by_key(self, coll_key: str) -> bool:
-        """按 coll_key 删除本地集合：子集合提升到其父级，本级文档归属迁入 _uncategorized。
+        """按 coll_key 删除本地集合：子集合提升到其父级，本级文档移除该归属，无归属的迁入默认集合。
 
-        只读保护：Zotero 来源集合禁止删除。返回 False 表示 coll_key 不存在。
+        只读保护：Zotero 来源集合与默认集合禁止删除。返回 False 表示 coll_key 不存在。
         """
         col = await self._source_store.get_collection(coll_key)
         if col is None:
             return False
         await self._assert_local_editable(coll_key)
-
-        await self._ensure_system_collections()
-        uncategorized = await self._source_store.get_collection_by_name(
-            SYSTEM_COLLECTION_UNCATEGORIZED
-        )
-        assert uncategorized is not None
+        self._assert_not_default_collection(col.name, "deleted")
+        fallback = await self._ensure_default_collection()
+        collections = {c.coll_key: c for c in await self._source_store.list_collections()}
 
         # 1) 子集合提升到被删节点的父级。
-        for child in await self._source_store.list_collections():
+        for child in collections.values():
             if child.parent_key == coll_key:
                 child.parent_key = col.parent_key
                 await self._source_store.upsert_collection(child)
 
-        # 2) 本级文档：移除该归属；若文档因此无归属则落入 _uncategorized。
+        # 2) 本级文档：移除该归属；无归属的落入默认集合。主归属指向被删集合时改到剩下的第一个归属，
+        #    否则 documents.collection 会留着一个已不存在的名字。
         members = await self._source_store.list_documents_by_collection_key(
             coll_key, descendants=False
         )
         for doc in members:
             keys = [k for k in (doc.collection_keys or []) if k != coll_key]
             if not keys:
-                keys = [uncategorized.coll_key]
-                if doc.collection == col.name:
-                    doc.collection = SYSTEM_COLLECTION_UNCATEGORIZED
-                    await self._source_store.update_document(doc)
-                    await self._mark_lightrag_pending(
-                        doc.doc_id, SYSTEM_COLLECTION_UNCATEGORIZED
-                    )
+                keys = [fallback.coll_key]
+            if doc.collection == col.name:
+                primary = collections.get(keys[0])
+                doc.collection = primary.name if primary is not None else fallback.name
+                await self._source_store.update_document(doc)
+                await self._mark_lightrag_pending(doc.doc_id, doc.collection)
+                await self._sync_milvus_collection_move(doc.doc_id, doc.collection)
             await self._source_store.set_document_collections(doc.doc_id, keys)
 
         # 3) 清理该集合 name 关联的 LightRAG workspace（与既有按 name 清理一致）。
@@ -2699,22 +2731,14 @@ class KnowledgeRepositoryApi(
         doc_id / confirmed：全文检索（`retrieval_mode="fulltext"`）用——把该文档整篇 clean.md
         送入 LLM，**不截断**。正文超过 `FULLTEXT_CONFIRM_THRESHOLD_CHARS` 且未 `confirmed`
         时抛 `FullTextConfirmationRequiredError`（询问而非失败），调用方取得用户明确同意后
-        带 `confirmed=True` 原样重发。其他模式忽略这两个参数。
+        带 `confirmed=True` 原样重发。
+        其他模式下 doc_id 把检索限定在这一篇（`document` 作用域，覆盖 collection / scope_*）：
+        按它的主归属集合召回、只放行该 doc_id；图谱档位不支持单篇，抛 ValueError。
 
         model_thinking=False：本次提问内所有模型调用尽量关闭模型自带的推理（参数按连接换算，
         见 `providers/thinking.py`）；与 deep_thinking 检索档位无关。
         """
         scope = _build_scope(scope_type, scope_key, scope_library_id)
-        # 未显式传 scope 但选了集合：默认按「选中集合 + 所有子目录」检索（含后代），
-        # 由 coll_key 派生 collection scope，覆盖统一树的整棵子树。
-        if scope is None and collection:
-            _sel = await self._source_store.get_collection_by_name(collection)
-            if _sel is not None:
-                scope = RetrievalScope(
-                    scope_type="collection",
-                    scope_key=_sel.coll_key,
-                    library_id=_sel.library_id,
-                )
         retrieval_mode, used_legacy_mode = normalize_retrieval_mode(retrieval_mode)
         if used_legacy_mode:
             logger.warning(
@@ -2725,6 +2749,29 @@ class KnowledgeRepositoryApi(
                 "retrieval_mode must be 'default', 'enhanced', 'graph_mixed', "
                 "'graph_only', 'deep_thinking', or 'fulltext'"
             )
+        # 单篇文档范围（非全文模式）：dense 召回按 workspace 分库，故以该文档的主归属集合召回，
+        # 再由 document scope 只放行这一篇。
+        scope_doc: SourceDocument | None = None
+        if doc_id and retrieval_mode != MODE_FULLTEXT:
+            if retrieval_mode in {MODE_GRAPH_MIXED, MODE_GRAPH_ONLY}:
+                raise ValueError(f"{retrieval_mode} retrieval cannot be limited to one document")
+            scope_doc = await self._source_store.get_document(doc_id)
+            if scope_doc is None:
+                raise ValueError(f"Document not found: {doc_id}")
+            scope = RetrievalScope(
+                scope_type=SCOPE_DOCUMENT, scope_key=doc_id, library_id=scope_doc.library_id
+            )
+            collection = scope_doc.collection or None
+        # 未显式传 scope 但选了集合：默认按「选中集合 + 所有子目录」检索（含后代），
+        # 由 coll_key 派生 collection scope，覆盖统一树的整棵子树。
+        if scope is None and collection:
+            _sel = await self._source_store.get_collection_by_name(collection)
+            if _sel is not None:
+                scope = RetrievalScope(
+                    scope_type="collection",
+                    scope_key=_sel.coll_key,
+                    library_id=_sel.library_id,
+                )
         # graph_mixed / graph_only 走图谱 workspace，必须有具体 collection；
         # deep_thinking / enhanced 允许 collection 为空（全局证据链，跨所有 active 集合）。
         if retrieval_mode in {MODE_GRAPH_MIXED, MODE_GRAPH_ONLY} and not collection:
@@ -2746,11 +2793,12 @@ class KnowledgeRepositoryApi(
             )
 
         # 这一轮问答实际用的知识范围：存进聊天记录、随结果返回，界面按它标注每轮回答，
-        # 不随之后的选中变化。全文模式按文档，其余按集合（空 = 全部集合）。
+        # 不随之后的选中变化。全文模式与单篇范围按文档，其余按集合（空 = 全部集合）。
         answer_scope: dict[str, str] = {"collection": collection or ""}
-        if fulltext_doc is not None:
-            answer_scope["doc_id"] = fulltext_doc.doc_id
-            answer_scope["doc_title"] = fulltext_doc.title or ""
+        scoped_doc = fulltext_doc or scope_doc
+        if scoped_doc is not None:
+            answer_scope["doc_id"] = scoped_doc.doc_id
+            answer_scope["doc_title"] = scoped_doc.title or ""
 
         cid = conversation_id or uuid.uuid4().hex
         ask_start = time.monotonic()

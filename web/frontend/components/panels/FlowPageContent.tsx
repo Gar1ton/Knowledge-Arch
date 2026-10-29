@@ -21,6 +21,7 @@ import {
   type DependencyStatus,
   type EffectiveConfig,
   type PipelineStage,
+  type ZoteroConfig,
 } from "@/lib/api";
 import {
   getSettingsSchema,
@@ -76,8 +77,30 @@ export function FlowPageContent({ onClose }: { onClose?: () => void } = {}) {
   const refreshInFlight = useRef(false);
   const rerankStatusRef = useRef<string | null>(null);
 
+  // /api/config/effective 的 zotero_sync 只有设置项；key 状态、用户名、连接状态来自 /api/zotero/config。
+  // 定时刷新只拉前者，若直接替换 config 会冲掉后者（保存 key 后几秒又显示「未设置」），故每次都合并回去。
+  const zoteroStatusRef = useRef<ZoteroConfig | null>(null);
+  const withZoteroStatus = useCallback((next: EffectiveConfig): EffectiveConfig => {
+    const status = zoteroStatusRef.current;
+    if (!status) return next;
+    return { ...next, zotero_sync: { ...status, ...(next.zotero_sync ?? {}) } };
+  }, []);
+
+  const refreshZotero = useCallback(async () => {
+    const zoteroConfig = await getZoteroConfig(4_000);
+    if (!mountedRef.current) return;
+    zoteroStatusRef.current = zoteroConfig;
+    setConfig((prev) => (
+      prev ? { ...prev, zotero_sync: { ...(prev.zotero_sync ?? {}), ...zoteroConfig } } : prev
+    ));
+  }, []);
+
   const refreshFlow = useCallback(async (options: RefreshOptions = {}) => {
-    if (refreshInFlight.current) return;
+    if (refreshInFlight.current) {
+      // 定时刷新进行中时，保存 key 等操作要求的 Zotero 状态刷新不能被一起丢掉。
+      if (options.includeZotero) refreshZotero().catch(() => undefined);
+      return;
+    }
     refreshInFlight.current = true;
     try {
       const [capsResult, configResult, schemaResult, providersResult] = await Promise.allSettled([
@@ -112,32 +135,15 @@ export function FlowPageContent({ onClose }: { onClose?: () => void } = {}) {
         toast(capsResult.reason instanceof Error ? capsResult.reason.message : String(capsResult.reason), "error");
       }
       if (configResult.status === "fulfilled") {
-        setConfig(configResult.value);
+        setConfig(withZoteroStatus(configResult.value));
       } else if (options.notify && !isClientTimeout(configResult.reason)) {
         toast(configResult.reason instanceof Error ? configResult.reason.message : String(configResult.reason), "error");
       }
-      if (options.includeZotero) {
-        getZoteroConfig(4_000)
-          .then((zoteroConfig) => {
-            if (!mountedRef.current) return;
-            setConfig((prev) => (
-              prev
-                ? {
-                  ...prev,
-                  zotero_sync: {
-                    ...(prev.zotero_sync ?? {}),
-                    ...zoteroConfig,
-                  },
-                }
-                : prev
-            ));
-          })
-          .catch(() => undefined);
-      }
+      if (options.includeZotero) refreshZotero().catch(() => undefined);
     } finally {
       refreshInFlight.current = false;
     }
-  }, [t, toast]);
+  }, [refreshZotero, t, toast, withZoteroStatus]);
 
   useEffect(() => {
     mountedRef.current = true;
