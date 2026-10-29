@@ -16,6 +16,7 @@ from kacore.domain.models import (
 from kacore.index_compatibility import IndexCompatibilityStore
 from kacore.pipelines.retrieval_orchestrator import (
     SCOPE_COLLECTION,
+    SCOPE_DOCUMENT,
     SCOPE_ITEM,
     SCOPE_LIBRARY,
     SCOPE_TAG,
@@ -115,6 +116,16 @@ async def test_resolve_scope_library_excludes_detached() -> None:
     assert allowed == {"dA", "dB", "dC"}  # 排除 detached dD
 
 
+async def test_resolve_scope_document_is_that_doc_only() -> None:
+    store = await _store_with_mirror()
+    await store.add_document(_doc("dD", "ITEMD", lifecycle=DocumentLifecycle.DETACHED))
+    orch = _orch(store)
+    assert await orch.resolve_scope(RetrievalScope(SCOPE_DOCUMENT, "dB", LIB)) == {"dB"}
+    # 已脱管或不存在的文档：作用域为空（不放行任何东西），而不是退回不过滤。
+    assert await orch.resolve_scope(RetrievalScope(SCOPE_DOCUMENT, "dD", LIB)) == set()
+    assert await orch.resolve_scope(RetrievalScope(SCOPE_DOCUMENT, "nope", LIB)) == set()
+
+
 async def test_no_scope_returns_none() -> None:
     store = await _store_with_mirror()
     orch = _orch(store)
@@ -174,6 +185,15 @@ async def test_hard_filter_restricts_candidates_before_rrf(tmp_path) -> None:
     assert [c.doc_id for c in outcome.chunks] == ["dA"]
 
 
+async def test_document_scope_filters_dense_candidates(tmp_path) -> None:
+    store = await _store_with_mirror()
+    orch = _dense_orch(store, tmp_path, ["dA_c0", "dB_c0"])
+    outcome = await orch.retrieve_with_outcome(
+        "kb", "alpha beta", top_k=5, scope=RetrievalScope(SCOPE_DOCUMENT, "dB", LIB)
+    )
+    assert [c.doc_id for c in outcome.chunks] == ["dB"]
+
+
 async def test_empty_scope_returns_no_chunks(tmp_path) -> None:
     store = await _store_with_mirror()
     orch = _dense_orch(store, tmp_path, ["dA_c0"])
@@ -189,7 +209,9 @@ async def test_empty_scope_returns_no_chunks(tmp_path) -> None:
 async def test_lightrag_context_rejects_item_and_tag_scope() -> None:
     store = await _store_with_mirror()
     orch = _orch(store)
-    with pytest.raises(RuntimeError, match="item/tag scope"):
+    with pytest.raises(RuntimeError, match="item/tag/document scope"):
         await orch.retrieve_lightrag_context("kb", "q", RetrievalScope(SCOPE_ITEM, "ITEMA", LIB))
-    with pytest.raises(RuntimeError, match="item/tag scope"):
+    with pytest.raises(RuntimeError, match="item/tag/document scope"):
         await orch.retrieve_lightrag_context("kb", "q", RetrievalScope(SCOPE_TAG, "shared", LIB))
+    with pytest.raises(RuntimeError, match="item/tag/document scope"):
+        await orch.retrieve_lightrag_context("kb", "q", RetrievalScope(SCOPE_DOCUMENT, "dA", LIB))

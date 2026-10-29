@@ -11,6 +11,8 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from kacore.capabilities import (
+    STATUS_DEGRADED,
+    STATUS_READY,
     dependency_statuses,
     detect_capabilities,
     milvus_lock_error_hint,
@@ -126,7 +128,13 @@ class CapabilitiesApiMixin:
             return
 
     def _overlay_zotero_config_state(self, data: dict[str, Any]) -> None:
-        """Apply non-blocking Zotero config state to the capabilities snapshot."""
+        """Apply non-blocking Zotero config state to the capabilities snapshot.
+
+        在线模式还没有 API key 时同步必然失败：就绪态降为 degraded，界面据此把同步按钮变灰、
+        点击时提示去数据流页填 key（只查本地存储，不访问 Zotero 服务器）。
+        """
+        from kacore.config import ZOTERO_ACCESS_SERVER
+
         if self._config is None or getattr(self, "_zotero_pipeline", None) is None:
             return
         cfg = self._config.get_zotero_sync_config()
@@ -139,6 +147,13 @@ class CapabilitiesApiMixin:
                 stage["detail"] = detail
             detail["availability_probe"] = "deferred"
             detail["access_mode"] = cfg.access_mode
+            if cfg.access_mode == ZOTERO_ACCESS_SERVER:
+                key_provider = getattr(self, "_zotero_server_key", None)
+                key_present = bool(key_provider and key_provider())
+                detail["server_key_present"] = key_present
+                if not key_present and stage.get("status") == STATUS_READY:
+                    stage["status"] = STATUS_DEGRADED
+                    detail["reason"] = "Zotero API key is not set"
             return
 
     async def _overlay_milvus_runtime_health(self, data: dict[str, Any]) -> None:

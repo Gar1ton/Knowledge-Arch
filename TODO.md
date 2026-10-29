@@ -415,3 +415,32 @@
     换集合或打开查询设置时重查；已选图谱档位而集合未就绪时回退到默认档位。
     验证：pytest 1483 passed / 4 skipped（新增路由测试 1 项）；ruff；mypy；tsc；eslint；`next build`；Playwright：
     无图谱的集合两档变灰并提示去左侧构建，就绪的集合（模拟 ready）可选，选着图谱档位换回无图谱集合时回到增强召回。
+- [x] P24 · 2.0.5 之后的修复。
+  - [x] ① 数据流页保存 Zotero API Key 后几秒又显示「未设置」：5 秒一次的自动刷新用 `/api/config/effective` 整个替换 config，
+    冲掉了 `/api/zotero/config` 合并进来的 key 状态 / 用户名 / 连接状态（本地模式的连接灯同样会闪）。`FlowPageContent.tsx`
+    记住最近一次 Zotero 探针结果，每次刷新合并回去（设置项以新拉到的为准）；定时刷新进行中时，保存 key 要求的 Zotero 刷新不再被丢掉。
+  - [x] ② 删除集合后出现 `_uncategorized`：决策（A）——默认集合（`source_store.default_collection`）是收件箱，不可删除、不可改名
+    （启动时会按名字补建，删掉只会多一个空集合）；删除其他集合时无归属的文档迁入默认集合，不再新建 `_uncategorized`；
+    启动时 `merge_legacy_uncategorized` 把已有 `_uncategorized` 的文档并回默认集合并删掉它。按 key 删除时主归属指向被删集合、
+    但还有别的归属的文档，主归属改到剩下的集合（以前留着已删除的名字）。`/api/collections` 多返回 `is_default`，界面隐藏删除 / 改名键；
+    删除确认框的文案改为实际行为（以前写「永久删除所有文档」）。
+  - [x] ③ 聊天可限定单篇文档：范围菜单顶部加「当前浏览的文档」，点一次钉住当时那篇；之后中间换文档、左侧点集合都不改它，
+    菜单里同时列出「已选定的文档」与新打开的那篇，再点即换；选任一集合即取消。默认 / 增强召回 / 深度思考 / 全文都按这一篇，
+    图谱两档变灰。后端新增 `document` 作用域（`retrieval_orchestrator.SCOPE_DOCUMENT`，只放行该 doc_id，屏蔽图谱通道）；
+    `ask` 在非全文模式收到 `doc_id` 时按该文档的主归属集合召回再硬过滤，`meta.scope` 记文档标题；图谱档位带 `doc_id` 返回 400。
+  - [x] ④ 在线模式没填 Zotero API key 时同步按钮仍是亮的、点了才由后端报错：`kacore/api_capabilities.py` 的
+    `_overlay_zotero_config_state` 在 server 模式且本地没有 key 时把 zotero 环节降为 degraded（`detail.server_key_present`、
+    `detail.reason`），文件面板按钮随之变灰、点击提示去数据流页（`lib/featureReadiness.ts` 原有逻辑）。本地模式不看 key。
+    Zotero → 导入是虚线边，不向下游级联；整体健康灯变红，与「启用但缺 PDF 依赖」一致。
+    验证：pytest 1497 passed / 4 skipped（新增 1 项）；ruff；mypy；真后端：启用 Zotero + 在线模式无 key → degraded，
+    切回本地 → ready。未验证：填入真实 key 后恢复 ready（单测覆盖，需真实账号）。
+  - [x] ⑤ 版本号 2.0.6。
+  - 同类问题排查（①）：前端只有数据流页 Zotero 节点把两个接口的结果拼进同一份状态；Notion token（capabilities）、
+    R2 密钥（settings schema）、模型连接 key（providers）每次刷新都整份来自单一接口，不会被覆盖。
+  - 验证：pytest 1496 passed / 4 skipped（新增 `test_default_collection.py` 10 项、`test_retrieval_scope.py` 2 项、
+    `test_conversation_context.py` 1 项）；ruff；mypy；tsc；eslint；`next build`。
+    真后端 + `next dev` + Playwright 19 项全过：钉住 attn.md 后打开 mamba.md 范围不变、请求带 doc_id、选集合即取消；
+    API 层同一问题全部集合召回 2 篇、钉住后只有 1 篇；default 无删除 / 改名键且接口拒绝；删除 papers 后文档进 default、
+    界面无 `_uncategorized`；Zotero（探针返回已存 key）自动刷新 3 轮后仍显示 key 与用户名——还原旧 `FlowPageContent.tsx`
+    时同一检查变成「Not set」。重启后端：预置的 `_uncategorized`（1 篇）并回 default 并消失。
+    未验证：真实 Zotero Web API key 的保存（需真实账号）；接真实模型的单篇深度思考效果；桌面壳里实测。

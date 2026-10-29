@@ -1,6 +1,7 @@
 """多轮对话：kacore/pipelines/conversation_context.py 与 api.ask(use_context=...)。"""
 from __future__ import annotations
 
+import pytest
 from static_retriever import StaticRetriever
 
 from kacore.api import KnowledgeRepositoryApi
@@ -74,10 +75,14 @@ class _RecordingDeep:
     def __init__(self) -> None:
         self.query = ""
         self.answer_question = None
+        self.collection = ""
+        self.scope = None
 
     async def run(self, collection, query, scope=None, progress=None,
                   answer_language="auto", answer_question=None):
         self.query = query
+        self.collection = collection
+        self.scope = scope
         self.answer_question = answer_question
         return DeepThinkingOutcome(
             evidence=[DocumentChunk("c0", "d1", 0, "ev", "h0")],
@@ -175,6 +180,24 @@ async def test_each_turn_records_the_scope_it_answered_from() -> None:
     assert result["scope"] == {"collection": "papers"}
     assistant = [m for m in await store.get_chat_messages("conv") if m["role"] == "assistant"][-1]
     assert assistant["meta"]["scope"] == {"collection": "papers"}
+
+
+async def test_doc_id_limits_non_fulltext_modes_to_that_document() -> None:
+    """范围钉在单篇文档：按它的主归属集合召回、只放行这一篇，这轮回答标注为该文档。"""
+    api, deep, _ = await _api(_RewriteLLM(), history=False)
+
+    result = await api.ask(
+        question="q", collection=None, conversation_id="conv",
+        retrieval_mode="deep_thinking", doc_id="d1",
+    )
+
+    assert deep.collection == "papers"
+    assert (deep.scope.scope_type, deep.scope.scope_key) == ("document", "d1")
+    assert result["scope"] == {"collection": "papers", "doc_id": "d1", "doc_title": "d1"}
+    with pytest.raises(ValueError, match="one document"):
+        await api.ask(question="q", retrieval_mode="graph_mixed", doc_id="d1")
+    with pytest.raises(ValueError, match="not found"):
+        await api.ask(question="q", retrieval_mode="enhanced", doc_id="missing")
 
 
 async def test_model_thinking_switch_reaches_every_call_of_that_question_only() -> None:

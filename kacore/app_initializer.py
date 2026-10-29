@@ -676,6 +676,10 @@ class AppInitializer:
                 await self.api.repair_renamed_collections()
             except Exception as exc:  # 修复失败不阻止启动；下次启动再试
                 logger.warning("Repairing renamed collections failed: %s", exc)
+            try:
+                await self.api.merge_legacy_uncategorized()
+            except Exception as exc:  # 同上
+                logger.warning("Merging the legacy uncategorized collection failed: %s", exc)
         logger.info(
             "AppInitializer.initialize() finished in %.1fs", time.monotonic() - init_started
         )

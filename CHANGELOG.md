@@ -4,6 +4,31 @@
 
 ## [Unreleased]
 
+## [v2.0.6] — 2026-10-29
+
+### 新增 (Added)
+
+- **聊天可限定单篇文档**：`components/panels/ChatPanel.tsx` 的范围菜单顶部加「当前浏览的文档」，点一次钉住中间当时打开的那篇；
+  之后换文档、左侧点集合都不改范围，菜单里再点新打开的那篇即换，选任一集合即取消。默认 / 增强召回 / 深度思考 / 全文都只在这一篇里检索，
+  图谱两档变灰并提示。后端 `kacore/pipelines/retrieval_orchestrator.py` 新增 `document` 作用域（只放行该 doc_id，屏蔽图谱通道）；
+  `kacore/api.py` 的 `ask` 在非全文模式收到 `doc_id` 时按该文档的主归属集合召回再硬过滤，聊天记录 `meta.scope` 记文档标题；
+  图谱档位带 `doc_id` 返回 400。
+
+### 修复 (Fixed)
+
+- **Zotero API Key 保存后又显示「未设置」**：数据流页每 5 秒的自动刷新用 `/api/config/effective` 整个替换配置，冲掉了
+  `/api/zotero/config` 合并进来的 key 状态、用户名与连接状态（key 其实已保存、同步可用）。`components/panels/FlowPageContent.tsx`
+  记住最近一次 Zotero 状态并在每次刷新时合并回去；定时刷新进行中时，保存 key 触发的 Zotero 状态刷新不再被丢掉。
+- **删除集合后出现 `_uncategorized`**：删除集合时文档被迁进内部系统集合 `_uncategorized` 并以原名显示，而启动时又会重建一个空的 `default`。
+  现在默认集合（`source_store.default_collection`）不可删除、不可改名，删除其他集合时无归属的文档迁入默认集合；
+  启动时 `merge_legacy_uncategorized`（`kacore/api.py`，由 `kacore/app_initializer.py` 调用）把旧的 `_uncategorized` 并回默认集合并删掉。
+  按 key 删除时，还有别的归属的文档主归属改到剩下的集合，不再留着已删除的名字。`/api/collections` 新增 `is_default`
+  （`web/server.py`），`components/panels/FilePanel.tsx` 对默认集合隐藏删除 / 改名键；删除确认框的说明改为实际行为
+  （此前写「永久删除该集合及其所有文档」）。
+- **在线模式未填 Zotero API key 时同步按钮仍可点**：就绪判断只看 Zotero 是否启用与 PDF 依赖。`kacore/api_capabilities.py`
+  在 server 模式且没有 key 时把 zotero 环节报为 degraded（附 `server_key_present` 与原因），文件面板的 Zotero 同步按钮随之变灰，
+  点击提示去数据流页填 key。本地模式不受影响。
+
 ## [v2.0.5] — 2026-10-26
 
 ### 新增 (Added)

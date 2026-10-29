@@ -3388,3 +3388,36 @@ async def test_notion_initialize_persists_both_data_sources_and_exposes_auto_syn
     assert status["qa_data_source_id"] == "qa-source"
     assert status["auto_sync_enabled"] is True
     assert status["auto_sync_interval_sec"] == 300
+
+
+def _zotero_stage_after_overlay(api: KnowledgeRepositoryApi) -> dict:
+    data = {"pipeline": [{"id": "zotero", "status": "ready", "configured": True, "detail": {}}]}
+    api._overlay_zotero_config_state(data)
+    return data["pipeline"][0]
+
+
+def test_capabilities_marks_zotero_server_mode_without_key_not_ready() -> None:
+    """在线模式没填 key：同步按钮应变灰（stage 非 ready），填了 key 恢复；本地模式不看 key。"""
+    from kacore.config import Config
+    from kacore.settings.memory import MemorySecretStore
+
+    secrets = MemorySecretStore()
+    api = KnowledgeRepositoryApi(
+        source_store=InMemorySourceDocumentStore(),
+        config=Config({"zotero_sync": {"enabled": True, "access_mode": "server"}}),
+        secret_store=secrets,
+    )
+    api.attach_zotero_pipeline(object())
+
+    stage = _zotero_stage_after_overlay(api)
+    assert stage["status"] == "degraded"
+    assert stage["detail"]["server_key_present"] is False
+
+    secrets.set_secret("zotero.server_api_key", "zotero-secret")
+    stage = _zotero_stage_after_overlay(api)
+    assert stage["status"] == "ready"
+    assert stage["detail"]["server_key_present"] is True
+
+    api._config = Config({"zotero_sync": {"enabled": True, "access_mode": "local"}})
+    secrets.delete_secret("zotero.server_api_key")
+    assert _zotero_stage_after_overlay(api)["status"] == "ready"

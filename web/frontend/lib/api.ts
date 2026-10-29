@@ -12,6 +12,8 @@ export interface Collection {
   name: string;
   description?: string;
   is_system?: boolean;
+  /** 默认集合（上传与笔记的落点、删除集合后无归属文档的去处）：不可删除、不可改名。 */
+  is_default?: boolean;
   origin?: "local" | "zotero";
   read_only?: boolean;
   zotero_collection_key?: string;
