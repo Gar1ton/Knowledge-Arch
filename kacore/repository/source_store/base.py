@@ -10,6 +10,8 @@ import re
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
+from kacore.repository.source_store.figures import FigureRepository
+
 if TYPE_CHECKING:
     from kacore.domain.models import (
         Collection,
@@ -31,7 +33,7 @@ if TYPE_CHECKING:
     )
 
 
-class SourceDocumentStore(ABC):
+class SourceDocumentStore(FigureRepository, ABC):
     """原件 + 集合 + 分块的仓储。
 
     标识约定：

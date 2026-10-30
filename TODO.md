@@ -463,8 +463,14 @@
     验证：tsc；eslint；真后端 + `next dev` + Playwright：Attention 论文查 attention 97 处、Enter / Shift+Enter 计数 6/97→5/97、
     跨行短语 `scaled dot-product attention` 6 处、无结果提示、Esc 清除高亮、悬停时 Ctrl+F 打开；125% / 140% 截图高亮与原文对齐；
     纯图片 PDF 提示「没有可查找的文字层」；快速缩放无未处理的取消异常。
-  - [ ] 既有问题（P2 一并修）：没有文字的 PDF（0 个 chunk）每次列文档都被判为需重切、反复重建（`chunk_needs_rebuild` 对空 chunk 返回 True）。
-  - [ ] P2 找图与空位：`kacore/managers/figure_detection.py`、迁移 `027_document_figures.sql`、source_store 接口与实现。
+  - [x] P2 找图与空位：`kacore/domain/figures.py`、`kacore/managers/figure_detection.py`、迁移 `027_document_figures.sql`、
+    `FigureRepository`（`source_store/figures.py`，SQLite / 内存实现各一个混入）；上传与重抽取时找图并接上同位置旧描述，
+    `local_meta` 记 `scanned_pages` / `figure_count` / `text_empty`。
+    检测规则经 4 篇论文调定：图标题在上方加罚、矢量候选阈值放低（必须配标题）、紧邻或同列的候选并入同一张图、
+    带表标题且单元格多半有字的线框表切掉、正文段落（本页正文字号、≥2 行、平均行长 ≥50）把误连的绘图簇切开。
+    实测：ResNet 7/7、Attention 5/5、ViT 12/12、ToT 5/6（图 4 内全是正文字号的长段，保守不收）；每篇 0.4–2.0 s。
+    验证：`test_figures.py` 10 项（合成 PDF：图表 + 刻度、真表格、重复 logo、扫描页；两种仓储契约；摄入与重抽取保留描述）。
+  - [x] 既有问题：没有文字的 PDF 每次列文档都反复重切 —— `chunk_needs_rebuild` 对 `text_empty` 的文档不再要求重切。
   - [ ] P3 正文去污染：L1 + L2 + L3 评测，`cleaning-v4` 与后台重抽取。
   - [ ] P4 识图角色：`flow.models.vision`、`describe_image`、测试连接发图。
   - [ ] P5 识图任务：`kacore/vision_job.py`、`kacore/pipelines/figure_caption_pipeline.py`、`kacore/api_vision.py`、HTTP、日志。

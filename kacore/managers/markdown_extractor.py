@@ -17,6 +17,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from kacore.domain.figures import DocumentFigure
 from kacore.domain.footnotes import FootnoteBlock
 from kacore.managers.artifact_cleaning import clean_page_structure
 from kacore.managers.footnote_linking import link_footnotes
@@ -70,6 +71,9 @@ class MarkdownArtifact:
     converter_version: str = PYMUPDF4LLM_PINNED_VERSION
     raw_pages: list[str] = field(default_factory=list)
     footnotes: list[FootnoteBlock] = field(default_factory=list)
+    # 找图结果（仅 PDF）：图空位与没有文字层的扫描页页码。
+    figures: list[DocumentFigure] = field(default_factory=list)
+    scanned_pages: list[int] = field(default_factory=list)
 
 
 def installed_pymupdf4llm_version() -> str:

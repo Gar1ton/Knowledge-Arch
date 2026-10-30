@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kacore.domain.figures import merge_figure_descriptions
 from kacore.domain.filename_biblio import parse_filename_biblio
 from kacore.domain.models import (
     DocumentChunk,
@@ -41,6 +42,7 @@ from kacore.managers.artifact_provenance import (
 from kacore.managers.base import BaseIngestManager
 from kacore.managers.chunk_token_limits import limit_chunk_spans
 from kacore.managers.chunking import CHUNK_SCHEMA, build_structural_chunk_spans
+from kacore.managers.figure_detection import detect_figures_in_file
 from kacore.managers.markdown_extractor import (
     MarkdownArtifact,
     PageSpan,
@@ -71,6 +73,22 @@ _ARTIFACT_MD = "clean.md"
 _ARTIFACT_PAGES = "pages.json"
 _ARTIFACT_META = "meta.json"
 _CHUNK_SCHEMA = CHUNK_SCHEMA
+
+CHUNK_KIND_BODY = "body"
+CHUNK_KIND_FIGURE = "figure"
+# local_meta 键：正文为空（扫描件）、扫描页页码、图空位数量。
+META_TEXT_EMPTY = "text_empty"
+META_SCANNED_PAGES = "scanned_pages"
+META_FIGURE_COUNT = "figure_count"
+
+
+def _artifact_meta(artifact: MarkdownArtifact) -> dict[str, Any]:
+    """随文档处理写进 local_meta 的找图摘要（界面提示「N 页没有文字层」用）。"""
+    return {
+        META_TEXT_EMPTY: not artifact.clean_markdown.strip(),
+        META_SCANNED_PAGES: list(artifact.scanned_pages),
+        META_FIGURE_COUNT: len(artifact.figures),
+    }
 
 
 def gen_zotero_key() -> str:
@@ -243,7 +261,9 @@ class IngestManager(BaseIngestManager):
             content_bytes, file_hash = await asyncio.to_thread(self._read_and_hash, source_pdf)
 
             # 1) 抽取干净 Markdown + 页面字符偏移
-            artifact = await asyncio.to_thread(self._extract_artifact, source_pdf, content_type)
+            artifact = await asyncio.to_thread(
+                self._extract_artifact, source_pdf, content_type, document_id
+            )
 
             # 2) 落盘 clean.md / pages.json / meta.json
             await complete_thread_call(save_provenance, bundle_dir, artifact)
@@ -317,7 +337,7 @@ class IngestManager(BaseIngestManager):
                 converter_version=artifact.converter_version,
                 last_synced_at=last_synced_at,
                 local_meta={"chunk_schema": _CHUNK_SCHEMA, "processing_version": PROCESSING_VERSION,
-                            **(biblio_hint or {})},
+                            **_artifact_meta(artifact), **(biblio_hint or {})},
             )
             # 幂等：本地首次为 add；Zotero 重同步为 update（覆盖已存在制品包）。
             existing = await self._source_store.get_document(document_id)
@@ -327,6 +347,7 @@ class IngestManager(BaseIngestManager):
                 doc.local_meta = {**existing.local_meta, **doc.local_meta}
                 await self._source_store.update_document(doc)
             document_added = existing is None
+            await self._store_figures(document_id, artifact)
             await self._source_store.replace_chunks(document_id, chunks)
             await self._source_store.replace_page_chunks(document_id, page_chunks)
         except Exception:
@@ -388,7 +409,8 @@ class IngestManager(BaseIngestManager):
         )
         doc.needs_reindex = True
         doc.local_meta = {**doc.local_meta, "chunk_schema": _CHUNK_SCHEMA,
-                          "processing_version": PROCESSING_VERSION}
+                          "processing_version": PROCESSING_VERSION,
+                          META_TEXT_EMPTY: not artifact.clean_markdown.strip()}
         await self._source_store.commit_document_processing(doc, chunks, [
             PageChunk(doc.doc_id, span.page, span.start, span.end) for span in artifact.page_spans
         ])
@@ -442,7 +464,7 @@ class IngestManager(BaseIngestManager):
             artifact = build_single_page_artifact(text)
         else:
             artifact = await asyncio.to_thread(
-                self._extract_artifact, source_pdf, doc.content_type or "application/pdf"
+                self._extract_artifact, source_pdf, doc.content_type or "application/pdf", doc_id
             )
 
         # 覆写制品包中的派生文件。
@@ -473,7 +495,9 @@ class IngestManager(BaseIngestManager):
         doc.converter_version = artifact.converter_version
         doc.needs_reindex = True
         doc.local_meta = {**doc.local_meta, "chunk_schema": _CHUNK_SCHEMA,
-                          "processing_version": PROCESSING_VERSION}
+                          "processing_version": PROCESSING_VERSION, **_artifact_meta(artifact)}
+        if not recover_text:
+            await self._store_figures(doc_id, artifact)
         await self._source_store.commit_document_processing(doc, chunks, [
             PageChunk(doc.doc_id, span.page, span.start, span.end) for span in artifact.page_spans
         ])
@@ -551,9 +575,12 @@ class IngestManager(BaseIngestManager):
         if local_meta is not None and local_meta.get("processing_version") != PROCESSING_VERSION:
             return True
         if not chunks:
-            return True
+            # 没有文字的 PDF（扫描件）本来就切不出 chunk：已按当前版本处理过就不要反复重切。
+            return not (local_meta or {}).get(META_TEXT_EMPTY, False)
         expected_prefix = f"{document_id}_c"
         for chunk in chunks:
+            if chunk.metadata.get("chunk_kind") == CHUNK_KIND_FIGURE:
+                continue  # 图 chunk 不在 clean.md 上，没有正文偏移
             if not chunk.chunk_id.startswith(expected_prefix):
                 return True
             if chunk.metadata.get("chunk_schema") != _CHUNK_SCHEMA:
@@ -562,6 +589,16 @@ class IngestManager(BaseIngestManager):
                 return True
         return False
 
+    async def _store_figures(self, doc_id: str, artifact: MarkdownArtifact) -> None:
+        """写入本次找到的图空位，并接上同位置旧空位已有的描述（不重复调用识图模型）。"""
+        previous = await self._source_store.list_document_figures(doc_id)
+        figures = merge_figure_descriptions(artifact.figures, previous)
+        now = datetime.now(timezone.utc).isoformat()
+        for fig in figures:
+            fig.doc_id = doc_id
+            fig.updated_at = fig.updated_at or now
+        await self._source_store.replace_document_figures(doc_id, figures)
+
     # ── 抽取 ──────────────────────────────────────────────────────
 
     @staticmethod
@@ -569,8 +606,10 @@ class IngestManager(BaseIngestManager):
         content_bytes = path.read_bytes()
         return content_bytes, hashlib.sha256(content_bytes).hexdigest()
 
-    def _extract_artifact(self, path: Path, content_type: str) -> MarkdownArtifact:
-        """PDF → PyMuPDF4LLM 清洗；txt/md → 单页纯文本制品。"""
+    def _extract_artifact(
+        self, path: Path, content_type: str, doc_id: str = ""
+    ) -> MarkdownArtifact:
+        """PDF → PyMuPDF4LLM 清洗 + 本地找图；txt/md → 单页纯文本制品。"""
         if self._config.ocr_enabled:
             warnings.warn(
                 "OCR/LLM extraction is enabled which may incur substantial computation/API costs.",
@@ -580,7 +619,19 @@ class IngestManager(BaseIngestManager):
         suffix = path.suffix.lower()
         is_pdf = content_type == "application/pdf" or suffix == ".pdf"
         if is_pdf:
-            return extract_pdf_markdown(str(path))
+            artifact = extract_pdf_markdown(str(path))
+            try:
+                scan = detect_figures_in_file(str(path), doc_id)
+            except Exception as exc:  # 找图失败不能拖垮摄入：没有空位，正文照常
+                self.logger.warning("Figure detection failed for %s: %s", doc_id or path.name, exc)
+            else:
+                artifact.figures = scan.figures
+                artifact.scanned_pages = scan.scanned_pages
+                self.logger.debug(
+                    "Figure detection %s: %d figures, scanned pages %s, %.2fs",
+                    doc_id or path.name, len(scan.figures), scan.scanned_pages, scan.seconds,
+                )
+            return artifact
         if suffix in (".txt", ".md", ".markdown"):
             return build_single_page_artifact(path.read_text(encoding="utf-8", errors="replace"))
         # 其它类型暂按纯文本兜底（避免摄入直接失败）。
@@ -623,7 +674,7 @@ class IngestManager(BaseIngestManager):
                 "start_char": cs,
                 "end_char": ce,
                 "locator": f"page_{page_number}_o{cs}",
-                "chunk_kind": "body",
+                "chunk_kind": CHUNK_KIND_BODY,
                 "revision_id": revision,
                 "processing_version": PROCESSING_VERSION,
                 "footnotes": [
