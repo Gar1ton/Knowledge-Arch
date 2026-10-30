@@ -151,13 +151,19 @@ class AnthropicChat(ProviderClient):
         return await self._generate_once(prompt, system_prompt, kwargs, allow_mock=allow_mock)
 
     async def describe_image(
-        self, prompt: str, image_png: bytes, system_prompt: str = "", *, max_tokens: int = 800
+        self,
+        prompt: str,
+        image: bytes,
+        system_prompt: str = "",
+        *,
+        max_tokens: int = 800,
+        media_type: str = "image/png",
     ) -> GenerationResult:
         """图片块 + 文字块。识图是后台任务：能关思考就关，被拒（400）则去掉重试一次。"""
         content: list[dict[str, Any]] = [
             {"type": "image", "source": {
-                "type": "base64", "media_type": "image/png",
-                "data": base64.b64encode(image_png).decode("ascii"),
+                "type": "base64", "media_type": media_type,
+                "data": base64.b64encode(image).decode("ascii"),
             }},
             {"type": "text", "text": prompt},
         ]

@@ -298,6 +298,8 @@ export interface AskSource {
   doi?: string;
   url?: string;
   pages?: number[];
+  // chunk 元数据的一小部分：图块（2.1.0 识图）带 chunk_kind="figure" 与 figure_label。
+  metadata?: { chunk_kind?: string; figure_label?: string; [key: string]: unknown };
   // 后端渲染好的 Harvard 串。harvard_in_text 是正文里出现的**内层**串（不含括号），
   // 前端据它还原「点击引用 → 跳来源卡片」。
   harvard_in_text?: string;

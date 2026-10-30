@@ -12,6 +12,7 @@ import { useFeatureReadiness, type Feature } from "@/lib/featureReadiness";
 import { useConsole } from "@/lib/ConsoleContext";
 import { listCollections, getActiveBuildJob, getBuildJobHistory, buildGraph, pauseBuildJob, resumeBuildJob, deleteCollection, deleteCollectionByKey, renameCollection, createCollection, uploadDocument, syncZoteroPull, getActiveZoteroSyncJob, backupNow, Collection, GraphBuildJob, BuildJobRecord } from "@/lib/api";
 import { useToast } from "@/components/ui/Toast";
+import { VisionBuildDialog } from "@/components/panels/VisionBuildDialog";
 import { useI18n, type I18nKey } from "@/lib/i18n";
 
 // ─── Sub-components ───────────────────────────────────────────
@@ -997,6 +998,8 @@ export function FilePanel() {
   const [progressOpen, setProgressOpen] = useState(true);
   // LightRAG 区默认收起：多数时候用不到，展开后占左栏大半高度。
   const [lightragOpen, setLightragOpen] = useState(false);
+  // 「补全图表描述」确认框：null = 关闭，"" = 全部文档，否则为集合名。
+  const [visionCollection, setVisionCollection] = useState<string | null>(null);
   const [showNewCollection, setShowNewCollection] = useState(false);
   const [newCollectionParent, setNewCollectionParent] = useState<Collection | null>(null);
   const [renamingCollection, setRenamingCollection] = useState<Collection | null>(null);
@@ -1297,6 +1300,14 @@ export function FilePanel() {
               void startBuild(name);
             })}
           />
+          <IconButton
+            name="image"
+            label={t("file_action_describe_figures")}
+            onClick={() => {
+              const name = selectedCollection?.replace(/^(z:|l:|lr:)/, "") || null;
+              setVisionCollection(name ?? "");
+            }}
+          />
           <IconButton name="cloud" label={t("file_action_r2_backup")} style={dimmed("r2")} onClick={() => void whenReady("r2", async () => {
             try {
               await backupNow(false);
@@ -1472,6 +1483,13 @@ export function FilePanel() {
         defaultCollection={selectedCollection ? selectedCollection.replace(/^(z:|l:|lr:)/, "") : null}
         localCollections={localCollections.map((c) => c.name)}
         onClose={() => setShowUpload(false)}
+      />
+    )}
+
+    {visionCollection !== null && (
+      <VisionBuildDialog
+        collection={visionCollection || null}
+        onClose={() => setVisionCollection(null)}
       />
     )}
     </>

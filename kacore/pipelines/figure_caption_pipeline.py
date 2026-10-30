@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from kacore.domain.figures import FIGURE_DONE, FIGURE_FAILED, DocumentFigure
 from kacore.domain.llm_generation import STATUS_LENGTH, STATUS_OK
-from kacore.managers.figure_detection import render_figure_png
+from kacore.managers.figure_detection import render_figure_image
 
 if TYPE_CHECKING:
     from kacore.domain.llm_generation import GenerationResult
@@ -40,7 +40,13 @@ SYSTEM_PROMPT = (
 
 class VisionClient(Protocol):
     async def describe_image(
-        self, prompt: str, image_png: bytes, system_prompt: str = "", *, max_tokens: int = 800
+        self,
+        prompt: str,
+        image: bytes,
+        system_prompt: str = "",
+        *,
+        max_tokens: int = 800,
+        media_type: str = "image/png",
     ) -> GenerationResult: ...
 
 
@@ -82,23 +88,24 @@ class FigureCaptionPipeline:
         started = time.monotonic()
         now = datetime.now(timezone.utc).isoformat()
         try:
-            png = await asyncio.to_thread(
-                render_figure_png, pdf_path, fig.page, fig.bbox, dpi=self._render_dpi
+            image, media_type = await asyncio.to_thread(
+                render_figure_image, pdf_path, fig.page, fig.bbox, dpi=self._render_dpi
             )
         except Exception as exc:
             logger.warning("Render failed %s: %s", fig.figure_id, exc)
             return replace(fig, status=FIGURE_FAILED, error=f"render failed: {exc}",
                            updated_at=now), None
-        image_hash = hashlib.sha256(png).hexdigest()
+        image_hash = hashlib.sha256(image).hexdigest()
         result = await client.describe_image(
-            build_prompt(fig), png, SYSTEM_PROMPT, max_tokens=_MAX_TOKENS
+            build_prompt(fig), image, SYSTEM_PROMPT, max_tokens=_MAX_TOKENS, media_type=media_type
         )
         text = result.text.strip()
         usable = result.status in {STATUS_OK, STATUS_LENGTH} and bool(text)
         logger.debug(
-            "Figure %s (%s p.%d) %dx%d bytes=%d -> status=%s chars=%d tokens=%s/%s %.1fs model=%s",
+            "Figure %s (%s p.%d) %dx%d %s bytes=%d -> status=%s chars=%d tokens=%s/%s %.1fs "
+            "model=%s",
             fig.figure_id, fig.label or "-", fig.page, round(fig.bbox[2] - fig.bbox[0]),
-            round(fig.bbox[3] - fig.bbox[1]), len(png), result.status, len(text),
+            round(fig.bbox[3] - fig.bbox[1]), media_type, len(image), result.status, len(text),
             result.prompt_tokens, result.completion_tokens, time.monotonic() - started,
             model_label,
         )

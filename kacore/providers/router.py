@@ -117,13 +117,19 @@ class RoleClient:
         return await client.generate_result(prompt, system_prompt, allow_mock=allow_mock)
 
     async def describe_image(
-        self, prompt: str, image_png: bytes, system_prompt: str = "", *, max_tokens: int = 800
+        self,
+        prompt: str,
+        image: bytes,
+        system_prompt: str = "",
+        *,
+        max_tokens: int = 800,
+        media_type: str = "image/png",
     ) -> GenerationResult:
         client = self._client()
         if client is None:
             raise ProviderError(ERROR_NOT_FOUND, f"No model is assigned to “{self._role}” yet")
         return await client.describe_image(
-            prompt, image_png, system_prompt, max_tokens=max_tokens
+            prompt, image, system_prompt, max_tokens=max_tokens, media_type=media_type
         )
 
 

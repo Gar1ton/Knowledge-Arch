@@ -62,6 +62,9 @@ _SCAN_MIN_IMAGE_RATIO = 0.6
 # 渲染上限：识图时按位置现渲染；超大区域按比例降采样，避免一张图上传几 MB。
 DEFAULT_RENDER_DPI = 150
 DEFAULT_RENDER_MAX_PIXELS = 1_600_000
+# PNG 超过这么大（多为照片、热力图）就改用 JPEG 上传。
+_PNG_MAX_BYTES = 600_000
+_JPEG_QUALITY = 85
 
 
 @dataclass
@@ -477,6 +480,23 @@ def render_figure_png(
         return bytes(pix.tobytes("png"))
 
 
+def render_figure_image(
+    pdf_path: str, page: int, bbox: BBox, *, dpi: int = DEFAULT_RENDER_DPI,
+    max_pixels: int = DEFAULT_RENDER_MAX_PIXELS,
+) -> tuple[bytes, str]:
+    """识图用：先出 PNG；照片类的图 PNG 过大时改用 JPEG（像素不变，识图 token 不变，上传小得多）。
+
+    返回 (图片字节, MIME 类型)。
+    """
+    png = render_figure_png(pdf_path, page, bbox, dpi=dpi, max_pixels=max_pixels)
+    if len(png) <= _PNG_MAX_BYTES:
+        return png, "image/png"
+    import pymupdf
+
+    pix = pymupdf.Pixmap(png)
+    return bytes(pix.tobytes("jpg", jpg_quality=_JPEG_QUALITY)), "image/jpeg"
+
+
 __all__ = [
     "DEFAULT_RENDER_DPI",
     "DEFAULT_RENDER_MAX_PIXELS",
@@ -485,5 +505,6 @@ __all__ = [
     "TABLE_CAPTION_RE",
     "detect_figures",
     "detect_figures_in_file",
+    "render_figure_image",
     "render_figure_png",
 ]

@@ -54,6 +54,8 @@ _FATAL_CODES = frozenset({ERROR_NO_IMAGE_INPUT, ERROR_AUTH, ERROR_NO_KEY, ERROR_
 # 估算用：一张约 1 百万像素的图输入约 800–1300 token，描述输出约 200–300 token。
 _EST_PROMPT_TOKENS = 1300
 _EST_COMPLETION_TOKENS = 300
+_LINGER_SEC = 8.0
+_LINGER_FAILED_SEC = 600.0
 
 
 class VisionUnavailableError(RuntimeError):
@@ -117,10 +119,21 @@ class VisionApiMixin:
             "estimated_prompt_tokens": missing * _EST_PROMPT_TOKENS,
             "estimated_completion_tokens": missing * _EST_COMPLETION_TOKENS,
             "active_job": self.get_active_vision_job(),
+            "last_job": self._last_vision_job(),
         }
 
     def get_active_vision_job(self) -> dict[str, Any] | None:
-        """进行中或最近一次任务的快照；从未运行过时为 None。"""
+        """左下角进度栏要显示的任务：进行中的；刚结束的短暂保留（成功 / 取消 8 秒，
+        失败 10 分钟），让界面看到终态并提示。其余返回 None（进度栏隐藏）。"""
+        job = getattr(self, "_vision_job", None)
+        if job is None:
+            return None
+        if job.status == VISION_RUNNING or job.finished_at is None:
+            return job.to_dict()
+        linger = _LINGER_FAILED_SEC if job.status in {VISION_ERROR, VISION_PARTIAL} else _LINGER_SEC
+        return job.to_dict() if time.time() - job.finished_at <= linger else None
+
+    def _last_vision_job(self) -> dict[str, Any] | None:
         job = getattr(self, "_vision_job", None)
         return job.to_dict() if job is not None else None
 
@@ -170,7 +183,7 @@ class VisionApiMixin:
         if job is not None and job.status == VISION_RUNNING:
             job.cancel_requested = True
             logger.info("Figure recognition cancel requested job=%s", job.job_id)
-        return self.get_active_vision_job()
+        return self._last_vision_job()
 
     async def shutdown_vision(self) -> None:
         task = getattr(self, "_vision_task", None)

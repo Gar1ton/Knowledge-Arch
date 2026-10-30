@@ -143,10 +143,16 @@ class OpenAICompatChat(ProviderClient):
         )
 
     async def describe_image(
-        self, prompt: str, image_png: bytes, system_prompt: str = "", *, max_tokens: int = 800
+        self,
+        prompt: str,
+        image: bytes,
+        system_prompt: str = "",
+        *,
+        max_tokens: int = 800,
+        media_type: str = "image/png",
     ) -> GenerationResult:
-        """OpenAI 兼容图文消息：`image_url` 为 PNG 的 data URI。识图是后台任务，总是尝试关思考。"""
-        data_uri = "data:image/png;base64," + base64.b64encode(image_png).decode("ascii")
+        """OpenAI 兼容图文消息：`image_url` 为图片的 data URI。识图是后台任务，总是尝试关思考。"""
+        data_uri = f"data:{media_type};base64," + base64.b64encode(image).decode("ascii")
         messages: list[dict[str, Any]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})

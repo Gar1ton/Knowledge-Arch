@@ -272,3 +272,29 @@ async def test_text_free_pdf_is_not_rechunked_on_every_listing(tmp_path: Path) -
     assert stored is not None
     assert await store.list_chunks(doc_id) == []
     assert IngestManager.chunk_needs_rebuild(doc_id, [], stored.local_meta) is False
+
+
+def test_photo_like_figures_are_sent_as_jpeg(tmp_path: Path) -> None:
+    """照片类的图 PNG 很大：改用 JPEG（像素不变），线框图仍是 PNG。"""
+    import random
+
+    from kacore.managers.figure_detection import render_figure_image
+
+    doc = fitz.open()
+    page = doc.new_page()
+    rng = random.Random(7)
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 900, 700), 0)
+    pix.set_rect(pix.irect, (120, 120, 120))
+    noise = bytes(rng.randrange(256) for _ in range(900 * 700 * 3))
+    photo = fitz.Pixmap(fitz.csRGB, 900, 700, noise, False)
+    page.insert_image(fitz.Rect(72, 72, 520, 420), pixmap=photo)
+    pdf = tmp_path / "photo.pdf"
+    doc.save(pdf)
+    doc.close()
+
+    image, media_type = render_figure_image(str(pdf), 1, (72, 72, 520, 420))
+    assert media_type == "image/jpeg" and image[:2] == b"\xff\xd8"
+    chart = _make_pdf(tmp_path / "paper.pdf")
+    fig = detect_figures_in_file(str(chart), "DOC").figures[0]
+    _, chart_type = render_figure_image(str(chart), fig.page, fig.bbox)
+    assert chart_type == "image/png"

@@ -139,9 +139,15 @@ class ProviderClient(ABC):
     ) -> GenerationResult: ...
 
     async def describe_image(
-        self, prompt: str, image_png: bytes, system_prompt: str = "", *, max_tokens: int = 800
+        self,
+        prompt: str,
+        image: bytes,
+        system_prompt: str = "",
+        *,
+        max_tokens: int = 800,
+        media_type: str = "image/png",
     ) -> GenerationResult:
-        """看一张 PNG 图并按 prompt 作答（识图角色）。失败抛 `ProviderError`；
+        """看一张图（PNG / JPEG）并按 prompt 作答（识图角色）。失败抛 `ProviderError`；
         端点不收图片时为 `ERROR_NO_IMAGE_INPUT`。默认实现：不支持图片。"""
         raise ProviderError(ERROR_NO_IMAGE_INPUT, "This connection does not accept image input")
 
