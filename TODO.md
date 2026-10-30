@@ -482,7 +482,11 @@
     Attention 1/105/0→0/21/0，ViT 8/746/0→0/0/0，ToT 2/146/11→0/0/0；「正文少了却不在图位也不是垃圾」的词：0 / 0 / 5 / 4
     （ViT 为伪表格里的断词碎片；ToT 为图下方一个超链接的 URL 被遮罩连带去掉，链接文字保留）。每篇抽取 3.3–7.2 s（v3 2.6–8.8 s 的解析 + 找图）。
     验证：`test_figure_noise.py` 14 项；`test_ingest_evidence_upgrade.py` 的旧用例改为当前版本文档（过期文档改走重洗，另有用例）。
-  - [ ] P4 识图角色：`flow.models.vision`、`describe_image`、测试连接发图。
+  - [x] P4 识图角色：`ROLE_VISION`（不跟随对话模型，`ROLES_FOLLOWING_CHAT` 只含 research / graph）；`ProviderClient.describe_image`
+    （默认不支持；OpenAI 兼容发 `image_url` data URI，400/422 归类为 `no_image_input`；Anthropic 发 base64 图片块；
+    两者都尝试关思考）；`RoleClient.describe_image`；设置 `flow.models.vision`、`flow.import.vision.{enabled,max_concurrency,timeout_sec}`
+    （`VisionConfig`），中英文标签；技能客户端的配置策略快照补 `vision`。验证：`test_vision_provider.py` 5 项。
+    「测试识图」放在 P5 的 `/api/vision/test`（按模型分配测，而不是按连接测）。
   - [ ] P5 识图任务：`kacore/vision_job.py`、`kacore/pipelines/figure_caption_pipeline.py`、`kacore/api_vision.py`、HTTP、日志。
   - [ ] P6 前端：节点开关、模型角色、进度栏、集合菜单、来源显示。
   - [ ] P7 检索整合与收尾：版本 2.1.0-preview、README、CHANGELOG。

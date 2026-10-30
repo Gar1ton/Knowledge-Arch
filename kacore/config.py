@@ -92,6 +92,18 @@ class SourceStoreConfig:
 
 
 @dataclass
+class VisionConfig:
+    """识图（2.1.0）：给 PDF 图表空位写描述。模型在「模型分配」的 vision 角色里选。
+
+    enabled 默认关：每张图是一次付费的识图调用，由用户在集合上手动触发（只补缺失）。
+    """
+
+    enabled: bool = False
+    max_concurrency: int = 2
+    timeout_sec: int = 120
+
+
+@dataclass
 class R2SyncConfig:
     """Cloudflare R2 备份配置。
 
@@ -618,6 +630,16 @@ class Config:
             ),
             sync_mode=sync_mode,
             # rate_limit_rps 固定为平台上限，不从配置读取。
+        )
+
+    def get_vision_config(self) -> VisionConfig:
+        s = _section(self.raw, "vision")
+        return VisionConfig(
+            enabled=bool(s.get("enabled", VisionConfig.enabled)),
+            max_concurrency=min(8, max(1, _int_or_default(
+                s.get("max_concurrency"), VisionConfig.max_concurrency
+            ))),
+            timeout_sec=max(10, _int_or_default(s.get("timeout_sec"), VisionConfig.timeout_sec)),
         )
 
     def get_graph_config(self) -> GraphConfig:

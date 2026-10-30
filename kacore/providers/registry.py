@@ -35,7 +35,7 @@ ClientFactory = Callable[[ProviderProfile, str, str, int, int], ProviderClient]
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 # 引用连接的设置键：删除连接前必须先解除这些引用。
 _REFERENCING_KEYS = ("flow.models.chat", "flow.models.research", "flow.models.graph",
-                     "flow.embedding.source")
+                     "flow.models.vision", "flow.embedding.source")
 
 
 def default_client_factory(

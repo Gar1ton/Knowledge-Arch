@@ -10,6 +10,7 @@ OpenRouter / Ollama / LM Studio / vLLM …）。
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import time
 from typing import Any
@@ -28,6 +29,7 @@ from kacore.domain.llm_generation import (
 from kacore.providers.base import (
     ERROR_AUTH,
     ERROR_BAD_RESPONSE,
+    ERROR_NO_IMAGE_INPUT,
     ERROR_NOT_FOUND,
     ERROR_RATE_LIMITED,
     ERROR_SERVER,
@@ -129,17 +131,61 @@ class OpenAICompatChat(ProviderClient):
         self, prompt: str, system_prompt: str = "", *, allow_mock: bool = True
     ) -> GenerationResult:
         """结构化生成；可重试错误逐次计账，失败消费记为 unknown。"""
-        messages: list[dict[str, str]] = []
+        messages: list[dict[str, Any]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
         payload: dict[str, Any] = {
             "model": self._model, "messages": messages, "temperature": 0.1,
         }
-        thinking_off: dict[str, Any] = {}
-        if thinking_disabled() and self._thinking_off_accepted:
-            thinking_off = openai_compat_thinking_off(self._base_url)
-            payload.update(thinking_off)
+        return await self._complete(
+            payload, prompt, system_prompt, allow_mock=allow_mock, thinking_off=thinking_disabled()
+        )
+
+    async def describe_image(
+        self, prompt: str, image_png: bytes, system_prompt: str = "", *, max_tokens: int = 800
+    ) -> GenerationResult:
+        """OpenAI 兼容图文消息：`image_url` 为 PNG 的 data URI。识图是后台任务，总是尝试关思考。"""
+        data_uri = "data:image/png;base64," + base64.b64encode(image_png).decode("ascii")
+        messages: list[dict[str, Any]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": data_uri}},
+        ]})
+        payload: dict[str, Any] = {
+            "model": self._model, "messages": messages, "temperature": 0.1,
+            "max_tokens": max_tokens,
+        }
+        try:
+            return await self._complete(
+                payload, prompt, system_prompt, allow_mock=False, thinking_off=True
+            )
+        except ProviderError as error:
+            if error.status in _REJECTED_PARAMS_STATUS:
+                # 图文请求被拒，绝大多数是模型或端点不收图片（旧插件实测 embedvl 代理即如此）。
+                raise ProviderError(
+                    ERROR_NO_IMAGE_INPUT,
+                    f"{self._model} rejected the image request (it may not accept images). "
+                    f"{error.message}",
+                    status=error.status,
+                ) from None
+            raise
+
+    async def _complete(
+        self,
+        payload: dict[str, Any],
+        prompt: str,
+        system_prompt: str,
+        *,
+        allow_mock: bool,
+        thinking_off: bool,
+    ) -> GenerationResult:
+        thinking_fields: dict[str, Any] = {}
+        if thinking_off and self._thinking_off_accepted:
+            thinking_fields = openai_compat_thinking_off(self._base_url)
+            payload.update(thinking_fields)
         url = f"{self._base_url}/chat/completions"
         attempts = self._max_retries + 1
         last_error: ProviderError | None = None
@@ -155,15 +201,15 @@ class OpenAICompatChat(ProviderClient):
                 return result
             except Exception as exc:
                 last_error = classify_exception(exc)
-                if thinking_off and last_error.status in _REJECTED_PARAMS_STATUS:
+                if thinking_fields and last_error.status in _REJECTED_PARAMS_STATUS:
                     # 端点不认关闭思考的字段：去掉后立即重试，这次不占重试次数。
                     logger.warning(
                         "Endpoint rejected the thinking-off fields %s model=%s; retrying without",
-                        sorted(thinking_off), self._model,
+                        sorted(thinking_fields), self._model,
                     )
-                    for key in thinking_off:
+                    for key in thinking_fields:
                         payload.pop(key, None)
-                    thinking_off = {}
+                    thinking_fields = {}
                     self._thinking_off_accepted = False
                     attempt -= 1
                     continue

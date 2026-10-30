@@ -1,8 +1,9 @@
-"""ModelRouter：按角色（chat / research / graph）取模型。
+"""ModelRouter：按角色（chat / research / graph / vision）取模型。
 
 `client_for(role)` 返回一个 `RoleClient`，**每次调用时**才读「模型分配」并解析连接与密钥，
 所以在界面里改选模型或替换密钥后立即生效，不需要重启服务。research / graph 未单独分配时
-跟随 chat。没有可用分配时 `configured` 为 False，LLMAdapter 据此走「未配置模型」分支。
+跟随 chat；vision 不跟随（对话模型不一定能看图）。没有可用分配时 `configured` 为 False，
+LLMAdapter 据此走「未配置模型」分支。
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from kacore.providers.base import (
     ERROR_NOT_FOUND,
     ROLE_CHAT,
     ROLES,
+    ROLES_FOLLOWING_CHAT,
     ModelRef,
     ProviderClient,
     ProviderError,
@@ -36,7 +38,7 @@ class ModelRouter:
         if role not in ROLES:
             raise ValueError(f"unknown model role: {role}")
         ref = ModelRef.parse(self._settings.get(f"flow.models.{role}"))
-        if ref is None and role != ROLE_CHAT:
+        if ref is None and role in ROLES_FOLLOWING_CHAT:
             ref = ModelRef.parse(self._settings.get(f"flow.models.{ROLE_CHAT}"))
         return ref
 
@@ -113,6 +115,16 @@ class RoleClient:
                 raise ProviderError(ERROR_NOT_FOUND, f"No model is assigned to “{self._role}” yet")
             return GenerationResult(text="", status=STATUS_EMPTY)
         return await client.generate_result(prompt, system_prompt, allow_mock=allow_mock)
+
+    async def describe_image(
+        self, prompt: str, image_png: bytes, system_prompt: str = "", *, max_tokens: int = 800
+    ) -> GenerationResult:
+        client = self._client()
+        if client is None:
+            raise ProviderError(ERROR_NOT_FOUND, f"No model is assigned to “{self._role}” yet")
+        return await client.describe_image(
+            prompt, image_png, system_prompt, max_tokens=max_tokens
+        )
 
 
 __all__ = ["ModelRouter", "RoleClient"]

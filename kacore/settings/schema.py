@@ -37,6 +37,7 @@ from kacore.config import (
     RerankConfig,
     SourceStoreConfig,
     VectorDbConfig,
+    VisionConfig,
     ZoteroSyncConfig,
 )
 
@@ -113,10 +114,11 @@ _B = CONSEQUENCE_REBUILD
 _MAX_INT = 10**9
 
 SPECS: tuple[SettingSpec, ...] = (
-    # ── 模型分配（3 个角色；research / graph 为空 = 跟随 chat）────────────
+    # ── 模型分配（4 个角色；research / graph 为空 = 跟随 chat；vision 不跟随）──────
     SettingSpec("flow.models.chat", "model_ref", None, "flow.models", nullable=True),
     SettingSpec("flow.models.research", "model_ref", None, "flow.models", nullable=True),
     SettingSpec("flow.models.graph", "model_ref", None, "flow.models", nullable=True),
+    SettingSpec("flow.models.vision", "model_ref", None, "flow.models", nullable=True),
     # ── 本地导入 ────────────────────────────────────────────────────
     SettingSpec(
         "flow.import.default_collection", "str", SourceStoreConfig.default_collection,
@@ -125,6 +127,19 @@ SPECS: tuple[SettingSpec, ...] = (
     SettingSpec(
         "flow.import.ocr_enabled", "bool", SourceStoreConfig.ocr_enabled, "flow.import",
         consequence=_R, target=_t("source_store", "ocr_enabled"),
+    ),
+    # 识图：开关在 Upload/Chunk 节点，模型在「模型分配」的 vision 角色。
+    SettingSpec(
+        "flow.import.vision.enabled", "bool", VisionConfig.enabled, "flow.import",
+        target=_t("vision", "enabled"),
+    ),
+    SettingSpec(
+        "flow.import.vision.max_concurrency", "int", VisionConfig.max_concurrency, "flow.import",
+        tier="advanced", bounds=(1, 8), target=_t("vision", "max_concurrency"),
+    ),
+    SettingSpec(
+        "flow.import.vision.timeout_sec", "int", VisionConfig.timeout_sec, "flow.import",
+        tier="advanced", bounds=(10, 600), target=_t("vision", "timeout_sec"),
     ),
     # ── Zotero ──────────────────────────────────────────────────────
     SettingSpec(

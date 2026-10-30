@@ -24,7 +24,11 @@ PROVIDER_KINDS = (KIND_OPENAI_COMPATIBLE, KIND_ANTHROPIC)
 ROLE_CHAT = "chat"
 ROLE_RESEARCH = "research"
 ROLE_GRAPH = "graph"
-ROLES = (ROLE_CHAT, ROLE_RESEARCH, ROLE_GRAPH)
+# 识图（2.1.0）：给图表空位写描述。必须选一个能收图片的模型，**不跟随对话模型**。
+ROLE_VISION = "vision"
+ROLES = (ROLE_CHAT, ROLE_RESEARCH, ROLE_GRAPH, ROLE_VISION)
+# 未单独分配时跟随对话模型的角色。
+ROLES_FOLLOWING_CHAT = (ROLE_RESEARCH, ROLE_GRAPH)
 
 # 错误分类：界面按 code 给出可读提示，而不是把原始异常文本丢给用户。
 ERROR_AUTH = "auth_invalid"  # 401/403：API Key 无效或无权限
@@ -35,6 +39,7 @@ ERROR_TIMEOUT = "timeout"
 ERROR_SERVER = "server_error"  # 5xx
 ERROR_BAD_RESPONSE = "bad_response"  # 2xx 但响应形状不可用
 ERROR_NO_KEY = "missing_api_key"  # 连接需要密钥但尚未填写
+ERROR_NO_IMAGE_INPUT = "no_image_input"  # 模型或端点不收图片
 
 
 def api_key_ref_for(provider_id: str) -> str:
@@ -133,6 +138,13 @@ class ProviderClient(ABC):
         self, prompt: str, system_prompt: str = "", *, allow_mock: bool = True
     ) -> GenerationResult: ...
 
+    async def describe_image(
+        self, prompt: str, image_png: bytes, system_prompt: str = "", *, max_tokens: int = 800
+    ) -> GenerationResult:
+        """看一张 PNG 图并按 prompt 作答（识图角色）。失败抛 `ProviderError`；
+        端点不收图片时为 `ERROR_NO_IMAGE_INPUT`。默认实现：不支持图片。"""
+        raise ProviderError(ERROR_NO_IMAGE_INPUT, "This connection does not accept image input")
+
     @abstractmethod
     async def list_models(self) -> list[str]: ...
 
@@ -153,6 +165,9 @@ __all__ = [
     "KIND_OPENAI_COMPATIBLE",
     "PROVIDER_KINDS",
     "ROLES",
+    "ROLES_FOLLOWING_CHAT",
+    "ROLE_VISION",
+    "ERROR_NO_IMAGE_INPUT",
     "ROLE_CHAT",
     "ROLE_GRAPH",
     "ROLE_RESEARCH",
