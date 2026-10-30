@@ -9,6 +9,19 @@
 - **PDF 阅读器关键词查找**：工具栏新增查找键（鼠标在阅读器上时 Ctrl/⌘+F），Enter / Shift+Enter 跳下一处 / 上一处，显示 n/m，
   Esc 关闭；不区分大小写，跨行短语也能找到；没有文字层的扫描件给出提示。页面叠加 pdf.js 文字层，顺带可以选中、复制文字
   （`web/frontend/lib/pdfSearch.ts`、`components/panels/PdfPage.tsx`、`PdfPage.module.css`、`PdfSearchBar.tsx`、`PdfViewer.tsx`）。
+- **本地找图与图空位**：上传与重抽取 PDF 时按 PDF 结构找图（位图、矢量绘图簇、`Figure / 图 N` 标题），不调模型、不做 OCR；
+  每张图存一个空位（位置、标题、图内文字），识图描述后补；扫描页只记页码。新迁移 `migrations/027_document_figures.sql`
+  （`kacore/domain/figures.py`、`kacore/managers/figure_detection.py`、`kacore/repository/source_store/figures*.py`、`ingest_manager.py`）。
+- **图块**：每张有标题或图内文字的图生成一个 `chunk_kind=figure` 的块（`Figure N (page p)` + 标题 + 描述 + 图内文字），
+  可被向量、关键词与「Figure N」锚点召回；不续接相邻正文，不进 LightRAG 图谱（`evidence_views.py`、`api.py`）。
+
+### 修复 (Fixed)
+
+- **正文里的图表垃圾**：矢量图表被误判成的伪表格（`|Col1|Col2|…`、成堆 `<br>`、删除线）、自定义字体抽出的乱码行、
+  坐标轴刻度碎行不再进正文；图内文字按位置挪进对应图的空位而不是删除（`kacore/managers/figure_noise.py`、`markdown_extractor.py`）。
+  处理版本升到 `cleaning-v4`：升级后启动时旧文档在后台重新处理（左下角「数据清洗」进度），原 PDF 在的从原件重抽取并补上图空位，
+  不在的从保存的原始页重洗。内容没变的块沿用 embedding 缓存。开发期评测脚本 `dev/eval_body_cleaning.py`。
+- **没有文字的 PDF 反复重切**：扫描件切不出块，以前每次列文档都被判为需要重切；现在处理过一次就不再重复（`ingest_manager.py`）。
 
 ## [v2.0.7] — 2026-10-30
 

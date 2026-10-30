@@ -31,6 +31,7 @@ from kacore.config import (
     VECTOR_BACKEND_MILVUS,
     AskAgentConfig,
 )
+from kacore.domain.figures import is_figure_chunk
 from kacore.domain.llm_generation import (
     STATUS_CONTENT_FILTER,
     STATUS_LENGTH,
@@ -4121,8 +4122,13 @@ class KnowledgeRepositoryApi(
 
         col = await self._resolve_collection(collection)
         docs = await self._lightrag_docs_for_build(col)
+        # 图块不进图谱（2.1.0：图谱只按正文建），估算也只算正文块。
         chunks_by_doc = {
-            doc.doc_id: await self._source_store.list_chunks(doc.doc_id) for doc in docs
+            doc.doc_id: [
+                c for c in await self._source_store.list_chunks(doc.doc_id)
+                if not is_figure_chunk(c.metadata)
+            ]
+            for doc in docs
         }
         graph_cfg = self._config.get_graph_config() if self._config else None
         max_chars = graph_cfg.max_doc_chars if graph_cfg else 0
@@ -5056,7 +5062,10 @@ class KnowledgeRepositoryApi(
         if raw is not None:
             return raw
         chunks = await self._source_store.list_chunks(doc.doc_id)
-        return "\n\n".join(chunk.text for chunk in chunks if chunk.text.strip())
+        return "\n\n".join(
+            chunk.text for chunk in chunks
+            if chunk.text.strip() and not is_figure_chunk(chunk.metadata)
+        )
 
     async def _lightrag_docs_for_build(self, collection: str) -> list[SourceDocument]:
         # 合并单 workspace：以选中集合为根，纳入「父 + 全部后代」的文档（多归属去重）。

@@ -66,10 +66,16 @@ DEFAULT_RENDER_MAX_PIXELS = 1_600_000
 
 @dataclass
 class FigureScan:
-    """一份 PDF 的找图结果。`regions` 是每张图最终区域（含并入的标注），供正文清洗遮罩。"""
+    """一份 PDF 的找图结果。
+
+    `masked_lines` 是并入各图 `inner_text` 的文字行位置（按页），正文清洗据此把它们从正文删去；
+    图区域（`regions_by_page`）用来删掉落在图里的矢量线条。
+    """
 
     figures: list[DocumentFigure] = field(default_factory=list)
     scanned_pages: list[int] = field(default_factory=list)
+    masked_lines: dict[int, list[BBox]] = field(default_factory=dict)
+    failed_pages: list[int] = field(default_factory=list)
     seconds: float = 0.0
 
     def regions_by_page(self) -> dict[int, list[BBox]]:
@@ -314,11 +320,12 @@ def _grow_with_labels(
 
 def _page_figures(
     page: Any, page_no: int, doc_id: str, logos: set[bytes], rect_cls: Any
-) -> list[DocumentFigure]:
+) -> tuple[list[DocumentFigure], list[BBox]]:
+    """本页的图，以及并入图内文字的文字行位置。"""
     page_area = _area(page.rect)
     candidates = _candidates(page, page_area, logos, rect_cls)
     if not candidates:
-        return []
+        return [], []
     lines, blocks = _page_lines(page, rect_cls)
     body = _body_blocks(lines, rect_cls)
     candidates = [c for c in (_split_by_body(c, body, rect_cls) for c in candidates) if c]
@@ -391,10 +398,12 @@ def _page_figures(
     raw.extend((cand.rect, cand.kind, "", "") for cand in uncaptioned)
 
     figures: list[DocumentFigure] = []
+    masked: list[BBox] = []
     claimed: list[Any] = []
     for rect, kind, label, caption in sorted(raw, key=lambda r: (r[0].y0, r[0].x0)):
         grown, taken = _grow_with_labels(rect, lines, blocked + claimed, rect_cls)
         claimed.append(grown)
+        masked.extend((ln.rect.x0, ln.rect.y0, ln.rect.x1, ln.rect.y1) for ln in taken)
         ordinal = len(figures)
         figures.append(DocumentFigure(
             figure_id=figure_id_for(doc_id, page_no, ordinal),
@@ -407,11 +416,11 @@ def _page_figures(
             caption=re.sub(r"\s+", " ", caption).strip(),
             inner_text="\n".join(line.text for line in taken),
         ))
-    return figures
+    return figures, masked
 
 
 def detect_figures(doc: Any, doc_id: str) -> FigureScan:
-    """对已打开的 pymupdf.Document 找图。不改动文档；异常页跳过并继续。"""
+    """对已打开的 pymupdf.Document 找图。不改动文档；出错的页记入 failed_pages 后继续。"""
     import pymupdf
 
     started = time.perf_counter()
@@ -425,7 +434,14 @@ def detect_figures(doc: Any, doc_id: str) -> FigureScan:
         if _is_scanned_page(page, page_area, pymupdf.Rect):
             scan.scanned_pages.append(page_no)
             continue
-        scan.figures.extend(_page_figures(page, page_no, doc_id, logos, pymupdf.Rect))
+        try:
+            figures, masked = _page_figures(page, page_no, doc_id, logos, pymupdf.Rect)
+        except Exception:  # 个别畸形页不能拖垮整篇：这一页不找图，正文照常
+            scan.failed_pages.append(page_no)
+            continue
+        scan.figures.extend(figures)
+        if masked:
+            scan.masked_lines[page_no] = masked
     scan.seconds = time.perf_counter() - started
     return scan
 

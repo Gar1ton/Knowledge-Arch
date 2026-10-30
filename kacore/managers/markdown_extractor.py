@@ -15,11 +15,12 @@ from __future__ import annotations
 import importlib.metadata
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from kacore.domain.figures import DocumentFigure
 from kacore.domain.footnotes import FootnoteBlock
 from kacore.managers.artifact_cleaning import clean_page_structure
+from kacore.managers.figure_noise import mask_figure_text, strip_figure_noise
 from kacore.managers.footnote_linking import link_footnotes
 from kacore.managers.marginal_noise import (
     access_stamp_indices,
@@ -28,6 +29,9 @@ from kacore.managers.marginal_noise import (
     remove_inline_access_stamps,
 )
 from kacore.managers.structural_protection import protected_line_mask
+
+if TYPE_CHECKING:
+    from kacore.managers.figure_detection import FigureScan
 
 # 与 requirements.txt 的 `pymupdf4llm>=0.0.17,<0.1.0` 对齐的内置参考版本。
 # 不 vendor 源码（规避 AGPL 分发义务），仅记录所依赖的精确版本号。
@@ -262,13 +266,44 @@ def join_cleaned_markdown_pages(
     return "".join(parts), spans
 
 
-def extract_pdf_markdown(pdf_path: str) -> MarkdownArtifact:
+def clean_raw_pages(
+    page_numbers: list[int], raw_page_texts: list[str]
+) -> tuple[str, list[PageSpan], list[FootnoteBlock]]:
+    """逐页原始 Markdown → clean.md + 页区间 + 脚注。
+
+    抽取与「从 provenance 原始页重洗」共用同一条路径，保证两者结果一致。
+    图表污染（L1）先以等长空格抹掉，脚注的原始页偏移因此不受影响。
+    """
+    cleaned_pages: list[str] = []
+    footnotes: list[FootnoteBlock] = []
+    repeated = _detect_repeated_marginal_headers(raw_page_texts)
+    for page_no, raw in zip(page_numbers, raw_page_texts):
+        stripped = strip_figure_noise(raw, preserve_offsets=True)
+        masked = _remove_marginal_noise(stripped, repeated, preserve_offsets=True)
+        body, notes = clean_page_structure(masked, page=page_no)
+        cleaned_pages.append(body)
+        footnotes.extend(notes)
+    repeated = _detect_repeated_marginal_headers(cleaned_pages)
+    cleaned_pages = [_remove_marginal_noise(text, repeated) for text in cleaned_pages]
+    footnotes = [
+        note for page_no, body in zip(page_numbers, cleaned_pages)
+        for note in link_footnotes(body, [n for n in footnotes if n.page == page_no])
+    ]
+    clean_markdown, spans = join_cleaned_markdown_pages(cleaned_pages, page_numbers)
+    return clean_markdown, spans, footnotes
+
+
+def extract_pdf_markdown(
+    pdf_path: str, *, figure_scan: FigureScan | None = None
+) -> MarkdownArtifact:
     """把 PDF 转为干净 Markdown 并记录每页字符区间。
 
     用 `page_chunks=True` 拿到逐页 Markdown，按确定规则（去首尾空行 + 单空行拼接）拼装成 clean.md，
-    同时记录每页 [start,end) 连续区间。失败/缺依赖抛带指引的 RuntimeError。
+    同时记录每页 [start,end) 连续区间。给了 figure_scan 时，先在内存副本上删掉图内文字与图里的
+    矢量线条（L2），原 PDF 不改。失败/缺依赖抛带指引的 RuntimeError。
     """
     try:
+        import pymupdf
         import pymupdf4llm
     except ImportError as exc:  # 缺 pinned 依赖：给出安装指引（沿用可选依赖懒加载范式）。
         raise RuntimeError(
@@ -276,12 +311,15 @@ def extract_pdf_markdown(pdf_path: str) -> MarkdownArtifact:
             "'pymupdf4llm>=0.0.17,<0.1.0' 'PyMuPDF>=1.24,<2.0'"
         ) from exc
 
-    page_dicts = pymupdf4llm.to_markdown(
-        str(pdf_path),
-        page_chunks=True,
-        page_separators=False,
-        ignore_alpha=True,
-    )
+    with pymupdf.open(str(pdf_path)) as doc:
+        if figure_scan is not None and (figure_scan.figures or figure_scan.masked_lines):
+            mask_figure_text(doc, figure_scan)
+        page_dicts = pymupdf4llm.to_markdown(
+            doc,
+            page_chunks=True,
+            page_separators=False,
+            ignore_alpha=True,
+        )
 
     pdf_metadata: dict[str, Any] = {}
     page_numbers: list[int] = []
@@ -299,21 +337,7 @@ def extract_pdf_markdown(pdf_path: str) -> MarkdownArtifact:
         page_numbers.append(page_no)
         raw_page_texts.append(_normalize_newlines(raw_text))
 
-    cleaned_pages: list[str] = []
-    footnotes: list[FootnoteBlock] = []
-    repeated = _detect_repeated_marginal_headers(raw_page_texts)
-    for page_no, raw in zip(page_numbers, raw_page_texts):
-        masked = _remove_marginal_noise(raw, repeated, preserve_offsets=True)
-        body, notes = clean_page_structure(masked, page=page_no)
-        cleaned_pages.append(body)
-        footnotes.extend(notes)
-    repeated = _detect_repeated_marginal_headers(cleaned_pages)
-    cleaned_pages = [_remove_marginal_noise(text, repeated) for text in cleaned_pages]
-    footnotes = [
-        note for page_no, body in zip(page_numbers, cleaned_pages)
-        for note in link_footnotes(body, [n for n in footnotes if n.page == page_no])
-    ]
-    clean_markdown, spans = join_cleaned_markdown_pages(cleaned_pages, page_numbers)
+    clean_markdown, spans, footnotes = clean_raw_pages(page_numbers, raw_page_texts)
     return MarkdownArtifact(
         clean_markdown=clean_markdown,
         page_spans=spans,
@@ -348,6 +372,7 @@ __all__ = [
     "installed_pymupdf4llm_version",
     "post_clean_markdown_pages",
     "join_cleaned_markdown_pages",
+    "clean_raw_pages",
     "extract_pdf_markdown",
     "build_single_page_artifact",
 ]

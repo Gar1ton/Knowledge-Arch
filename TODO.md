@@ -471,7 +471,17 @@
     实测：ResNet 7/7、Attention 5/5、ViT 12/12、ToT 5/6（图 4 内全是正文字号的长段，保守不收）；每篇 0.4–2.0 s。
     验证：`test_figures.py` 10 项（合成 PDF：图表 + 刻度、真表格、重复 logo、扫描页；两种仓储契约；摄入与重抽取保留描述）。
   - [x] 既有问题：没有文字的 PDF 每次列文档都反复重切 —— `chunk_needs_rebuild` 对 `text_empty` 的文档不再要求重切。
-  - [ ] P3 正文去污染：L1 + L2 + L3 评测，`cleaning-v4` 与后台重抽取。
+  - [x] P3 正文去污染：`kacore/managers/figure_noise.py`。L1（伪表格：ColN 表头且多为空格子 / 删除线 / `<br>` 堆叠 / 乱码；
+    乱码行：拉丁扩展 / IPA / 修饰符占字母 ≥40%；连续 ≥3 行短数字的刻度）；L2（抽正文前在内存副本上逐行删图内文字、
+    删完全落在图区域里的矢量线条，原 PDF 不改；图标题留在正文）。`clean_raw_pages` 让抽取与「从原始页重洗」共用一条路径。
+    图块：`figure_chunk_text`（`Figure N (page p)` + 标题 + 描述 + 图内文字，≤1500 字），排在正文块之后，
+    `chunk_kind=figure`、`anchor_labels` 带 `FIGURE N`；图块不续接相邻正文（`evidence_views.py`），不进 LightRAG（`api.py`）。
+    `PROCESSING_VERSION` → `cleaning-v4`：启动时旧文档被标记重建，后台「数据清洗」阶段对原 PDF 还在的走重抽取（含找图），
+    不在的从 provenance 原始页重洗。
+    L3：`dev/eval_body_cleaning.py`（对比 v3，守恒检查）。实测（伪表格 / `<br>` / 乱码行，前→后）：ResNet 5/258/0→0/228/0，
+    Attention 1/105/0→0/21/0，ViT 8/746/0→0/0/0，ToT 2/146/11→0/0/0；「正文少了却不在图位也不是垃圾」的词：0 / 0 / 5 / 4
+    （ViT 为伪表格里的断词碎片；ToT 为图下方一个超链接的 URL 被遮罩连带去掉，链接文字保留）。每篇抽取 3.3–7.2 s（v3 2.6–8.8 s 的解析 + 找图）。
+    验证：`test_figure_noise.py` 14 项；`test_ingest_evidence_upgrade.py` 的旧用例改为当前版本文档（过期文档改走重洗，另有用例）。
   - [ ] P4 识图角色：`flow.models.vision`、`describe_image`、测试连接发图。
   - [ ] P5 识图任务：`kacore/vision_job.py`、`kacore/pipelines/figure_caption_pipeline.py`、`kacore/api_vision.py`、HTTP、日志。
   - [ ] P6 前端：节点开关、模型角色、进度栏、集合菜单、来源显示。

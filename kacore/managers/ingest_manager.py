@@ -23,7 +23,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from kacore.domain.figures import merge_figure_descriptions
+from kacore.domain.figures import (
+    CHUNK_KIND_BODY,
+    CHUNK_KIND_FIGURE,
+    DocumentFigure,
+    figure_chunk_text,
+    merge_figure_descriptions,
+)
 from kacore.domain.filename_biblio import parse_filename_biblio
 from kacore.domain.models import (
     DocumentChunk,
@@ -41,12 +47,17 @@ from kacore.managers.artifact_provenance import (
 )
 from kacore.managers.base import BaseIngestManager
 from kacore.managers.chunk_token_limits import limit_chunk_spans
-from kacore.managers.chunking import CHUNK_SCHEMA, build_structural_chunk_spans
+from kacore.managers.chunking import (
+    CHUNK_SCHEMA,
+    build_structural_chunk_spans,
+    normalize_anchor_label,
+)
 from kacore.managers.figure_detection import detect_figures_in_file
 from kacore.managers.markdown_extractor import (
     MarkdownArtifact,
     PageSpan,
     build_single_page_artifact,
+    clean_raw_pages,
     extract_pdf_markdown,
     join_cleaned_markdown_pages,
     post_clean_markdown_pages,
@@ -59,6 +70,7 @@ from kacore.utils.processing_lock import (
 
 if TYPE_CHECKING:
     from kacore.config import SourceStoreConfig
+    from kacore.managers.figure_detection import FigureScan
     from kacore.repository.source_store.base import SourceDocumentStore
 
 # 本地合成库标识（与 SourceDocument.library_id 默认值一致）。
@@ -74,8 +86,6 @@ _ARTIFACT_PAGES = "pages.json"
 _ARTIFACT_META = "meta.json"
 _CHUNK_SCHEMA = CHUNK_SCHEMA
 
-CHUNK_KIND_BODY = "body"
-CHUNK_KIND_FIGURE = "figure"
 # local_meta 键：正文为空（扫描件）、扫描页页码、图空位数量。
 META_TEXT_EMPTY = "text_empty"
 META_SCANNED_PAGES = "scanned_pages"
@@ -293,7 +303,8 @@ class IngestManager(BaseIngestManager):
                 json.dumps(meta_payload, ensure_ascii=False, indent=2), encoding="utf-8"
             )
 
-            # 3) clean.md 上的字符区间分块（offset 不变量）
+            # 3) clean.md 上的字符区间分块（offset 不变量）+ 图块
+            figures = await self._merged_figures(document_id, artifact)
             chunks = await asyncio.to_thread(
                 self._chunk_artifact,
                 document_id=document_id,
@@ -301,6 +312,7 @@ class IngestManager(BaseIngestManager):
                 item_key=item_key,
                 attachment_key=attachment_key,
                 artifact=artifact,
+                figures=figures,
             )
             page_chunks = [
                 PageChunk(
@@ -347,7 +359,7 @@ class IngestManager(BaseIngestManager):
                 doc.local_meta = {**existing.local_meta, **doc.local_meta}
                 await self._source_store.update_document(doc)
             document_added = existing is None
-            await self._store_figures(document_id, artifact)
+            await self._source_store.replace_document_figures(document_id, figures)
             await self._source_store.replace_chunks(document_id, chunks)
             await self._source_store.replace_page_chunks(document_id, page_chunks)
         except Exception:
@@ -376,7 +388,7 @@ class IngestManager(BaseIngestManager):
         doc = await self._source_store.get_document(document_id)
         if doc is None:
             raise FileNotFoundError(f"Document not found: {document_id}")
-        if doc.local_meta.get("processing_pending"):
+        if doc.local_meta.get("processing_pending") or self._prefers_reextract(doc):
             result = await self.reextract_document(document_id)
             return int(result["chunk_count"])
         clean_path = self._resolve_artifact_path(doc, doc.markdown_rel_path or _ARTIFACT_MD)
@@ -406,6 +418,7 @@ class IngestManager(BaseIngestManager):
             item_key=doc.zotero_item_key,
             attachment_key=doc.attachment_key,
             artifact=artifact,
+            figures=await self._source_store.list_document_figures(doc.doc_id),
         )
         doc.needs_reindex = True
         doc.local_meta = {**doc.local_meta, "chunk_schema": _CHUNK_SCHEMA,
@@ -432,12 +445,8 @@ class IngestManager(BaseIngestManager):
             raise FileNotFoundError(f"Document not found: {doc_id}")
 
         # 定位原件：优先制品包内 original.pdf，其次 file_path（Zotero linked 模式）。
-        bundle_pdf = self._library_dir / doc_id / _ARTIFACT_PDF
-        if bundle_pdf.is_file():
-            source_pdf = bundle_pdf
-        elif doc.file_path and Path(doc.file_path).is_file():
-            source_pdf = Path(doc.file_path)
-        else:
+        source_pdf = self._source_pdf(doc)
+        if source_pdf is None:
             raise FileNotFoundError(
                 f"Original PDF not found for {doc_id}. "
                 "Restore the original file and retry processing."
@@ -480,7 +489,8 @@ class IngestManager(BaseIngestManager):
             json.dumps(pages_payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-        # 重新分块并替换 SQLite 中的 chunks。
+        # 重新分块并替换 SQLite 中的 chunks（含图块）。
+        figures = [] if recover_text else await self._merged_figures(doc_id, artifact)
         chunks = await asyncio.to_thread(
             self._chunk_artifact,
             document_id=doc.doc_id,
@@ -488,6 +498,7 @@ class IngestManager(BaseIngestManager):
             item_key=doc.zotero_item_key,
             attachment_key=doc.attachment_key,
             artifact=artifact,
+            figures=figures,
         )
 
         # 更新元数据并标记待重建。
@@ -497,7 +508,7 @@ class IngestManager(BaseIngestManager):
         doc.local_meta = {**doc.local_meta, "chunk_schema": _CHUNK_SCHEMA,
                           "processing_version": PROCESSING_VERSION, **_artifact_meta(artifact)}
         if not recover_text:
-            await self._store_figures(doc_id, artifact)
+            await self._source_store.replace_document_figures(doc_id, figures)
         await self._source_store.commit_document_processing(doc, chunks, [
             PageChunk(doc.doc_id, span.page, span.start, span.end) for span in artifact.page_spans
         ])
@@ -507,6 +518,31 @@ class IngestManager(BaseIngestManager):
             doc_id, len(chunks), artifact.converter_version,
         )
         return {"chunk_count": len(chunks), "converter_version": artifact.converter_version}
+
+    def _source_pdf(self, doc: SourceDocument) -> Path | None:
+        """原件 PDF：制品包内 original.pdf 优先，其次 Zotero linked 模式的外部路径。"""
+        bundle_pdf = self._library_dir / doc.doc_id / _ARTIFACT_PDF
+        if bundle_pdf.is_file():
+            return bundle_pdf
+        if doc.file_path and Path(doc.file_path).is_file():
+            return Path(doc.file_path)
+        return None
+
+    def _prefers_reextract(self, doc: SourceDocument) -> bool:
+        """处理版本过期的 PDF 且原件还在：从原 PDF 重抽取（含找图与图文遮罩），而不只是重洗文字。"""
+        if doc.local_meta.get("processing_version") == PROCESSING_VERSION:
+            return False
+        declared_pdf = doc.content_type == "application/pdf" or (
+            not doc.content_type and doc.file_path.lower().endswith(".pdf")
+        )
+        source = self._source_pdf(doc) if declared_pdf else None
+        if source is None:
+            return False
+        try:  # 文本上传的副本也叫 original.pdf：只认真正的 PDF
+            with source.open("rb") as fh:
+                return fh.read(5) == b"%PDF-"
+        except OSError:
+            return False
 
     def _resolve_artifact_path(self, doc: SourceDocument, rel_path: str) -> Path | None:
         candidates = [
@@ -523,6 +559,16 @@ class IngestManager(BaseIngestManager):
         clean_md = clean_path.read_text(encoding="utf-8")
         page_spans = self._load_page_spans(doc, len(clean_md))
         original_pages, notes = load_provenance(clean_path.parent)
+        stale = doc.local_meta.get("processing_version") != PROCESSING_VERSION
+        if stale and original_pages and len(original_pages) == len(page_spans):
+            # 清洗规则升级（如去图表污染）：从保存的原始页重洗，不需要原 PDF。
+            clean_markdown, spans, footnotes = clean_raw_pages(
+                [span.page for span in page_spans], original_pages
+            )
+            return MarkdownArtifact(
+                clean_markdown, spans, raw_pages=original_pages, footnotes=footnotes,
+                converter=doc.converter or "clean_md", converter_version=doc.converter_version,
+            )
         if original_pages or notes:
             return MarkdownArtifact(clean_md, page_spans, raw_pages=original_pages, footnotes=notes)
         raw_pages = [clean_md[span.start:span.end] for span in page_spans] or [clean_md]
@@ -589,15 +635,17 @@ class IngestManager(BaseIngestManager):
                 return True
         return False
 
-    async def _store_figures(self, doc_id: str, artifact: MarkdownArtifact) -> None:
-        """写入本次找到的图空位，并接上同位置旧空位已有的描述（不重复调用识图模型）。"""
+    async def _merged_figures(
+        self, doc_id: str, artifact: MarkdownArtifact
+    ) -> list[DocumentFigure]:
+        """本次找到的图空位接上同位置旧空位已有的描述（不重复调用识图模型）；不落库。"""
         previous = await self._source_store.list_document_figures(doc_id)
         figures = merge_figure_descriptions(artifact.figures, previous)
         now = datetime.now(timezone.utc).isoformat()
         for fig in figures:
             fig.doc_id = doc_id
             fig.updated_at = fig.updated_at or now
-        await self._source_store.replace_document_figures(doc_id, figures)
+        return figures
 
     # ── 抽取 ──────────────────────────────────────────────────────
 
@@ -619,18 +667,23 @@ class IngestManager(BaseIngestManager):
         suffix = path.suffix.lower()
         is_pdf = content_type == "application/pdf" or suffix == ".pdf"
         if is_pdf:
-            artifact = extract_pdf_markdown(str(path))
+            # 先找图：图内文字的位置要在抽正文前遮掉（L2），找图失败则照旧抽正文、没有空位。
+            scan: FigureScan | None = None
             try:
                 scan = detect_figures_in_file(str(path), doc_id)
-            except Exception as exc:  # 找图失败不能拖垮摄入：没有空位，正文照常
+            except Exception as exc:
                 self.logger.warning("Figure detection failed for %s: %s", doc_id or path.name, exc)
             else:
+                self.logger.debug(
+                    "Figure detection %s: %d figures, %d masked lines, scanned pages %s, %.2fs",
+                    doc_id or path.name, len(scan.figures),
+                    sum(len(v) for v in scan.masked_lines.values()), scan.scanned_pages,
+                    scan.seconds,
+                )
+            artifact = extract_pdf_markdown(str(path), figure_scan=scan)
+            if scan is not None:
                 artifact.figures = scan.figures
                 artifact.scanned_pages = scan.scanned_pages
-                self.logger.debug(
-                    "Figure detection %s: %d figures, scanned pages %s, %.2fs",
-                    doc_id or path.name, len(scan.figures), scan.scanned_pages, scan.seconds,
-                )
             return artifact
         if suffix in (".txt", ".md", ".markdown"):
             return build_single_page_artifact(path.read_text(encoding="utf-8", errors="replace"))
@@ -647,6 +700,7 @@ class IngestManager(BaseIngestManager):
         item_key: str,
         attachment_key: str,
         artifact: MarkdownArtifact,
+        figures: list[DocumentFigure] | None = None,
     ) -> list[DocumentChunk]:
         md = artifact.clean_markdown
         chunk_size = getattr(self._config, "chunk_size", 1000)
@@ -701,6 +755,59 @@ class IngestManager(BaseIngestManager):
                     metadata=metadata,
                 )
             )
+        chunks.extend(self._figure_chunks(
+            document_id, figures or [], revision, len(chunks),
+            item_key=item_key if is_zotero else "", attachment_key=attachment_key,
+        ))
+        return chunks
+
+
+    @staticmethod
+    def _figure_chunks(
+        document_id: str,
+        figures: list[DocumentFigure],
+        revision: str,
+        first_ordinal: int,
+        *,
+        item_key: str = "",
+        attachment_key: str = "",
+    ) -> list[DocumentChunk]:
+        """图块：排在正文块之后，标题 + 模型描述 + 图内文字。不在 clean.md 上，没有正文偏移。
+
+        图标签（如 FIGURE 3）写进 anchor_labels，检索的图表锚点直达可以命中图块。
+        """
+        chunks: list[DocumentChunk] = []
+        for fig in figures:
+            text = figure_chunk_text(fig)
+            if not text:
+                continue
+            anchor = normalize_anchor_label(fig.label) if fig.label else ""
+            metadata: dict[str, Any] = {
+                "chunk_kind": CHUNK_KIND_FIGURE,
+                "figure_id": fig.figure_id,
+                "figure_label": fig.label,
+                "figure_status": fig.status,
+                "figure_bbox": list(fig.bbox),
+                "pages": [fig.page],
+                "page_number": fig.page,
+                "locator": f"page_{fig.page}_{fig.figure_id}",
+                "anchor_labels": [anchor] if anchor else [],
+                "revision_id": revision,
+                "processing_version": PROCESSING_VERSION,
+            }
+            if item_key:
+                metadata["zotero_item_uri"] = f"zotero://select/library/items/{item_key}"
+                metadata["zotero_pdf_uri"] = (
+                    f"zotero://open-pdf/library/items/{attachment_key}?page={fig.page}"
+                )
+            chunks.append(DocumentChunk(
+                chunk_id=f"{document_id}_f{fig.page:03d}{fig.ordinal:02d}_r{revision}",
+                doc_id=document_id,
+                ordinal=first_ordinal + len(chunks),
+                text=text,
+                content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                metadata=metadata,
+            ))
         return chunks
 
 

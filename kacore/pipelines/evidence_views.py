@@ -114,6 +114,8 @@ async def build_evidence_views(
                 and not (requests & {"expand_before", "expand_after"})
             ) or not source.metadata.get("revision_id"):
                 break
+            if source.metadata.get("chunk_kind", "body") != "body":
+                break  # 图块排在正文块之后，序号相邻的正文与它无关，不续接
             if source.doc_id not in documents:
                 documents[source.doc_id] = await store.list_chunks(source.doc_id)
             neighbor = next(

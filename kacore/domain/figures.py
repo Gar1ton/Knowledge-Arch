@@ -26,6 +26,12 @@ KIND_RASTER = "raster"  # 位图
 KIND_VECTOR = "vector"  # 矢量绘图（图表、流程图）
 KIND_MIXED = "mixed"  # 位图与矢量拼成的一张图
 
+# chunk 的 metadata["chunk_kind"]：正文块与图块。图块不在 clean.md 上，没有正文字符偏移。
+CHUNK_KIND_BODY = "body"
+CHUNK_KIND_FIGURE = "figure"
+# 图块里图内文字的上限：流程图 / 示例图可能有上千字，全塞进去会冲淡标题与描述。
+_INNER_TEXT_CHUNK_CHARS = 1500
+
 # 位置取整粒度（点）：同一 PDF 重新抽取时 bbox 有浮点抖动，取整后才能稳定匹配。
 _MATCH_GRID = 4.0
 
@@ -59,11 +65,28 @@ class DocumentFigure:
         x0, y0, x1, y1 = (round(v / _MATCH_GRID) for v in self.bbox)
         return (self.page, x0, y0, x1, y1)
 
-    @property
-    def searchable_text(self) -> str:
-        """图 chunk 的正文：标题 + 模型描述 + 图内文字；三者都空时为空串（不建 chunk）。"""
-        parts = [self.caption.strip(), self.description.strip(), self.inner_text.strip()]
-        return "\n\n".join(part for part in parts if part)
+
+def figure_chunk_text(fig: DocumentFigure) -> str:
+    """图块正文：`Figure 3 (page 5)` + 标题 + 模型描述 + 图内文字。三者都空时返回空串（不建块）。"""
+    caption = fig.caption.strip()
+    description = fig.description.strip()
+    inner = " · ".join(line.strip() for line in fig.inner_text.splitlines() if line.strip())
+    if not (caption or description or inner):
+        return ""
+    if len(inner) > _INNER_TEXT_CHUNK_CHARS:
+        inner = inner[:_INNER_TEXT_CHUNK_CHARS].rstrip() + " …"
+    parts = [f"{fig.label or 'Figure'} (page {fig.page})"]
+    if caption:
+        parts.append(caption)
+    if description:
+        parts.append(f"Figure description: {description}")
+    if inner:
+        parts.append(f"Text in figure: {inner}")
+    return "\n\n".join(parts)
+
+
+def is_figure_chunk(metadata: dict[str, object]) -> bool:
+    return metadata.get("chunk_kind") == CHUNK_KIND_FIGURE
 
 
 def figure_id_for(doc_id: str, page: int, ordinal: int) -> str:
@@ -100,6 +123,8 @@ def merge_figure_descriptions(
 
 __all__ = [
     "BBox",
+    "CHUNK_KIND_BODY",
+    "CHUNK_KIND_FIGURE",
     "DocumentFigure",
     "FIGURE_DONE",
     "FIGURE_FAILED",
@@ -110,6 +135,8 @@ __all__ = [
     "KIND_MIXED",
     "KIND_RASTER",
     "KIND_VECTOR",
+    "figure_chunk_text",
     "figure_id_for",
+    "is_figure_chunk",
     "merge_figure_descriptions",
 ]
