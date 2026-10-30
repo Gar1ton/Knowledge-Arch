@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from kacore.repository.reranker import PROVIDER_NOOP, PROVIDER_REMOTE
 from kacore.utils.torch_memory import accelerator_snapshot, release_accelerator_cache
 
 if TYPE_CHECKING:
@@ -29,6 +30,8 @@ MODEL_KINDS = (KIND_EMBEDDING, KIND_RERANK)
 # rerank 侧 status["status"] 的取值与 embedding 侧 runtime_status["state"] 同名同义
 # （idle/loading/ready/failed），面板只认后者，故此处只做键名对齐。
 _RERANK_STATE_KEY = "status"
+# 线上模型（embedding / rerank）：不占本机显存、没有可卸载的东西。
+STATE_EXTERNAL = "external"
 
 
 class RuntimeModelsApiMixin:
@@ -47,11 +50,13 @@ class RuntimeModelsApiMixin:
             logger.warning("Failed to read the embedding runtime state: %s", exc)
             return None
         status["kind"] = KIND_EMBEDDING
-        status.setdefault("state", "external")
+        status.setdefault("state", STATE_EXTERNAL)
         status.setdefault("model", None)
         return status
 
     def _rerank_runtime(self) -> dict[str, Any] | None:
+        """本地 cross-encoder 报驻留态；线上 rerank 报 `external`（与线上 embedding 同义）；
+        不重排（noop）不占任何模型，不出现在列表里。"""
         reranker = getattr(self, "_reranker", None)
         if reranker is None:
             return None
@@ -60,10 +65,17 @@ class RuntimeModelsApiMixin:
         except Exception as exc:
             logger.warning("Failed to read the rerank runtime state: %s", exc)
             return None
+        provider = raw.get("provider", "unknown")
+        if provider == PROVIDER_NOOP:
+            return None
+        state = (
+            STATE_EXTERNAL if provider == PROVIDER_REMOTE
+            else raw.get(_RERANK_STATE_KEY, "idle")
+        )
         return {
             "kind": KIND_RERANK,
-            "provider": raw.get("provider", "unknown"),
-            "state": raw.get(_RERANK_STATE_KEY, "idle"),
+            "provider": provider,
+            "state": state,
             "model": raw.get("model"),
             "device": raw.get("device", ""),
             "enabled": raw.get("enabled", True),
@@ -125,4 +137,6 @@ class RuntimeModelsApiMixin:
         return runtime
 
 
-__all__ = ["KIND_EMBEDDING", "KIND_RERANK", "MODEL_KINDS", "RuntimeModelsApiMixin"]
+__all__ = [
+    "KIND_EMBEDDING", "KIND_RERANK", "MODEL_KINDS", "STATE_EXTERNAL", "RuntimeModelsApiMixin",
+]

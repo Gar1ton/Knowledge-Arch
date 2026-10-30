@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+## [v2.0.7] — 2026-10-30
+
+### 修复 (Fixed)
+
+- **本地模型面板把线上 Rerank 显示成本地模型**：选了线上 rerank 时，偏好设置「本地模型」里有一行「Rerank · 已卸载」并带卸载键，
+  看起来像在本机拉起了重排模型；不重排时这一行显示未翻译的状态名。`kacore/api_runtime_models.py` 对线上 rerank 报 `external`
+  （界面显示「远端」，与线上 Embedding 一致，不计入驻留数），不重排时不列出；`components/panels/ModelRuntimePanel.tsx`
+  对远端行不显示卸载键。排查确认：选线上或不重排时不会构造本地 cross-encoder、不会 import sentence-transformers，
+  不会下载本地模型（`tests/backend/test_model_runtime.py` 新增回归）。
+
+### 改进 (Changed)
+
+- **LightRAG Collection 默认收起**：`components/panels/FilePanel.tsx`，点标题右侧箭头展开；构建进度仍在左下角进度栏显示。
+
 ## [v2.0.6] — 2026-10-29
 
 ### 新增 (Added)

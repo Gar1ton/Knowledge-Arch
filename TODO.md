@@ -444,3 +444,12 @@
     界面无 `_uncategorized`；Zotero（探针返回已存 key）自动刷新 3 轮后仍显示 key 与用户名——还原旧 `FlowPageContent.tsx`
     时同一检查变成「Not set」。重启后端：预置的 `_uncategorized`（1 篇）并回 default 并消失。
     未验证：真实 Zotero Web API key 的保存（需真实账号）；接真实模型的单篇深度思考效果；桌面壳里实测。
+- [x] P25 · 2.0.7（2.0.6 之后的修复）。
+  - [x] ① 文件面板的 LightRAG Collection 区默认收起（`FilePanel.tsx` 的 `lightragOpen` 初值）。
+  - [x] ② 偏好设置「本地模型」面板把线上 rerank 显示成「已卸载」的本地模型、不重排时显示未翻译的 `models_state_off`：
+    `kacore/api_runtime_models.py` 的 `_rerank_runtime` 对线上 rerank 报 `external`（与线上 embedding 同义），noop 不列出；
+    `ModelRuntimePanel.tsx` 对 `external` 行不显示卸载键。排查结论：选线上或不重排时不会构造本地 cross-encoder、
+    不会 import sentence-transformers（新增回归测试）；只有显式 `cross_encoder` 或 `auto` 且已装本地组件时才会用本地模型。
+  - [x] ③ 版本号 2.0.7。
+  - 验证：pytest 1503 passed / 3 skipped（`test_model_runtime.py` 新增 5 项）；ruff；mypy；eslint；tsc；`next build`。
+    未验证：桌面壳里实测面板（逻辑由单测覆盖）。

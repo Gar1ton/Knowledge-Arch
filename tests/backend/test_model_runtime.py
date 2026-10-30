@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from kacore.api import KnowledgeRepositoryApi
-from kacore.api_runtime_models import KIND_EMBEDDING, KIND_RERANK
+from kacore.api_runtime_models import KIND_EMBEDDING, KIND_RERANK, STATE_EXTERNAL
 from kacore.repository.embedding.base import EmbeddingProvider
 from kacore.repository.embedding.cached import CachedEmbeddingProvider
 from kacore.repository.reranker.base import Reranker, ScoredChunk
@@ -221,3 +221,67 @@ async def test_unload_models_empty_selection_means_all(kinds) -> None:
 
     assert embedding.unload_calls == 1
     assert reranker.close_calls == 1
+
+
+# ── 线上 / 不重排：不冒充本地模型 ─────────────────────────────
+
+
+async def test_remote_reranker_is_reported_as_external() -> None:
+    """线上 rerank 不占显存：面板显示「远端」，不计入驻留数（此前显示为「已卸载」的本地模型）。"""
+    from kacore.repository.reranker.remote import RemoteReranker
+
+    reranker = RemoteReranker(base_url="https://api.example.com/v1", model="cloud-rerank")
+
+    runtime = await _api(reranker=reranker).get_model_runtime()
+
+    assert runtime["models"] == [{
+        "kind": KIND_RERANK,
+        "provider": "remote",
+        "state": STATE_EXTERNAL,
+        "model": "cloud-rerank",
+        "device": "",
+        "enabled": True,
+        "last_error": None,
+    }]
+    assert runtime["resident_count"] == 0
+
+
+async def test_noop_reranker_is_not_listed() -> None:
+    runtime = await _api(_FakeLocalEmbedding(), NoopReranker()).get_model_runtime()
+
+    assert [m["kind"] for m in runtime["models"]] == [KIND_EMBEDDING]
+
+
+@pytest.mark.parametrize(
+    ("provider", "base_url", "expected"),
+    [("remote", "https://api.example.com/v1", "RemoteReranker"),
+     ("noop", "", "NoopReranker"),
+     ("remote", "", "NoopReranker")],
+)
+def test_cloud_or_noop_rerank_never_loads_sentence_transformers(
+    monkeypatch: pytest.MonkeyPatch, provider: str, base_url: str, expected: str,
+) -> None:
+    """线上或不重排：不构造本地 cross-encoder、不 import sentence-transformers（防意外下载）。"""
+    import builtins
+    import sys
+
+    from kacore.config import Config
+    from kacore.repository.reranker import build_reranker
+
+    real_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name.split(".")[0] == "sentence_transformers":
+            raise AssertionError("sentence_transformers must not be imported")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.delitem(sys.modules, "sentence_transformers", raising=False)
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    cfg = Config({"rerank": {"provider": provider, "model": "cloud-rerank", "base_url": base_url}})
+    rerank_cfg = cfg.get_rerank_config()
+
+    reranker = build_reranker(
+        provider=rerank_cfg.provider, model=rerank_cfg.model, base_url=rerank_cfg.base_url,
+    )
+
+    assert type(reranker).__name__ == expected
