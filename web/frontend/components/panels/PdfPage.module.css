@@ -1,0 +1,71 @@
+/* pdf.js 文字层：取自 pdfjs-dist/web/pdf_viewer.css 的 .textLayer 规则（只保留本阅读器用到的部分）。
+   文字透明、只用于选中与查找高亮；字号由 TextLayer 写入的 --font-height 与容器的 --total-scale-factor 决定。 */
+.textLayer {
+  color-scheme: only light;
+  position: absolute;
+  text-align: initial;
+  inset: 0;
+  overflow: clip;
+  opacity: 1;
+  line-height: 1;
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+  z-index: 0;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+
+.textLayer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+  user-select: text;
+}
+
+.textLayer > :not(:global(.markedContent)),
+.textLayer :global(.markedContent) span:not(:global(.markedContent)) {
+  z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+
+.textLayer :global(.markedContent) {
+  display: contents;
+}
+
+.textLayer ::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.textLayer :global(.endOfContent) {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: 0;
+  cursor: default;
+  user-select: none;
+}
+
+/* 查找高亮：包在文本项内部的子 span，position 回到正常流。 */
+.textLayer .hit {
+  position: initial;
+  margin: -1px;
+  padding: 1px;
+  border-radius: 3px;
+  background-color: rgb(255 196 0 / 0.42);
+}
+
+.textLayer .hitCurrent {
+  background-color: rgb(255 120 0 / 0.6);
+  outline: 1px solid rgb(200 80 0 / 0.8);
+}

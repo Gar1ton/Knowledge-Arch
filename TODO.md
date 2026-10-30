@@ -453,3 +453,20 @@
   - [x] ③ 版本号 2.0.7。
   - 验证：pytest 1503 passed / 3 skipped（`test_model_runtime.py` 新增 5 项）；ruff；mypy；eslint；tsc；`next build`。
     未验证：桌面壳里实测面板（逻辑由单测覆盖）。
+- [ ] P26 · 2.1.0 识图与正文去污染（🚧）。决策（已批准）：找图在本地、上传时自动建空位；识图描述类似 LightRAG 手动触发
+  （集合级「补全图表描述（仅缺失）」，先估算）；识图模型是「模型分配」新角色 `vision`、不跟随对话模型，开关在 Upload/Chunk
+  （`flow.import`）；截图不落盘、调用时按位置从原 PDF 现渲染；不做 OCR，扫描页只检测提示；图描述 2.1.0 不进 LightRAG；
+  正文去污染三层（L1 文本规则 / L2 几何遮罩：图内文字挪进图位而非删除 / L3 评测守恒），`cleaning-v4` 升级后自动后台重抽取；
+  乱码行直接删除。
+  - [x] P1 PDF 关键词搜索：pdf.js 文字层（顺带可选中文字）+ 查找条（Ctrl/Cmd+F、Enter / Shift+Enter、n/m 计数、Esc）；
+    没有文字层时提示。纯函数在 `lib/pdfSearch.ts`；单页渲染与文字层拆到 `PdfPage.tsx`，查找条 `PdfSearchBar.tsx`。
+    验证：tsc；eslint；真后端 + `next dev` + Playwright：Attention 论文查 attention 97 处、Enter / Shift+Enter 计数 6/97→5/97、
+    跨行短语 `scaled dot-product attention` 6 处、无结果提示、Esc 清除高亮、悬停时 Ctrl+F 打开；125% / 140% 截图高亮与原文对齐；
+    纯图片 PDF 提示「没有可查找的文字层」；快速缩放无未处理的取消异常。
+  - [ ] 既有问题（P2 一并修）：没有文字的 PDF（0 个 chunk）每次列文档都被判为需重切、反复重建（`chunk_needs_rebuild` 对空 chunk 返回 True）。
+  - [ ] P2 找图与空位：`kacore/managers/figure_detection.py`、迁移 `027_document_figures.sql`、source_store 接口与实现。
+  - [ ] P3 正文去污染：L1 + L2 + L3 评测，`cleaning-v4` 与后台重抽取。
+  - [ ] P4 识图角色：`flow.models.vision`、`describe_image`、测试连接发图。
+  - [ ] P5 识图任务：`kacore/vision_job.py`、`kacore/pipelines/figure_caption_pipeline.py`、`kacore/api_vision.py`、HTTP、日志。
+  - [ ] P6 前端：节点开关、模型角色、进度栏、集合菜单、来源显示。
+  - [ ] P7 检索整合与收尾：版本 2.1.0-preview、README、CHANGELOG。

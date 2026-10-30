@@ -6,28 +6,21 @@ import { IconButton } from "@/components/ds/IconButton";
 import { ZoteroAnnotation } from "@/lib/api";
 import { apiUrl, authHeaders } from "@/lib/backend";
 import { useI18n } from "@/lib/i18n";
+import { buildPageText, findMatches, hasSearchableText, type PdfMatch, type PdfPageText } from "@/lib/pdfSearch";
 import { Z } from "@/lib/zLayers";
+import {
+  PdfPageView,
+  type PageHighlight,
+  type PdfDocument,
+  type TextLayerCtor,
+} from "./PdfPage";
+import { PdfSearchBar } from "./PdfSearchBar";
 
 interface PdfViewerProps {
   docId: string;
   title?: string;
   annotations: ZoteroAnnotation[];
 }
-
-type PdfDocument = {
-  numPages: number;
-  getPage: (pageNumber: number) => Promise<PdfPage>;
-  destroy?: () => Promise<void>;
-};
-
-type PdfPage = {
-  getViewport: (options: { scale: number }) => { width: number; height: number };
-  render: (context: {
-    canvasContext: CanvasRenderingContext2D;
-    viewport: { width: number; height: number };
-    transform?: number[];
-  }) => { promise: Promise<void>; cancel: () => void };
-};
 
 type PdfDocumentSource = {
   // 文件字节由本组件带 token 取回后交给 pdf.js（桌面壳里后端与页面不同源，相对 URL 取不到）。
@@ -41,12 +34,14 @@ type PdfDocumentSource = {
 
 type PdfJsModule = {
   GlobalWorkerOptions: { workerSrc: string };
+  TextLayer: TextLayerCtor;
   getDocument: (source: PdfDocumentSource) => { promise: Promise<PdfDocument>; destroy?: () => void };
 };
 
 type PdfLoadState = {
   pdfUrl: string;
   pdf: PdfDocument | null;
+  textLayer: TextLayerCtor | null;
   pageCount: number;
   loading: boolean;
   error: string;
@@ -60,6 +55,12 @@ type PageState = {
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 2.4;
 const SCALE_STEP = 0.15;
+
+type SearchStatus = "idle" | "searching" | "done" | "no_text";
+
+const NO_HIGHLIGHTS: PageHighlight[] = [];
+const NO_MATCHES: PdfMatch[] = [];
+const SEARCH_DEBOUNCE_MS = 200;
 
 const PDF_MAGIC = [0x25, 0x50, 0x44, 0x46, 0x2d]; // "%PDF-"
 
@@ -89,6 +90,7 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
   const [loadState, setLoadState] = useState<PdfLoadState>(() => ({
     pdfUrl,
     pdf: null,
+    textLayer: null,
     pageCount: 0,
     loading: true,
     error: "",
@@ -96,6 +98,7 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
   const [pageState, setPageState] = useState<PageState>(() => ({ pdfUrl, page: 1 }));
   const isCurrentPdf = loadState.pdfUrl === pdfUrl;
   const pdf = isCurrentPdf ? loadState.pdf : null;
+  const textLayerCtor = isCurrentPdf ? loadState.textLayer : null;
   const pageCount = isCurrentPdf ? loadState.pageCount : 0;
   const loading = isCurrentPdf ? loadState.loading : true;
   const error = isCurrentPdf ? loadState.error : "";
@@ -136,12 +139,20 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
           await doc.destroy?.();
           return;
         }
-        setLoadState({ pdfUrl, pdf: doc, pageCount: doc.numPages, loading: false, error: "" });
+        setLoadState({
+          pdfUrl,
+          pdf: doc,
+          textLayer: pdfjs.TextLayer ?? null,
+          pageCount: doc.numPages,
+          loading: false,
+          error: "",
+        });
       } catch (err) {
         if (!cancelled) {
           setLoadState({
             pdfUrl,
             pdf: null,
+            textLayer: null,
             pageCount: 0,
             loading: false,
             error:
@@ -195,6 +206,96 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, [fullscreen]);
 
+  // ── 关键词查找 ─────────────────────────────────────────────
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const pageTextsRef = useRef<{ pdfUrl: string; pages: PdfPageText[] } | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [search, setSearch] = useState<{
+    pdfUrl: string;
+    query: string;
+    matches: PdfMatch[];
+    status: SearchStatus;
+    current: number;
+  }>(() => ({ pdfUrl, query: "", matches: [], status: "idle", current: 0 }));
+  const trimmedQuery = query.trim();
+  const searchState =
+    searchOpen && trimmedQuery && search.pdfUrl === pdfUrl
+      ? search
+      : { pdfUrl, query: "", matches: NO_MATCHES, status: "idle" as SearchStatus, current: 0 };
+  const { matches: searchMatches, current: searchCurrent } = searchState;
+
+  useEffect(() => {
+    if (!searchOpen || !pdf || !trimmedQuery) return;
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      setSearch((prev) => ({ ...prev, pdfUrl, query: trimmedQuery, status: "searching" }));
+      try {
+        // 各页文字只取一次：同一文档的后续查找直接复用。
+        let cached = pageTextsRef.current;
+        if (!cached || cached.pdfUrl !== pdfUrl) {
+          const pages: PdfPageText[] = [];
+          for (let n = 1; n <= pdf.numPages; n += 1) {
+            const page = await pdf.getPage(n);
+            const content = await page.getTextContent();
+            if (cancelled) return;
+            pages.push(buildPageText(n, content.items));
+          }
+          cached = { pdfUrl, pages };
+          pageTextsRef.current = cached;
+        }
+        if (cancelled) return;
+        const status: SearchStatus = hasSearchableText(cached.pages) ? "done" : "no_text";
+        const matches = status === "done" ? findMatches(cached.pages, trimmedQuery) : [];
+        setSearch({ pdfUrl, query: trimmedQuery, matches, status, current: 0 });
+        if (matches.length > 0) setCurrentPage(matches[0].page);
+      } catch (err) {
+        console.error("PDF search failed:", err);
+        if (!cancelled) setSearch({ pdfUrl, query: trimmedQuery, matches: [], status: "done", current: 0 });
+      }
+    }, SEARCH_DEBOUNCE_MS);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [searchOpen, pdf, pdfUrl, trimmedQuery, setCurrentPage]);
+
+  const stepMatch = (delta: number) => {
+    const total = searchState.matches.length;
+    if (!total) return;
+    const next = (searchState.current + delta + total) % total;
+    setSearch({ ...searchState, current: next });
+    setCurrentPage(searchState.matches[next].page);
+  };
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setQuery("");
+  }, []);
+
+  // Ctrl/Cmd+F：鼠标在阅读器上或焦点在阅读器内时打开查找，不抢别处（如聊天框）的快捷键。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "f") return;
+      const root = rootRef.current;
+      if (!root || !(root.matches(":hover") || root.contains(document.activeElement))) return;
+      e.preventDefault();
+      setSearchOpen(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const highlightsByPage = useMemo(() => {
+    const byPage = new Map<number, PageHighlight[]>();
+    searchMatches.forEach((match, index) => {
+      const list = byPage.get(match.page) ?? [];
+      list.push({ ranges: match.ranges, current: index === searchCurrent });
+      byPage.set(match.page, list);
+    });
+    return byPage;
+  }, [searchMatches, searchCurrent]);
+
   const annotatedPages = useMemo(() => {
     const pages = new Set<number>();
     annotations.forEach((ann) => {
@@ -206,6 +307,7 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
 
   const viewer = (
     <div
+      ref={rootRef}
       style={{
         height: "100%",
         display: "flex",
@@ -273,12 +375,31 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
         />
         <IconButton name="fitWidth" label={t("pdf_fit_width")} onClick={fitWidth} />
         <IconButton
+          name="search"
+          label={t("pdf_search")}
+          active={searchOpen}
+          onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
+        />
+        <IconButton
           name={fullscreen ? "minimize" : "maximize"}
           label={fullscreen ? t("pdf_exit_fullscreen") : t("pdf_fullscreen")}
           active={fullscreen}
           onClick={() => setFullscreen((value) => !value)}
         />
       </div>
+
+      {searchOpen && (
+        <PdfSearchBar
+          query={query}
+          onQueryChange={setQuery}
+          total={searchState.matches.length}
+          current={searchState.current}
+          status={trimmedQuery && searchState.status === "idle" ? "searching" : searchState.status}
+          onPrev={() => stepMatch(-1)}
+          onNext={() => stepMatch(1)}
+          onClose={closeSearch}
+        />
+      )}
 
       <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>
         <div
@@ -325,7 +446,13 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
                       background: "white",
                     }}
                   >
-                    <PdfPageCanvas pdf={pdf} pageNumber={pageNumber} scale={scale} />
+                    <PdfPageView
+                      pdf={pdf}
+                      pageNumber={pageNumber}
+                      scale={scale}
+                      textLayerCtor={textLayerCtor}
+                      highlights={highlightsByPage.get(pageNumber) ?? NO_HIGHLIGHTS}
+                    />
                   </div>
                 );
               })}
@@ -383,75 +510,6 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
   );
   // 全屏时挂到 body，避免被面板的 overflow / transform 困住。
   return fullscreen && typeof document !== "undefined" ? createPortal(viewer, document.body) : viewer;
-}
-
-function PdfPageCanvas({ pdf, pageNumber, scale }: { pdf: PdfDocument; pageNumber: number; scale: number }) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [rendering, setRendering] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    let renderTask: { promise: Promise<void>; cancel: () => void } | null = null;
-
-    async function renderPage() {
-      setRendering(true);
-      const page = await pdf.getPage(pageNumber);
-      if (cancelled) return;
-      const viewport = page.getViewport({ scale });
-      const canvas = canvasRef.current;
-      const context = canvas?.getContext("2d");
-      if (!canvas || !context) return;
-      const ratio = window.devicePixelRatio || 1;
-      canvas.width = Math.floor(viewport.width * ratio);
-      canvas.height = Math.floor(viewport.height * ratio);
-      canvas.style.width = `${Math.floor(viewport.width)}px`;
-      canvas.style.height = `${Math.floor(viewport.height)}px`;
-      // pdfjs v6 会从 canvasContext 反推 canvas 并重新 getContext，预设的 context 变换会被忽略；
-      // 设备像素比通过 render 的 transform 参数传入才能在高 DPR 屏正确缩放。
-      renderTask = page.render({
-        canvasContext: context,
-        viewport,
-        transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : undefined,
-      });
-      try {
-        await renderTask.promise;
-      } catch (err) {
-        // 缩放 / 切换文档时的渲染取消属正常，其余错误打印出来便于排障。
-        if (err instanceof Error && err.name !== "RenderingCancelledException") {
-          console.error(`PDF page ${pageNumber} render failed:`, err);
-        }
-      } finally {
-        if (!cancelled) setRendering(false);
-      }
-    }
-
-    void renderPage();
-    return () => {
-      cancelled = true;
-      renderTask?.cancel();
-    };
-  }, [pdf, pageNumber, scale]);
-
-  return (
-    <>
-      <canvas ref={canvasRef} style={{ display: "block" }} />
-      {rendering && (
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            display: "grid",
-            placeItems: "center",
-            background: "rgba(255,255,255,.62)",
-            fontSize: 11,
-            color: "var(--fg-subtle)",
-          }}
-        >
-          Rendering
-        </div>
-      )}
-    </>
-  );
 }
 
 function PdfState({ label, tone = "neutral" }: { label: string; tone?: "neutral" | "error" }) {

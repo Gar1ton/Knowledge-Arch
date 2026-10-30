@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 新增 (Added)
+
+- **PDF 阅读器关键词查找**：工具栏新增查找键（鼠标在阅读器上时 Ctrl/⌘+F），Enter / Shift+Enter 跳下一处 / 上一处，显示 n/m，
+  Esc 关闭；不区分大小写，跨行短语也能找到；没有文字层的扫描件给出提示。页面叠加 pdf.js 文字层，顺带可以选中、复制文字
+  （`web/frontend/lib/pdfSearch.ts`、`components/panels/PdfPage.tsx`、`PdfPage.module.css`、`PdfSearchBar.tsx`、`PdfViewer.tsx`）。
+
 ## [v2.0.7] — 2026-10-30
 
 ### 修复 (Fixed)
