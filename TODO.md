@@ -453,7 +453,7 @@
   - [x] ③ 版本号 2.0.7。
   - 验证：pytest 1503 passed / 3 skipped（`test_model_runtime.py` 新增 5 项）；ruff；mypy；eslint；tsc；`next build`。
     未验证：桌面壳里实测面板（逻辑由单测覆盖）。
-- [ ] P26 · 2.1.0 识图与正文去污染（🚧）。决策（已批准）：找图在本地、上传时自动建空位；识图描述类似 LightRAG 手动触发
+- [x] P26 · 2.1.0 识图与正文去污染（2.1.0-preview.1）。决策（已批准）：找图在本地、上传时自动建空位；识图描述类似 LightRAG 手动触发
   （集合级「补全图表描述（仅缺失）」，先估算）；识图模型是「模型分配」新角色 `vision`、不跟随对话模型，开关在 Upload/Chunk
   （`flow.import`）；截图不落盘、调用时按位置从原 PDF 现渲染；不做 OCR，扫描页只检测提示；图描述 2.1.0 不进 LightRAG；
   正文去污染三层（L1 文本规则 / L2 几何遮罩：图内文字挪进图位而非删除 / L3 评测守恒），`cleaning-v4` 升级后自动后台重抽取；
@@ -504,4 +504,11 @@
     验证：tsc；eslint；真后端 + `next dev` + 本地假 OpenAI 兼容识图服务 + Playwright：关着时确认框只给提示；
     打开并分配模型后节点「测试识图模型」通过（≈310 ms）；文件面板开始 → 进度栏 41% 7/17 → 「17 张，失败 0」；
     ViT 12 个图块带描述，日志分类 `vision` 有每张图的 DEBUG 行与汇总（tokens in/out 18700/1020，4 s）。
-  - [ ] P7 检索整合与收尾：版本 2.1.0-preview、README、CHANGELOG。
+  - [x] P7 检索整合与收尾：真后端关键词检索验证（无 Embedding 时的 SQLite 召回）：「Figure 3」同时命中两篇论文的图 3 图块，
+    描述性查询（「ImageNet top-1 accuracy line chart」）前五里有 3 个图块；README / README_ZH 补识图、PDF 查找、四个模型角色，
+    并改正「上传 / 分块」里「扫描件 OCR」的说法（该开关目前不起作用，见下）；版本号 2.1.0，标签 `v2.1.0-preview.1`（沿用 rc 先例：
+    文件里写正式版本号，标签带预览后缀）；CHANGELOG。
+  - 遗留 / 待决：`flow.import.ocr_enabled`（「扫描件 OCR」开关）自插件时代起只打印成本警告、不做任何 OCR，界面上仍可见；
+    是否隐藏或改为未来的「识图转写扫描页」由用户决定。ToT 图 4 这类「图里全是正文字号长段落」的图保守不收。
+    未验证：真实识图模型的描述质量与费用（本轮用本地假 OpenAI 兼容服务验证了协议、进度与写回）；Anthropic 图片块只有单测；
+    桌面壳里实测；有 Embedding 时图块进 Milvus（走既有重建路径，单测覆盖 needs_reindex）。

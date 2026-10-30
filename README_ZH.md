@@ -69,13 +69,13 @@ Knowledge Arch 以 PDF 等原件为中心管理学术资料：上传与清洗、
 | 节点 | 作用与默认行为 |
 |------|----------------|
 | **Zotero 文献库** | 镜像本地 Zotero 数据目录或 Web API（user ID + key），collection 树同步为集合树。 |
-| **上传 / 分块** | PDF 清洗（`pymupdf4llm`）、扫描件 OCR 开关、默认集合。 |
+| **上传 / 分块** | PDF 清洗（`pymupdf4llm`）、默认集合与分块。上传时在本地找出图表（不调模型、不做 OCR），坐标刻度、图例等图内文字不再混进正文；这里的**识图**开关用于让识图模型给图表写描述（见下）。没有文字层的扫描页只检测并提示，不做 OCR。 |
 | **向量化（Embedding）** | **默认使用线上 API**：需先在「模型供应商」添加 OpenAI 兼容连接，再在此选择连接与 Embedding 模型（如 `text-embedding-3-small`）。未选连接时 Embedding 不启用，检索退回 SQLite 关键词召回。本地模型为可选组件。 |
 | **向量库** | **只使用内置的 Milvus Lite**（随包内置，无需另装，界面不再切换其它后端）。**没配好 Embedding 前**，向量库节点显示等待 Embedding，**检索自动退回 SQLite 关键词召回**；配好 Embedding 后自动建库并维护索引。 |
 | **检索编排** | 自动将 Milvus Lite 向量召回与 SQLite 关键词召回做 RRF 融合。**Rerank 默认使用线上 API（`remote`）**：选择 OpenAI 兼容连接与模型，**兼容 Cohere / Jina / SiliconFlow / Voyage 的 `/rerank` 接口**（支持 `results` 与 `data` 两种响应格式）；未选连接时不重排；单次请求失败只对当次查询按序回退。 |
 | **LightRAG 图谱** | 按集合构建图谱 workspace 并执行图谱检索（需安装「知识图谱」可选组件且 Embedding 已就绪）。 |
 | **模型供应商** | 内置 OpenAI、Anthropic、DeepSeek、DashScope（通义）、Moonshot（Kimi）、智谱 GLM、SiliconFlow、OpenRouter、Ollama、LM Studio 预设及自定义 OpenAI 兼容端点；API Key 加密保存（仅显示后 4 位），支持测试连接与拉取模型列表。 |
-| **模型分配** | 为**对话（chat）**、**研究（research）**、**图谱（graph）**三个角色分配模型；研究与图谱留空时跟随对话模型。 |
+| **模型分配** | 为**对话（chat）**、**研究（research）**、**图谱（graph）**、**识图（vision）**四个角色分配模型；研究与图谱留空时跟随对话模型；识图不跟随，须选一个能看图的模型（如 GPT-4o / 4.1 / 5、Claude、Qwen-VL、GLM-4V，或 LM Studio / Ollama 里的本地 `qwen2.5-vl`）。 |
 | **问答 Ask** | 设置回答语言（`auto` / `zh` / `en`）、自定义系统提示词与超时时间；点击「打开 Ask」进入对话。 |
 | **Notion** | 经 Notion REST API 单向同步文章元数据与问答记录（集成 token 加密保存，详见 [`docs/NOTION_SYNC.md`](./docs/NOTION_SYNC.md)）。 |
 | **R2 备份** | 将整个数据目录生成内容寻址快照并上传至 Cloudflare R2，可跨设备恢复（需安装「R2 备份」可选组件）。 |
@@ -87,6 +87,8 @@ Knowledge Arch 以 PDF 等原件为中心管理学术资料：上传与清洗、
 - **原件优先**：保留 PDF 原件、逐页抽取与清洗后的 clean markdown，脚注单独保存并可按需回读；支持集合树、标签、批量入库与重新清洗。
 - **按证据作答与 Harvard 引用**：问答基于检索片段生成，正文短引与文末参考文献表由代码确定性渲染（杜绝模型编造作者与年份），点击短引即可跳回原件片段。
 - **索引自动维护**：新文档入库或更换 Embedding 后，Milvus Lite 向量索引自动按需重建。
+- **图表检索（2.1）**：每张图都有一个可检索的图块（标题 + 图内文字）。打开**识图**并分配**识图模型**后，在文件面板顶部点**补全图表描述**，由识图模型给还没有描述的图写描述；确认框先显示图数与估算 token，进度在左下角，可取消、可续跑（只处理缺描述的图）。图片按需从原 PDF 现渲染，不落盘。描述标明为模型生成，不进 LightRAG 图谱。
+- **PDF 内查找**：PDF 阅读器支持关键词查找（Ctrl/⌘+F，Enter / Shift+Enter 跳转）并高亮，PDF 里的文字也可以选中复制了。
 
 ### 六档检索模式
 
