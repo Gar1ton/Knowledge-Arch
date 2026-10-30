@@ -552,6 +552,8 @@ class AppInitializer:
         )
 
         # 5) 业务门面（依赖已装配的仓储/managers）。
+        from kacore.pipelines.figure_caption_pipeline import FigureCaptionPipeline
+
         self.api = KnowledgeRepositoryApi(
             source_store=self.source_store,
             sync_targets=sync_targets,
@@ -583,6 +585,8 @@ class AppInitializer:
             runtime_event_sink=self._log_handler,
             extras_manager=self.extras_manager,
             data_dir=self._data_dir,
+            model_router=self.model_router,
+            figure_caption_pipeline=FigureCaptionPipeline(),
         )
         await self.api.restore_paused_build_job()
 

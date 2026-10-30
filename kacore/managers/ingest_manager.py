@@ -370,11 +370,13 @@ class IngestManager(BaseIngestManager):
             raise
 
         self.logger.info(
-            "Ingested %s (%s) with %d chunks, %d pages.",
+            "Ingested %s (%s) with %d chunks, %d pages, %d figures, %d scanned pages.",
             title,
             document_id,
             len(chunks),
             len(artifact.page_spans),
+            len(artifact.figures),
+            len(artifact.scanned_pages),
         )
         return doc
 
@@ -518,6 +520,42 @@ class IngestManager(BaseIngestManager):
             doc_id, len(chunks), artifact.converter_version,
         )
         return {"chunk_count": len(chunks), "converter_version": artifact.converter_version}
+
+    @serialized_processing
+    async def refresh_figure_chunks(self, doc_id: str) -> int:
+        """识图写回描述后只重建图块：正文块原样保留，图块按空位现状重新生成并标记待重建索引。
+
+        正文块不变、内容哈希不变，重建索引时走 embedding 缓存；只有改了文字的图块重新 embedding。
+        返回图块数。文档不存在或还没切过块时返回 0。
+        """
+        doc = await self._source_store.get_document(doc_id)
+        if doc is None:
+            return 0
+        chunks = await self._source_store.list_chunks(doc_id)
+        body = [c for c in chunks if c.metadata.get("chunk_kind") != CHUNK_KIND_FIGURE]
+        if not body:
+            return 0
+        revision = str(body[0].metadata.get("revision_id", ""))
+        figure_chunks = self._figure_chunks(
+            doc_id, await self._source_store.list_document_figures(doc_id), revision, len(body),
+            item_key=doc.zotero_item_key if doc.library_id != LOCAL_LIBRARY_ID else "",
+            attachment_key=doc.attachment_key,
+        )
+        await self._source_store.replace_chunks(doc_id, body + figure_chunks)
+        doc.needs_reindex = True
+        await self._source_store.update_document(doc)
+        return len(figure_chunks)
+
+    def source_pdf_path(self, doc: SourceDocument) -> Path | None:
+        """识图现渲染用的原 PDF（不是 PDF 的文档返回 None）。"""
+        source = self._source_pdf(doc)
+        if source is None:
+            return None
+        try:
+            with source.open("rb") as fh:
+                return source if fh.read(5) == b"%PDF-" else None
+        except OSError:
+            return None
 
     def _source_pdf(self, doc: SourceDocument) -> Path | None:
         """原件 PDF：制品包内 original.pdf 优先，其次 Zotero linked 模式的外部路径。"""

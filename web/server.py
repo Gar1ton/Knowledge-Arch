@@ -959,6 +959,52 @@ async def handle_milvus_build_active(request: web.Request) -> web.Response:
     return web.json_response({"job": result})
 
 
+# ── 识图（2.1.0）：补全图表描述 ─────────────────────────────────
+
+
+async def handle_vision_status(request: web.Request) -> web.Response:
+    from kacore.api_vision import VisionUnavailableError
+
+    collection = request.query.get("collection") or None
+    try:
+        return web.json_response(await _api(request).get_vision_status(collection))
+    except VisionUnavailableError as exc:
+        return web.json_response({"status": "error", "message": str(exc)}, status=404)
+
+
+async def handle_vision_build(request: web.Request) -> web.Response:
+    from kacore.api_vision import VisionUnavailableError
+
+    body = await request.json() if request.can_read_body else {}
+    collection = body.get("collection") if isinstance(body, dict) else None
+    _mw_logger.info("Figure recognition requested: collection=%r", collection)
+    try:
+        job = await _api(request).start_vision_build(collection or None)
+        return web.json_response({"status": "started", "job": job})
+    except VisionUnavailableError as exc:
+        _mw_logger.warning("Figure recognition rejected: %s", exc)
+        return web.json_response({"status": "error", "message": str(exc)}, status=409)
+
+
+async def handle_vision_build_active(request: web.Request) -> web.Response:
+    return web.json_response({"job": _api(request).get_active_vision_job()})
+
+
+async def handle_vision_build_cancel(request: web.Request) -> web.Response:
+    return web.json_response({"job": await _api(request).cancel_vision_build()})
+
+
+async def handle_vision_test(request: web.Request) -> web.Response:
+    return web.json_response(await _api(request).test_vision_model())
+
+
+async def handle_document_figures(request: web.Request) -> web.Response:
+    doc_id = request.match_info["doc_id"]
+    return web.json_response(
+        {"figures": await _api(request).list_document_figures_public(doc_id)}
+    )
+
+
 async def handle_ingest_active(request: web.Request) -> web.Response:
     # 统一进度面板轮询：当前 running/error 的文档摄入任务（success/无任务 → null）。
     return web.json_response({"job": _api(request).get_active_ingest_job()})
@@ -1860,6 +1906,12 @@ def build_app(
     app.router.add_post("/api/documents/rebuild-index", handle_rebuild_index_pending)
     app.router.add_get("/api/documents/rebuild-index/active", handle_milvus_build_active)
     app.router.add_get("/api/documents/ingest/active", handle_ingest_active)
+    app.router.add_get("/api/documents/{doc_id}/figures", handle_document_figures)
+    app.router.add_get("/api/vision/status", handle_vision_status)
+    app.router.add_post("/api/vision/build", handle_vision_build)
+    app.router.add_get("/api/vision/build/active", handle_vision_build_active)
+    app.router.add_post("/api/vision/build/cancel", handle_vision_build_cancel)
+    app.router.add_post("/api/vision/test", handle_vision_test)
     app.router.add_get("/api/documents/pending-reindex-count", handle_pending_reindex_count)
     # 预留端口（reserved，未实现回 501 + available_in）
     app.router.add_post("/api/sync/{target}", handle_sync)

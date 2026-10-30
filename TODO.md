@@ -487,6 +487,13 @@
     两者都尝试关思考）；`RoleClient.describe_image`；设置 `flow.models.vision`、`flow.import.vision.{enabled,max_concurrency,timeout_sec}`
     （`VisionConfig`），中英文标签；技能客户端的配置策略快照补 `vision`。验证：`test_vision_provider.py` 5 项。
     「测试识图」放在 P5 的 `/api/vision/test`（按模型分配测，而不是按连接测）。
-  - [ ] P5 识图任务：`kacore/vision_job.py`、`kacore/pipelines/figure_caption_pipeline.py`、`kacore/api_vision.py`、HTTP、日志。
+  - [x] P5 识图任务：`kacore/vision_job.py`（进度快照）、`kacore/pipelines/figure_caption_pipeline.py`（现渲染 150 dpi、≤1.6 MP →
+    提示词 `figure-v1`：类型 / 坐标轴与单位 / 系列与图例 / 读得出的数值与趋势 / 流程图组件与连接 / 要点，80–200 词，不编造）、
+    `kacore/api_vision.py`（`VisionApiMixin`：状态与估算、全局单任务、按文档并发、取消后不再发新请求；
+    `no_image_input` / 密钥无效 / 模型不存在时整体停下，超时等写 failed 下次重试；每篇做完 `refresh_figure_chunks` 并通知自动重建索引；
+    「测试识图」发一张现画的红色柱状图问颜色）。HTTP：`GET /api/vision/status`、`POST /api/vision/build`、
+    `GET /api/vision/build/active`、`POST /api/vision/build/cancel`、`POST /api/vision/test`、`GET /api/documents/{id}/figures`。
+    日志：`FigureVision` 记 DEBUG（每张图：尺寸、字节、状态、字数、token、耗时、模型），终端页分类 `vision`。
+    验证：`test_vision_job.py` 7 项、`test_web_server.py` 新增 1 项。
   - [ ] P6 前端：节点开关、模型角色、进度栏、集合菜单、来源显示。
   - [ ] P7 检索整合与收尾：版本 2.1.0-preview、README、CHANGELOG。
