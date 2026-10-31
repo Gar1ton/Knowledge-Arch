@@ -54,6 +54,7 @@ _PROJECT_PREFIXES = (
     "EmbeddingProviderFactory",
     "EnhancedRecall",
     "ExternalEmbeddingProvider",
+    "FigureVision",
     "IndexCompatibilityStore",
     "KnowledgeRepositoryApi",
     "KRWebServer",
@@ -79,6 +80,7 @@ _PROJECT_PREFIXES = (
 # logger 名前缀 → 分类（首选，稳定）；未命中时回退消息关键词猜测。
 _CATEGORY_BY_PREFIX: tuple[tuple[tuple[str, ...], str], ...] = (
     (("LightRAGCore", "lightrag"), "graph"),
+    (("FigureVision",), "vision"),
     (("LLMAdapter", "Reranker", "DeepThinking", "EnhancedRecall"), "llm"),
     (
         (

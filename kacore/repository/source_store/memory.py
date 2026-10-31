@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from kacore.domain.models import DocumentLifecycle
 from kacore.repository.source_store.base import SourceDocumentStore
+from kacore.repository.source_store.figures_memory import InMemoryFigureMixin
 
 
 def _new_local_coll_key() -> str:
@@ -20,6 +21,7 @@ def _new_local_coll_key() -> str:
     return "L" + uuid.uuid4().hex
 
 if TYPE_CHECKING:
+    from kacore.domain.figures import DocumentFigure
     from kacore.domain.models import (
         Collection,
         ConsoleScopeState,
@@ -40,7 +42,7 @@ if TYPE_CHECKING:
     )
 
 
-class InMemorySourceDocumentStore(SourceDocumentStore):
+class InMemorySourceDocumentStore(InMemoryFigureMixin, SourceDocumentStore):
     """纯内存的 SourceDocumentStore，确定性、无网络/磁盘。"""
 
     def __init__(self) -> None:
@@ -48,6 +50,7 @@ class InMemorySourceDocumentStore(SourceDocumentStore):
         self._doc_collections: dict[str, list[str]] = {}  # doc_id → coll_keys
         self._documents: dict[str, SourceDocument] = {}
         self._chunks: dict[str, list[DocumentChunk]] = {}
+        self._figures: dict[str, list[DocumentFigure]] = {}
         self._sync_records: dict[tuple[str, SyncTargetKind], SyncRecord] = {}
         self._notion_entities: dict[tuple[str, str], NotionEntityRecord] = {}
         self._notion_outbox: dict[str, NotionOutboxItem] = {}
@@ -258,6 +261,7 @@ class InMemorySourceDocumentStore(SourceDocumentStore):
         if doc_id not in self._documents:
             return False
         self._chunks.pop(doc_id, None)  # 先删分块
+        self._figures.pop(doc_id, None)
         self._doc_collections.pop(doc_id, None)
         self._page_chunks.pop(doc_id, None)
         self._notes = {

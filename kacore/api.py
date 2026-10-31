@@ -25,12 +25,14 @@ from kacore.api_capabilities import CapabilitiesApiMixin
 from kacore.api_legacy_import import LegacyImportApiMixin
 from kacore.api_runtime_models import RuntimeModelsApiMixin
 from kacore.api_settings import SettingsApiMixin
+from kacore.api_vision import VisionApiMixin
 from kacore.config import (
     EMBEDDING_PROVIDERS,
     VECTOR_BACKEND_LEXICAL,
     VECTOR_BACKEND_MILVUS,
     AskAgentConfig,
 )
+from kacore.domain.figures import is_figure_chunk
 from kacore.domain.llm_generation import (
     STATUS_CONTENT_FILTER,
     STATUS_LENGTH,
@@ -500,9 +502,11 @@ if TYPE_CHECKING:
     from kacore.pipelines.agent_evidence import AgentEvidenceOrchestrator
     from kacore.pipelines.deep_thinking_orchestrator import DeepThinkingOrchestrator
     from kacore.pipelines.enhanced_recall_orchestrator import EnhancedRecallOrchestrator
+    from kacore.pipelines.figure_caption_pipeline import FigureCaptionPipeline
     from kacore.pipelines.retrieval_orchestrator import RetrievalOrchestrator
     from kacore.pipelines.sync_pipeline import SyncPipeline
     from kacore.providers.registry import ProviderRegistry
+    from kacore.providers.router import ModelRouter
     from kacore.repository.embedding.base import EmbeddingProvider
     from kacore.repository.reranker.base import Reranker
     from kacore.repository.source_store.base import SourceDocumentStore
@@ -684,6 +688,7 @@ class KnowledgeRepositoryApi(
     LegacyImportApiMixin,
     RuntimeModelsApiMixin,
     SettingsApiMixin,
+    VisionApiMixin,
 ):
     """知识库应用的业务门面。依赖经构造器注入，自身不创建依赖（装配在组合根）。
 
@@ -724,6 +729,8 @@ class KnowledgeRepositoryApi(
         runtime_event_sink: RuntimeEventSink | None = None,
         extras_manager: ExtrasManager | None = None,
         data_dir: Path | None = None,
+        model_router: ModelRouter | None = None,
+        figure_caption_pipeline: FigureCaptionPipeline | None = None,
     ) -> None:
         self._processing_lock = (
             getattr(ingest_manager, "_processing_lock", None) or ProcessingLock()
@@ -749,6 +756,11 @@ class KnowledgeRepositoryApi(
         # Milvus 向量库重建：全局单任务的进度快照 + 后台任务句柄（无暂停）。
         self._milvus_build_job: MilvusBuildJob | None = None
         self._milvus_build_task: asyncio.Task | None = None  # type: ignore[type-arg]
+        # 识图（2.1.0）：vision 角色的模型路由与单张图流程；任务快照见 api_vision。
+        self._model_router = model_router
+        self._figure_caption_pipeline = figure_caption_pipeline
+        self._vision_job = None
+        self._vision_task = None
         self._deferred_reload_task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._config = config
         self._config_persist = config_persist
@@ -4121,8 +4133,13 @@ class KnowledgeRepositoryApi(
 
         col = await self._resolve_collection(collection)
         docs = await self._lightrag_docs_for_build(col)
+        # 图块不进图谱（2.1.0：图谱只按正文建），估算也只算正文块。
         chunks_by_doc = {
-            doc.doc_id: await self._source_store.list_chunks(doc.doc_id) for doc in docs
+            doc.doc_id: [
+                c for c in await self._source_store.list_chunks(doc.doc_id)
+                if not is_figure_chunk(c.metadata)
+            ]
+            for doc in docs
         }
         graph_cfg = self._config.get_graph_config() if self._config else None
         max_chars = graph_cfg.max_doc_chars if graph_cfg else 0
@@ -4499,7 +4516,8 @@ class KnowledgeRepositoryApi(
         await self._source_store.upsert_build_job(self._build_job_db_snapshot(job))
 
     async def cancel_build_tasks(self) -> None:
-        """取消图谱与 Milvus 构建并等待收尾；调用方先停止创建任务的调度器。"""
+        """取消图谱、Milvus 构建与识图任务并等待收尾；调用方先停止创建任务的调度器。"""
+        await self.shutdown_vision()
         if self._milvus_build_task is not None:
             self._milvus_build_task.cancel()
             await asyncio.gather(self._milvus_build_task, return_exceptions=True)
@@ -5056,7 +5074,10 @@ class KnowledgeRepositoryApi(
         if raw is not None:
             return raw
         chunks = await self._source_store.list_chunks(doc.doc_id)
-        return "\n\n".join(chunk.text for chunk in chunks if chunk.text.strip())
+        return "\n\n".join(
+            chunk.text for chunk in chunks
+            if chunk.text.strip() and not is_figure_chunk(chunk.metadata)
+        )
 
     async def _lightrag_docs_for_build(self, collection: str) -> list[SourceDocument]:
         # 合并单 workspace：以选中集合为根，纳入「父 + 全部后代」的文档（多归属去重）。

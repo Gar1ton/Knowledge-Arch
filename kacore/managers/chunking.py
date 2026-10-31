@@ -762,6 +762,10 @@ def _normalize_anchor_label(label: str) -> str:
     return f"EQUATION {number}"
 
 
+# 图块（ingest_manager）复用同一套锚点归一化，保证「Figure 3」在正文块与图块上是同一个锚点。
+normalize_anchor_label = _normalize_anchor_label
+
+
 def _normalize_subsection_label(label: str) -> str:
     label = _strip_markup(label).strip()
     label = re.sub(r"\s+", " ", label)
@@ -794,6 +798,7 @@ __all__ = [
     "build_section_spans",
     "build_structural_chunk_spans",
     "build_subsection_spans",
+    "normalize_anchor_label",
     "pack_blocks_into_chunks",
     "parse_markdown_blocks",
     "section_for_position",

@@ -9,7 +9,11 @@ from kacore.api import KnowledgeRepositoryApi
 from kacore.config import SourceStoreConfig
 from kacore.domain.footnotes import FootnoteBlock, FootnoteLinkStatus
 from kacore.domain.models import DocumentChunk, SourceDocument
-from kacore.managers.artifact_provenance import fulltext_with_notes, save_provenance
+from kacore.managers.artifact_provenance import (
+    PROCESSING_VERSION,
+    fulltext_with_notes,
+    save_provenance,
+)
 from kacore.managers.chunking import build_structural_chunk_spans
 from kacore.managers.ingest_manager import IngestManager
 from kacore.managers.markdown_extractor import MarkdownArtifact, PageSpan
@@ -206,6 +210,8 @@ async def test_rechunk_preserves_notes_and_changes_identity(tmp_path):
         "hash",
         "col",
         markdown_rel_path="clean.md",
+        # 当前处理版本：重切沿用 clean.md（版本过期时才从原始页重洗，见 test_figure_noise.py）。
+        local_meta={"processing_version": PROCESSING_VERSION},
     )
     await store.add_document(doc)
     first = manager._chunk_artifact(

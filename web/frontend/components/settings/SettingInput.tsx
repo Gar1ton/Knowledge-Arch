@@ -119,7 +119,10 @@ function ModelRefInput({ item, value, onChange, disabled, variant, providers = [
   ];
   const providerLabel = (v: string) => {
     if (v === MODEL_NONE) {
-      return item.key === "flow.models.chat" ? t("set_model_unassigned") : t("set_model_follow_chat");
+      // 对话与识图没有可跟随的角色：空着就是未分配（识图模型须能看图，不跟随对话）。
+      return item.key === "flow.models.chat" || item.key === "flow.models.vision"
+        ? t("set_model_unassigned")
+        : t("set_model_follow_chat");
     }
     if (v.startsWith(MODEL_LITERAL_PREFIX)) return t("set_model_literal_local");
     return providers.find((p) => p.id === v)?.label ?? v;

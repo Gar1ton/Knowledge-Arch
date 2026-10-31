@@ -471,6 +471,20 @@ function SourceMini({ s, onClick }: { s: AskSource; onClick: () => void }) {
           >
             {s.title}
           </span>
+          {s.metadata?.chunk_kind === "figure" && (
+            // 图块：来源是图表（标题 + 识图描述 + 图内文字），不是正文段落。
+            <span
+              title={s.metadata.figure_label || "Figure"}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 3, flexShrink: 0,
+                fontSize: 9.5, fontWeight: 600, color: "var(--accent)",
+              }}
+            >
+              <Icon name="image" size={10} />
+              {s.metadata.figure_label || "Figure"}
+              {s.pages?.[0] != null ? ` · p.${s.pages[0]}` : ""}
+            </span>
+          )}
           {s.rrf_score != null && (
             <span style={{ fontSize: 9.5, fontFamily: "var(--font-mono)", color: "var(--accent)" }}>
               RRF {s.rrf_score.toFixed(4)}

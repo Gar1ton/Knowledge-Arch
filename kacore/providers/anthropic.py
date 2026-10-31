@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 import time
 from typing import Any
@@ -149,14 +150,54 @@ class AnthropicChat(ProviderClient):
                 )
         return await self._generate_once(prompt, system_prompt, kwargs, allow_mock=allow_mock)
 
+    async def describe_image(
+        self,
+        prompt: str,
+        image: bytes,
+        system_prompt: str = "",
+        *,
+        max_tokens: int = 800,
+        media_type: str = "image/png",
+    ) -> GenerationResult:
+        """图片块 + 文字块。识图是后台任务：能关思考就关，被拒（400）则去掉重试一次。"""
+        content: list[dict[str, Any]] = [
+            {"type": "image", "source": {
+                "type": "base64", "media_type": media_type,
+                "data": base64.b64encode(image).decode("ascii"),
+            }},
+            {"type": "text", "text": prompt},
+        ]
+        kwargs: dict[str, Any] = {"max_tokens": max_tokens}
+        if system_prompt:
+            kwargs["system"] = system_prompt
+        thinking_off = anthropic_thinking_off(self._model)
+        if thinking_off:
+            try:
+                return await self._generate_once(
+                    prompt, system_prompt, {**kwargs, **thinking_off}, allow_mock=False,
+                    content=content,
+                )
+            except ProviderError as error:
+                if error.status != 400:
+                    raise
+        return await self._generate_once(
+            prompt, system_prompt, kwargs, allow_mock=False, content=content
+        )
+
     async def _generate_once(
-        self, prompt: str, system_prompt: str, kwargs: dict[str, Any], *, allow_mock: bool
+        self,
+        prompt: str,
+        system_prompt: str,
+        kwargs: dict[str, Any],
+        *,
+        allow_mock: bool,
+        content: list[dict[str, Any]] | None = None,
     ) -> GenerationResult:
         started = time.monotonic()
         result: GenerationResult | None = None
         try:
             response = await self._create(
-                self._model, [{"role": "user", "content": prompt}], **kwargs
+                self._model, [{"role": "user", "content": content or prompt}], **kwargs
             )
             result = self._build_result(response)
             return result

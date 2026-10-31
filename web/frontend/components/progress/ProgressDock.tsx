@@ -1,6 +1,6 @@
 "use client";
 
-// 统一进度面板（左下角浮动停靠）。
+// 统一进度面板（左下角浮动停靠）。识图（2.1.0）也在这里显示，可取消。
 //
 // 为什么存在：Milvus 构建、LightRAG 图谱、Zotero 同步、文档摄入原本各自散落（FilePanel 内卡片、
 // 未挂载的 BuildWidget、纯 spinner）。本组件聚合四类后台任务的 `/active` 轮询，统一成一个可收起/展开、
@@ -18,6 +18,7 @@ import {
   resumeBuildJob,
 } from "@/lib/api";
 import { I18nContext } from "@/lib/i18n";
+import { cancelVisionBuild, getActiveVisionJob } from "@/lib/visionApi";
 import { useConsole } from "@/lib/ConsoleContext";
 import { Z } from "@/lib/zLayers";
 import { useToast } from "@/components/ui/Toast";
@@ -25,7 +26,13 @@ import { notifyDesktop } from "@/lib/backend";
 
 // ─── 归一化模型 ───────────────────────────────────────────────
 
-type DockKind = "zotero_sync" | "notion_sync" | "milvus_build" | "graph_build" | "ingest";
+type DockKind =
+  | "zotero_sync"
+  | "notion_sync"
+  | "milvus_build"
+  | "graph_build"
+  | "ingest"
+  | "vision_build";
 
 interface DockJob {
   key: string;
@@ -65,6 +72,7 @@ function useProgressJobs(): DockJob[] {
   const anyActiveRef = useRef(false);
   const notifiedZoteroRef = useRef<Set<string>>(new Set());
   const notifiedNotionRef = useRef<Set<string>>(new Set());
+  const notifiedVisionRef = useRef<Set<string>>(new Set());
   // 单次轮询请求超时/网络抖动不代表任务已结束：失败的那一路沿用上次成功值，
   // 避免后端短暂阻塞（如同步期间的 PDF 解析）把整个面板闪没。
   const lastRef = useRef<{
@@ -73,16 +81,18 @@ function useProgressJobs(): DockJob[] {
     milvus: Awaited<ReturnType<typeof getActiveMilvusBuildJob>>;
     graph: Awaited<ReturnType<typeof getActiveBuildJob>>;
     ingest: Awaited<ReturnType<typeof getActiveIngestJob>>;
-  }>({ zotero: null, notion: null, milvus: null, graph: null, ingest: null });
+    vision: Awaited<ReturnType<typeof getActiveVisionJob>>;
+  }>({ zotero: null, notion: null, milvus: null, graph: null, ingest: null, vision: null });
 
   const poll = useCallback(async () => {
-    const [zoteroResult, notionResult, milvusResult, graphResult, ingestResult] =
+    const [zoteroResult, notionResult, milvusResult, graphResult, ingestResult, visionResult] =
       await Promise.allSettled([
         getActiveZoteroSyncJob(),
         getActiveNotionSyncJob(),
         getActiveMilvusBuildJob(),
         getActiveBuildJob(),
         getActiveIngestJob(),
+        getActiveVisionJob(),
       ]);
     const last = lastRef.current;
     const zotero = zoteroResult.status === "fulfilled" ? zoteroResult.value : last.zotero;
@@ -90,7 +100,8 @@ function useProgressJobs(): DockJob[] {
     const milvus = milvusResult.status === "fulfilled" ? milvusResult.value : last.milvus;
     const graph = graphResult.status === "fulfilled" ? graphResult.value : last.graph;
     const ingest = ingestResult.status === "fulfilled" ? ingestResult.value : last.ingest;
-    lastRef.current = { zotero, notion, milvus, graph, ingest };
+    const vision = visionResult.status === "fulfilled" ? visionResult.value : last.vision;
+    lastRef.current = { zotero, notion, milvus, graph, ingest, vision };
     const next: DockJob[] = [];
 
     if (zotero) {
@@ -215,6 +226,36 @@ function useProgressJobs(): DockJob[] {
         paused: false,
         recentError: ingest.recent_error || "",
         collection: "",
+      });
+    }
+
+    if (vision) {
+      if (vision.status !== "running") {
+        const notifyKey = `${vision.job_id}:${vision.status}`;
+        if (!notifiedVisionRef.current.has(notifyKey)) {
+          notifiedVisionRef.current.add(notifyKey);
+          const counts = { described: vision.described, failed: vision.failed };
+          if (vision.status === "success") announce(t("vision_done", counts), "ok");
+          else if (vision.status === "cancelled") announce(t("vision_cancelled", counts), "info");
+          else announce(vision.recent_error || t("vision_failed", counts), "error");
+        }
+      }
+      const done = vision.described + vision.failed + vision.skipped;
+      next.push({
+        key: `vision_build:${vision.job_id}`,
+        kind: "vision_build",
+        jobId: vision.job_id,
+        label: t("progress_dock_vision"),
+        sub: vision.current_figure
+          ? `${vision.current_doc} · ${vision.current_figure}`
+          : vision.collection || vision.model,
+        pct: pctOf(vision.progress_percent),
+        detail: `${done}/${vision.total_figures} figures${vision.failed ? ` · ${vision.failed} failed` : ""} · ${vision.model}`,
+        status: vision.status === "cancelled" ? "success" : vision.status,
+        active: vision.status === "running",
+        paused: false,
+        recentError: vision.recent_error || "",
+        collection: vision.collection,
       });
     }
 
@@ -393,6 +434,26 @@ function ProgressRow({
         <span style={{ fontSize: 10, color: "var(--danger)", wordBreak: "break-word" }}>
           {job.recentError.slice(0, 120)}
         </span>
+      )}
+
+      {job.kind === "vision_build" && job.active && (
+        <div style={{ display: "flex", gap: 6 }}>
+          <RowButton
+            onClick={async () => {
+              setCancelling(true);
+              try {
+                await cancelVisionBuild();
+                toast(t("vision_cancel_requested"), "info");
+              } catch (err) {
+                toast(err instanceof Error ? err.message : String(err), "error");
+              } finally {
+                setCancelling(false);
+              }
+            }}
+            label={cancelling ? t("build_widget_cancelling") : t("btn_cancel")}
+            disabled={cancelling}
+          />
+        </div>
       )}
 
       {job.kind === "graph_build" && job.active && confirmingCancel && (

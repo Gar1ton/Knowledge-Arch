@@ -130,6 +130,11 @@ CONFIG_POLICIES: dict[str, dict[str, str]] = {
         "auto_rebuild_enabled": "none",
         "backend": "restart",
     },
+    "vision": {
+        "enabled": "none",
+        "max_concurrency": "none",
+        "timeout_sec": "none",
+    },
     "zotero_sync": {
         "access_mode": "restart",
         "api_port": "restart",

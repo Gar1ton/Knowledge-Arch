@@ -42,6 +42,7 @@ from kacore.repository.source_store.base import (
     _matched_exact_terms,
     _normalize_exact_terms,
 )
+from kacore.repository.source_store.figures_sqlite import SQLiteFigureMixin
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -270,7 +271,7 @@ def _locked_write(fn: Callable[..., Awaitable[_T]]) -> Callable[..., Awaitable[_
     return wrapper
 
 
-class SQLiteSourceDocumentStore(SourceDocumentStore):
+class SQLiteSourceDocumentStore(SQLiteFigureMixin, SourceDocumentStore):
     """基于 SQLite/aiosqlite 的生产 SourceDocumentStore 实现。"""
 
     def __init__(self, db: aiosqlite.Connection) -> None:

@@ -2361,3 +2361,29 @@ async def test_get_single_document_route_does_not_shadow_static_routes(tmp_path:
         assert resp.status == 200 and "doc_id" not in await resp.json()
     finally:
         await client.close()
+
+
+# ── /api/vision（2.1.0 识图）───────────────────────────────────────
+
+
+async def test_vision_routes_report_status_and_refuse_when_off(tmp_path: Path) -> None:
+    client = await _client(tmp_path)
+    try:
+        resp = await client.get("/api/vision/status")
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["enabled"] is False and body["missing"] == 0
+        assert body["active_job"] is None
+
+        resp = await client.post("/api/vision/build", json={"collection": None})
+        assert resp.status == 409
+        assert "turn it on" in (await resp.json())["message"]
+
+        assert (await (await client.get("/api/vision/build/active")).json()) == {"job": None}
+        assert (await (await client.post("/api/vision/build/cancel")).json()) == {"job": None}
+        tested = await (await client.post("/api/vision/test")).json()
+        assert tested["status"] == "error"
+        figures = await client.get("/api/documents/missing-doc/figures")
+        assert (await figures.json()) == {"figures": []}
+    finally:
+        await client.close()
