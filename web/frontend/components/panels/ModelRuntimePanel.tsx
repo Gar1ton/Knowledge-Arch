@@ -92,9 +92,12 @@ function ModelRow({
         <Badge tone={STATE_TONE[entry.state] ?? "neutral"}>
           {t(`models_state_${entry.state}` as never)}
         </Badge>
-        <Button size="sm" variant="tab" disabled={busy || !resident} onClick={onUnload}>
-          {t("models_unload_one")}
-        </Button>
+        {/* 线上模型不占本机显存，没有可卸载的东西。 */}
+        {entry.state !== "external" && (
+          <Button size="sm" variant="tab" disabled={busy || !resident} onClick={onUnload}>
+            {t("models_unload_one")}
+          </Button>
+        )}
       </div>
     </Field>
   );

@@ -995,7 +995,8 @@ export function FilePanel() {
   const [deletingCollection, setDeletingCollection] = useState<Collection | null>(null);
   const [deleteInProgress, setDeleteInProgress] = useState(false);
   const [progressOpen, setProgressOpen] = useState(true);
-  const [lightragOpen, setLightragOpen] = useState(true);
+  // LightRAG 区默认收起：多数时候用不到，展开后占左栏大半高度。
+  const [lightragOpen, setLightragOpen] = useState(false);
   const [showNewCollection, setShowNewCollection] = useState(false);
   const [newCollectionParent, setNewCollectionParent] = useState<Collection | null>(null);
   const [renamingCollection, setRenamingCollection] = useState<Collection | null>(null);
