@@ -17,7 +17,7 @@ from kacore.managers.generic_headings import (
     detect_section_sign_heading,
 )
 
-CHUNK_SCHEMA = "clean_md_structural_v3"
+CHUNK_SCHEMA = "clean_md_structural_v4"
 
 _SECTION_LABEL_RE = re.compile(
     r"^(?:#+\s*)?(?:\*\*)?(T\d{1,3}[A-Za-z]?|\d+(?:\.\d+){0,4})(?:\.)?(?:\*\*)?"

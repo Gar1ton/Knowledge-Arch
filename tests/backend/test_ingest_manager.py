@@ -15,7 +15,7 @@ import pytest
 
 from kacore.config import SourceStoreConfig
 from kacore.domain.models import DocumentChunk, SourceDocument
-from kacore.managers.chunking import parse_markdown_blocks
+from kacore.managers.chunking import CHUNK_SCHEMA, parse_markdown_blocks
 from kacore.managers.ingest_manager import LOCAL_LIBRARY_ID, IngestManager
 from kacore.managers.markdown_extractor import (
     MarkdownArtifact,
@@ -146,7 +146,7 @@ def test_chunker_respects_sentence_boundaries_and_adds_section_metadata(tmp_path
     assert t55_chunks
     assert any(chunk.text.lstrip().startswith("**T55**") for chunk in t55_chunks)
     assert any("synthetic mechanism" in chunk.text for chunk in t55_chunks)
-    assert t55_chunks[0].metadata["chunk_schema"] == "clean_md_structural_v3"
+    assert t55_chunks[0].metadata["chunk_schema"] == CHUNK_SCHEMA
     assert t55_chunks[0].metadata["section_type"] == "thesis"
 
 
@@ -378,7 +378,7 @@ async def test_rebuild_document_chunks_from_legacy_clean_md(tmp_path: Path) -> N
     assert "formal operations" in clean_md
     chunks = await store.list_chunks("doc1")
     assert chunks[0].chunk_id.startswith("doc1_c0000_r")  # 修订身份禁止旧引用串文。
-    assert chunks[0].metadata["chunk_schema"] == "clean_md_structural_v3"
+    assert chunks[0].metadata["chunk_schema"] == CHUNK_SCHEMA
 
 
 async def test_artifact_bundle_and_offset_invariant(temp_pdf: Path, tmp_path: Path) -> None:
@@ -536,7 +536,7 @@ def test_chunk_needs_rebuild_flags_stale_processing_version_without_reading_chun
 
     current_chunk = DocumentChunk(
         "doc1_c0000_rabc", "doc1", 0, "text", "papers",
-        metadata={"chunk_schema": "clean_md_structural_v3", "start_char": 0, "end_char": 4},
+        metadata={"chunk_schema": CHUNK_SCHEMA, "start_char": 0, "end_char": 4},
     )
     # 旧库：schema/ID/offset 全部满足，但没有 processing_version → 仍判旧。
     assert IngestManager.chunk_needs_rebuild("doc1", [current_chunk], {}) is True

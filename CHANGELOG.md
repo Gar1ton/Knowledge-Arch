@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 变更 (Changed)
+
+- **分块版本升级**：`PROCESSING_VERSION` `cleaning-v4` → `cleaning-v5`（`kacore/managers/artifact_provenance.py`），
+  `CHUNK_SCHEMA` `clean_md_structural_v3` → `clean_md_structural_v4`（`kacore/managers/chunking.py`）；已入库文档会被
+  `IngestManager.chunk_needs_rebuild` 判为旧数据，重新切分并重建向量。本次只升版本号，未改分块代码本身。
+  `tests/backend/test_ingest_manager.py` 改为引用 `CHUNK_SCHEMA` 常量，不再写死版本字符串。
+
 ## [v2.1.0-preview.1] — 2026-10-31
 
 ### 新增 (Added)
