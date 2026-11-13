@@ -895,7 +895,7 @@ function chatMessagesToMessages(msgs: ChatMessage[]): Message[] {
 }
 
 export function ChatPanel({ width }: { width?: number }) {
-  const { selectedCollection, selectedDocId, setSelectedDocId, setHighlightedChunk } = useConsole();
+  const { selectedCollection, selectedDocId, jumpToCitation } = useConsole();
   const { t } = useI18n();
   const { toast } = useToast();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1076,8 +1076,15 @@ export function ChatPanel({ width }: { width?: number }) {
   function handleCite(msg: Message, n: number) {
     const src = msg.sources?.find((s) => s.n === n);
     if (!src) return;
-    setHighlightedChunk({ docId: src.doc_id, chunkId: src.chunk_id });
-    if (src.doc_id !== selectedDocId) setSelectedDocId(src.doc_id);
+    const bbox = src.metadata?.figure_bbox;
+    jumpToCitation({
+      docId: src.doc_id,
+      chunkId: src.chunk_id,
+      text: src.text,
+      pages: src.pages,
+      kind: src.metadata?.chunk_kind,
+      bbox: Array.isArray(bbox) ? bbox.map(Number) : null,
+    });
   }
 
   async function handlePin(index: number) {

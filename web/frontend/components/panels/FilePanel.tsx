@@ -11,6 +11,7 @@ import { notifyDocumentsChanged } from "@/lib/documentEvents";
 import { useFeatureReadiness, type Feature } from "@/lib/featureReadiness";
 import { useConsole } from "@/lib/ConsoleContext";
 import { listCollections, getActiveBuildJob, getBuildJobHistory, buildGraph, pauseBuildJob, resumeBuildJob, deleteCollection, deleteCollectionByKey, renameCollection, createCollection, uploadDocument, syncZoteroPull, getActiveZoteroSyncJob, backupNow, Collection, GraphBuildJob, BuildJobRecord } from "@/lib/api";
+import { setUploadBatch } from "@/lib/uploadBatch";
 import { useToast } from "@/components/ui/Toast";
 import { VisionBuildDialog } from "@/components/panels/VisionBuildDialog";
 import { useI18n, type I18nKey } from "@/lib/i18n";
@@ -788,7 +789,8 @@ function UploadDocumentDialog({ defaultCollection, localCollections, onClose }: 
     setDone(0);
     const failed: File[] = [];
     const errors: string[] = [];
-    for (const file of files) {
+    for (const [index, file] of files.entries()) {
+      setUploadBatch({ current: index + 1, total: files.length });
       try {
         await uploadDocument(file, collection);
       } catch (err: unknown) {
@@ -797,6 +799,7 @@ function UploadDocumentDialog({ defaultCollection, localCollections, onClose }: 
       }
       setDone((n) => n + 1);
     }
+    setUploadBatch(null);
     setUploading(false);
     const ok = files.length - failed.length;
     if (ok) notifyDocumentsChanged();

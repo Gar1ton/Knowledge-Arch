@@ -8,10 +8,36 @@ export type ConsoleView = "workspace" | "flow";
 export type PrefsGroup =
   | "general" | "appearance" | "storage" | "local_models" | "components" | "diagnostics";
 
-interface HighlightedChunk {
+/** 中间栏的阅读模式：PDF 原件或分块（MD）。全局一个，记在本机；非 PDF 文档总是分块。 */
+export type ReadingMode = "md" | "pdf";
+
+const READING_MODE_KEY = "ka-reading-mode";
+
+function loadReadingMode(): ReadingMode {
+  try {
+    return localStorage.getItem(READING_MODE_KEY) === "md" ? "md" : "pdf";
+  } catch {
+    return "pdf";
+  }
+}
+
+/**
+ * 一次引用跳转的目标。除 id 外带上来源自身的文字、页码与图框：分块重切后 chunk_id 会换修订号，
+ * 这些字段让 PDF 定位与 MD 回找不依赖 id。`nonce` 每次跳转都不同，重复点同一条也会重新定位。
+ * `preferMd`：这一次在分块界面打开（PDF 里定位不到时的「在 MD 中查看该段」），不改全局模式。
+ */
+export interface CiteTarget {
   docId: string;
   chunkId: string;
+  text?: string;
+  pages?: number[];
+  kind?: string;
+  bbox?: number[] | null;
+  nonce: number;
+  preferMd?: boolean;
 }
+
+type HighlightedChunk = CiteTarget;
 
 interface ConsoleContextValue {
   selectedCollection: string | null;
@@ -22,6 +48,11 @@ interface ConsoleContextValue {
 
   highlightedChunk: HighlightedChunk | null;
   setHighlightedChunk: (h: HighlightedChunk | null) => void;
+  /** 跳到引用原文：打开该文档（不论左侧选的是哪个集合）并交给中间栏定位。 */
+  jumpToCitation: (target: Omit<CiteTarget, "nonce">) => void;
+
+  readingMode: ReadingMode;
+  setReadingMode: (mode: ReadingMode) => void;
 
   noteDocId: string | null;
   setNoteDocId: (id: string | null) => void;
@@ -42,6 +73,9 @@ const ConsoleContext = createContext<ConsoleContextValue>({
   setSelectedDocId: () => {},
   highlightedChunk: null,
   setHighlightedChunk: () => {},
+  jumpToCitation: () => {},
+  readingMode: "pdf",
+  setReadingMode: () => {},
   noteDocId: null,
   setNoteDocId: () => {},
   view: "workspace",
@@ -55,6 +89,21 @@ export function ConsoleProvider({ children }: { children: React.ReactNode }) {
   const [selectedCollection, setSelectedCollection] = useState<string | null>(null);
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [highlightedChunk, setHighlightedChunk] = useState<HighlightedChunk | null>(null);
+  const [readingMode, setReadingModeState] = useState<ReadingMode>(loadReadingMode);
+  const citeNonceRef = useRef(0);
+  const setReadingMode = useCallback((mode: ReadingMode) => {
+    setReadingModeState(mode);
+    try {
+      localStorage.setItem(READING_MODE_KEY, mode);
+    } catch {
+      // 本机存储不可用（隐私模式等）：本次会话内仍然生效。
+    }
+  }, []);
+  const jumpToCitation = useCallback((target: Omit<CiteTarget, "nonce">) => {
+    citeNonceRef.current += 1;
+    setSelectedDocId(target.docId);
+    setHighlightedChunk({ ...target, nonce: citeNonceRef.current });
+  }, []);
   const [noteDocId, setNoteDocId] = useState<string | null>(null);
   const [view, setView] = useState<ConsoleView>("workspace");
   const [prefsGroup, setPrefsGroup] = useState<PrefsGroup | null>(null);
@@ -124,7 +173,9 @@ export function ConsoleProvider({ children }: { children: React.ReactNode }) {
         note_doc_id: noteDocId ?? "",
         right_panel: noteDocId ? "notes" : selectedDocId ? "document" : selectedCollection ? "collection" : "",
         reading_mode: "",
-        payload: highlightedChunk ? { highlighted_chunk: highlightedChunk } : {},
+        payload: highlightedChunk
+          ? { highlighted_chunk: { docId: highlightedChunk.docId, chunkId: highlightedChunk.chunkId } }
+          : {},
       };
       const writes = [
         upsertConsoleScopeState({ scope_type: "global", scope_key: "console", ...baseState }),
@@ -157,7 +208,8 @@ export function ConsoleProvider({ children }: { children: React.ReactNode }) {
       value={{
         selectedCollection, setSelectedCollection,
         selectedDocId, setSelectedDocId,
-        highlightedChunk, setHighlightedChunk,
+        highlightedChunk, setHighlightedChunk, jumpToCitation,
+        readingMode, setReadingMode,
         noteDocId, setNoteDocId,
         view, setView,
         prefsGroup, openPrefs, closePrefs,

@@ -16,8 +16,11 @@ import {
   getActiveZoteroSyncJob,
   pauseBuildJob,
   resumeBuildJob,
+  type IngestJob,
+  type MilvusBuildJob,
 } from "@/lib/api";
-import { I18nContext } from "@/lib/i18n";
+import { I18nContext, type TFunc } from "@/lib/i18n";
+import { getUploadBatch } from "@/lib/uploadBatch";
 import { cancelVisionBuild, getActiveVisionJob } from "@/lib/visionApi";
 import { useConsole } from "@/lib/ConsoleContext";
 import { Z } from "@/lib/zLayers";
@@ -54,6 +57,32 @@ const POLL_IDLE_MS = 3000;
 
 function pctOf(percent: number | null | undefined): number | null {
   return typeof percent === "number" && percent >= 0 ? Math.min(100, Math.round(percent)) : null;
+}
+
+/** 向量重建的计数按当前阶段显示（百分比是清洗 + 索引两段合并的，单看索引篇数会对不上）。 */
+function milvusDetail(job: MilvusBuildJob, t: TFunc): string {
+  const cleaning = job.stage === "data_cleaning" && (job.total_clean_docs ?? 0) > 0;
+  const counts = cleaning
+    ? t("progress_dock_milvus_cleaning", { done: job.processed_clean_docs ?? 0, total: job.total_clean_docs ?? 0 })
+    : t("progress_dock_milvus_indexing", {
+        done: job.processed_index_docs ?? job.processed_docs ?? 0,
+        total: job.total_index_docs || job.total_docs || 0,
+      });
+  return job.failed_docs ? `${counts} · ${t("progress_dock_failed", { n: job.failed_docs })}` : counts;
+}
+
+/** 摄入行：文件 X/Y（文件面板一批上传时）· 第 X/Y 步 · 标题。 */
+function ingestDetail(job: IngestJob, t: TFunc): string {
+  const parts: string[] = [];
+  const batch = getUploadBatch();
+  if (job.status === "running" && batch && batch.total > 1) {
+    parts.push(t("progress_dock_ingest_file", { done: batch.current, total: batch.total }));
+  }
+  if (job.status === "running" && job.step && job.step_total) {
+    parts.push(t("progress_dock_ingest_step", { step: job.step, total: job.step_total }));
+  }
+  if (job.title) parts.push(job.title);
+  return parts.join(" · ");
 }
 
 // ─── 轮询 hook：四源并行拉取并归一化 ──────────────────────────
@@ -177,7 +206,7 @@ function useProgressJobs(): DockJob[] {
         label: t("progress_dock_milvus"),
         sub: milvus.stage_label || milvus.stage || "",
         pct: pctOf(milvus.progress_percent),
-        detail: `${milvus.processed_docs ?? 0}/${milvus.total_docs ?? 0} docs${milvus.failed_docs ? ` · ${milvus.failed_docs} failed` : ""}`,
+        detail: milvusDetail(milvus, t),
         status: milvus.status,
         active: milvus.status === "running",
         paused: false,
@@ -219,8 +248,9 @@ function useProgressJobs(): DockJob[] {
         jobId: ingest.job_id,
         label: t("progress_dock_ingest"),
         sub: ingest.stage_label || ingest.stage || "",
-        pct: pctOf(ingest.progress_percent),
-        detail: ingest.title || "",
+        // 解析一篇 PDF 拿不到真实百分比：进行中只显示不确定进度条与「第 X/Y 步」。
+        pct: ingest.status === "running" ? null : pctOf(ingest.progress_percent),
+        detail: ingestDetail(ingest, t),
         status: ingest.status,
         active: ingest.status === "running",
         paused: false,
@@ -345,6 +375,7 @@ export function ProgressDock() {
 
       <style>{`
         @keyframes progressDockPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+        @keyframes progressDockSlide { 0% { transform: translateX(-100%); } 100% { transform: translateX(340%); } }
       `}</style>
     </div>
   );
@@ -423,6 +454,8 @@ function ProgressRow({
             height: "100%", width: job.pct != null ? `${job.pct}%` : "30%",
             background: color, borderRadius: "var(--radius-pill)", transition: "width 0.4s ease",
             opacity: job.pct != null ? 1 : 0.5,
+            // 没有真实百分比时来回滑动，不假装停在某个数上。
+            animation: job.pct == null && job.active ? "progressDockSlide 1.3s ease-in-out infinite" : undefined,
           }}
         />
       </div>

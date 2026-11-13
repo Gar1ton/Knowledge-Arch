@@ -1,26 +1,44 @@
 "use client";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Icon } from "@/components/ds/Icon";
 import { IconButton } from "@/components/ds/IconButton";
 import { ZoteroAnnotation } from "@/lib/api";
 import { apiUrl, authHeaders } from "@/lib/backend";
 import { useI18n } from "@/lib/i18n";
+import type { CiteTarget } from "@/lib/ConsoleContext";
+import { candidatePages, locateChunk } from "@/lib/pdfLocate";
 import { buildPageText, findMatches, hasSearchableText, type PdfMatch, type PdfPageText } from "@/lib/pdfSearch";
 import { Z } from "@/lib/zLayers";
 import {
   PdfPageView,
+  type PageCite,
   type PageHighlight,
   type PdfDocument,
   type TextLayerCtor,
 } from "./PdfPage";
 import { PdfSearchBar } from "./PdfSearchBar";
+import styles from "./PdfPage.module.css";
 
 interface PdfViewerProps {
   docId: string;
-  title?: string;
   annotations: ZoteroAnnotation[];
+  /** 要定位的引用（属于本文档时才传）；处理完（定位到或退回跳页）后调用 onLocateHandled。 */
+  locate?: CiteTarget | null;
+  onLocateHandled?: () => void;
+  /** 定位不到原文时，提示条里「在 MD 中查看该段」。 */
+  onViewInMd?: (target: CiteTarget) => void;
 }
+
+/** 当前引用定位的结果；保留到下一次跳转或换文档（pdfUrl 变化即失效）。 */
+type CiteState = {
+  pdfUrl: string;
+  target: CiteTarget;
+  /** exact = 文字或图框定位到；page = 只跳到页并提示。 */
+  status: "exact" | "page";
+  matches: PdfMatch[];
+  box: { page: number; bbox: number[] } | null;
+  page: number;
+};
 
 type PdfDocumentSource = {
   // 文件字节由本组件带 token 取回后交给 pdf.js（桌面壳里后端与页面不同源，相对 URL 取不到）。
@@ -75,7 +93,7 @@ async function fetchPdfBytes(path: string): Promise<Uint8Array> {
   return bytes;
 }
 
-export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
+export function PdfViewer({ docId, annotations, locate, onLocateHandled, onViewInMd }: PdfViewerProps) {
   const { t } = useI18n();
   const [scale, setScale] = useState(1);
   // 全屏 = 阅读器铺满整个应用窗口（不是系统 F11 全屏）；Esc 或再点一次退出。
@@ -206,9 +224,37 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, [fullscreen]);
 
+  // ── 各页文字（查找与引用定位共用，按文档缓存）───────────────
+  const pageTextCacheRef = useRef<{ pdfUrl: string; pages: Map<number, PdfPageText> }>({
+    pdfUrl: "",
+    pages: new Map(),
+  });
+  const getPageTexts = useCallback(
+    async (numbers: number[], isCancelled: () => boolean): Promise<PdfPageText[] | null> => {
+      if (!pdf) return null;
+      if (pageTextCacheRef.current.pdfUrl !== pdfUrl) {
+        pageTextCacheRef.current = { pdfUrl, pages: new Map() };
+      }
+      const cache = pageTextCacheRef.current.pages;
+      const out: PdfPageText[] = [];
+      for (const n of numbers) {
+        let text = cache.get(n);
+        if (!text) {
+          const page = await pdf.getPage(n);
+          const content = await page.getTextContent();
+          if (isCancelled()) return null;
+          text = buildPageText(n, content.items);
+          cache.set(n, text);
+        }
+        out.push(text);
+      }
+      return out;
+    },
+    [pdf, pdfUrl],
+  );
+
   // ── 关键词查找 ─────────────────────────────────────────────
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const pageTextsRef = useRef<{ pdfUrl: string; pages: PdfPageText[] } | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState<{
@@ -232,21 +278,11 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
       setSearch((prev) => ({ ...prev, pdfUrl, query: trimmedQuery, status: "searching" }));
       try {
         // 各页文字只取一次：同一文档的后续查找直接复用。
-        let cached = pageTextsRef.current;
-        if (!cached || cached.pdfUrl !== pdfUrl) {
-          const pages: PdfPageText[] = [];
-          for (let n = 1; n <= pdf.numPages; n += 1) {
-            const page = await pdf.getPage(n);
-            const content = await page.getTextContent();
-            if (cancelled) return;
-            pages.push(buildPageText(n, content.items));
-          }
-          cached = { pdfUrl, pages };
-          pageTextsRef.current = cached;
-        }
-        if (cancelled) return;
-        const status: SearchStatus = hasSearchableText(cached.pages) ? "done" : "no_text";
-        const matches = status === "done" ? findMatches(cached.pages, trimmedQuery) : [];
+        const all = Array.from({ length: pdf.numPages }, (_, i) => i + 1);
+        const pages = await getPageTexts(all, () => cancelled);
+        if (cancelled || !pages) return;
+        const status: SearchStatus = hasSearchableText(pages) ? "done" : "no_text";
+        const matches = status === "done" ? findMatches(pages, trimmedQuery) : [];
         setSearch({ pdfUrl, query: trimmedQuery, matches, status, current: 0 });
         if (matches.length > 0) setCurrentPage(matches[0].page);
       } catch (err) {
@@ -258,7 +294,54 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [searchOpen, pdf, pdfUrl, trimmedQuery, setCurrentPage]);
+  }, [searchOpen, pdf, pdfUrl, trimmedQuery, setCurrentPage, getPageTexts]);
+
+  // ── 引用定位 ───────────────────────────────────────────────
+  const [citeState, setCiteState] = useState<CiteState | null>(null);
+  const [citeNoticeHidden, setCiteNoticeHidden] = useState<number | null>(null);
+  const cite = citeState && citeState.pdfUrl === pdfUrl ? citeState : null;
+  const locateNonce = locate?.nonce;
+  const locateRef = useRef(locate);
+  const handledRef = useRef(onLocateHandled);
+  useEffect(() => {
+    locateRef.current = locate;
+    handledRef.current = onLocateHandled;
+  });
+
+  useEffect(() => {
+    const target = locateRef.current;
+    if (locateNonce == null || !target || !pdf) return;
+    let cancelled = false;
+    void (async () => {
+      const firstPage = Math.min(pdf.numPages, Math.max(1, target.pages?.[0] ?? 1));
+      let next: CiteState;
+      if (target.kind === "figure" && target.bbox && target.bbox.length === 4) {
+        next = { pdfUrl, target, status: "exact", matches: [], box: { page: firstPage, bbox: target.bbox }, page: firstPage };
+      } else {
+        const numbers = candidatePages(target.pages, pdf.numPages);
+        let matches: PdfMatch[] | null = null;
+        try {
+          const texts = await getPageTexts(numbers, () => cancelled);
+          if (cancelled) return;
+          matches = texts ? locateChunk(texts, target.text ?? "") : null;
+        } catch (err) {
+          console.error("PDF citation locate failed:", err);
+        }
+        if (cancelled) return;
+        next = matches
+          ? { pdfUrl, target, status: "exact", matches, box: null, page: matches[0].page }
+          : { pdfUrl, target, status: "page", matches: [], box: null, page: firstPage };
+      }
+      setCiteState(next);
+      setCurrentPage(next.page);
+      // 定位不到时没有可滚动的高亮，直接滚到页并整页闪一下。
+      if (next.status === "page") pagesRef.current[next.page]?.scrollIntoView({ block: "start", behavior: "smooth" });
+      handledRef.current?.();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [locateNonce, pdf, pdfUrl, getPageTexts, setCurrentPage]);
 
   const stepMatch = (delta: number) => {
     const total = searchState.matches.length;
@@ -286,15 +369,28 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  const citeMatches = cite?.matches;
   const highlightsByPage = useMemo(() => {
     const byPage = new Map<number, PageHighlight[]>();
+    (citeMatches ?? []).forEach((match) => {
+      const list = byPage.get(match.page) ?? [];
+      list.push({ ranges: match.ranges, current: false, cite: true });
+      byPage.set(match.page, list);
+    });
     searchMatches.forEach((match, index) => {
       const list = byPage.get(match.page) ?? [];
       list.push({ ranges: match.ranges, current: index === searchCurrent });
       byPage.set(match.page, list);
     });
     return byPage;
-  }, [searchMatches, searchCurrent]);
+  }, [citeMatches, searchMatches, searchCurrent]);
+
+  // 只有引用的起始页带滚动令牌；图框画在图所在页。
+  const pageCite = useMemo<PageCite | null>(() => {
+    if (!cite || cite.status !== "exact") return null;
+    return { token: cite.target.nonce, box: cite.box?.bbox ?? null, scroll: true };
+  }, [cite]);
+  const showCiteNotice = cite?.status === "page" && citeNoticeHidden !== cite.target.nonce;
 
   const annotatedPages = useMemo(() => {
     const pages = new Set<number>();
@@ -330,21 +426,8 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
           background: "var(--bg-inset)",
         }}
       >
-        <Icon name="filePdf" size={15} />
-        <span
-          style={{
-            flex: 1,
-            minWidth: 0,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            fontSize: 12,
-            fontWeight: 650,
-            color: "var(--heading)",
-          }}
-        >
-          {title ?? "PDF"}
-        </span>
+        {/* 标题已在面板面包屑里，这里不再重复，只留阅读操作。 */}
+        <span style={{ flex: 1 }} />
         <IconButton
           name="chevL"
           label={t("pdf_prev_page")}
@@ -387,6 +470,43 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
           onClick={() => setFullscreen((value) => !value)}
         />
       </div>
+
+      {showCiteNotice && cite && (
+        <div
+          role="status"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "6px 10px",
+            borderBottom: "1px solid var(--border)",
+            background: "var(--accent-soft)",
+            fontSize: 11.5,
+            color: "var(--fg)",
+          }}
+        >
+          <span style={{ flex: 1, minWidth: 0 }}>{t("pdf_cite_page_only", { page: cite.page })}</span>
+          {onViewInMd && (
+            <button
+              type="button"
+              onClick={() => onViewInMd(cite.target)}
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                padding: "3px 9px",
+                borderRadius: "var(--radius-sm)",
+                border: "1px solid var(--accent-border)",
+                background: "var(--surface)",
+                color: "var(--accent)",
+                cursor: "pointer",
+              }}
+            >
+              {t("pdf_cite_view_in_md")}
+            </button>
+          )}
+          <IconButton name="x" label={t("pdf_cite_dismiss")} onClick={() => setCiteNoticeHidden(cite.target.nonce)} />
+        </div>
+      )}
 
       {searchOpen && (
         <PdfSearchBar
@@ -433,6 +553,7 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
               {Array.from({ length: pageCount }, (_, index) => {
                 const pageNumber = index + 1;
+                const flash = cite?.status === "page" && cite.page === pageNumber;
                 return (
                   <div
                     key={pageNumber}
@@ -452,7 +573,9 @@ export function PdfViewer({ docId, title, annotations }: PdfViewerProps) {
                       scale={scale}
                       textLayerCtor={textLayerCtor}
                       highlights={highlightsByPage.get(pageNumber) ?? NO_HIGHLIGHTS}
+                      cite={pageCite && cite?.page === pageNumber ? pageCite : null}
                     />
+                    {flash && <div key={cite.target.nonce} className={styles.pageFlash} />}
                   </div>
                 );
               })}

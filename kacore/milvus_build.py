@@ -73,7 +73,12 @@ class MilvusBuildJob:
     def to_dict(self) -> dict[str, Any]:
         elapsed_end = self.finished_at or time.monotonic()
         elapsed = max(0.0, elapsed_end - self.started_at)
-        phase_total = self.total_clean_docs + self.total_index_docs
+        # 清洗阶段还不知道索引段的篇数（清洗失败的会被剔除），先按全部目标文档估算；
+        # 否则分母只有清洗段，清洗做完显示 100%，进入索引后又掉回一半。
+        index_total = self.total_index_docs
+        if self.stage == MILVUS_BUILD_STAGE_CLEANING and self.total_clean_docs > 0:
+            index_total = max(index_total, self.total_docs)
+        phase_total = self.total_clean_docs + index_total
         if phase_total > 0:
             phase_done = (
                 self.processed_clean_docs

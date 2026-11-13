@@ -4,7 +4,30 @@
 
 ## [Unreleased]
 
+### 新增 (Added)
+
+- **引用跳到 PDF 原文**：PDF 视图里点回答中的引用（或来源卡片），在原 PDF 上高亮这段原文（可跨页），图块画出图的框；
+  定位不到时跳到起始页、整页闪一下并提示，可「在 MD 中查看该段」。MD 视图仍定位并闪烁分块。
+  定位只比字母与数字、用分块首尾锚点在分块页码 ±1 页内查找，两篇测试论文的正文分块全部命中
+  （`web/frontend/lib/pdfLocate.ts`、`components/panels/PdfViewer.tsx`、`PdfPage.tsx`、`PdfPage.module.css`）。
+- **默认 PDF 视图**：PDF 文档默认用 PDF 视图打开，MD / PDF 选择全局一个、记在本机；非 PDF 文档只有分块视图
+  （`lib/ConsoleContext.tsx` 的 `readingMode`、`components/panels/DocumentsPanel.tsx`）。
+
+### 修复 (Fixed)
+
+- **向量库节点变黄不自动恢复**：打开旧分块文档时的隐式重切会把文档标成待重建，但没有通知自动重建调度器，只能手动点重建
+  （`kacore/api.py` 的 `_ensure_document_chunks_current`）。
+- **引用有时跳不过去**：引用的文档不在左侧所选集合里时没有反应；跳到另一篇文档时分块还没加载就定位，之后引用状态卡住，
+  在列表里点别的文档又被拉回；分块重切后旧回答的 chunk_id 找不到。现在统一经 `jumpToCitation`，按需取回文档、等分块就绪、
+  按来源文字回找（`lib/ConsoleContext.tsx`、`components/panels/ChatPanel.tsx`、`DocumentsPanel.tsx`）。
+- **进度条不是真实进度**：向量重建清洗段做完显示 100% 后又掉回一半，计数与百分比对不上（`kacore/milvus_build.py`、`ProgressDock.tsx`）；
+  LightRAG 建图按 LLM 调用次数累加分块，进度跑到后面文档上再卡住（`kacore/api.py`）；上传摄入的 20% / 70% 改为不确定进度条
+  + 「第 X/Y 步」与批量上传的「文件 X/Y」（`kacore/ingest_job.py`、`lib/uploadBatch.ts`、`FilePanel.tsx`）。
+- **PDF 视图上方留白过大**：PDF 视图不再显示文档头与重复标题，阅读区从工具栏下直接开始（`DocumentsPanel.tsx`、`PdfViewer.tsx`）。
+
 ### 变更 (Changed)
+
+- 版本号 2.1.1。
 
 - **分块版本升级**：`PROCESSING_VERSION` `cleaning-v4` → `cleaning-v5`（`kacore/managers/artifact_provenance.py`），
   `CHUNK_SCHEMA` `clean_md_structural_v3` → `clean_md_structural_v4`（`kacore/managers/chunking.py`）；已入库文档会被

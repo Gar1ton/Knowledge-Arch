@@ -512,3 +512,30 @@
     是否隐藏或改为未来的「识图转写扫描页」由用户决定。ToT 图 4 这类「图里全是正文字号长段落」的图保守不收。
     未验证：真实识图模型的描述质量与费用（本轮用本地假 OpenAI 兼容服务验证了协议、进度与写回）；Anthropic 图片块只有单测；
     桌面壳里实测；有 Embedding 时图块进 Milvus（走既有重建路径，单测覆盖 needs_reindex）。
+- [x] P27 · 2.1.1（2.1.0-preview.1 之后的修复与 PDF 定位）。决策（已批准）：阅读模式全局一个、默认 PDF（记在本机），
+  非 PDF 文档只用分块界面且不改全局；citation 在 PDF 模式下跳 PDF 原文并高亮（保留到下次跳转 / 换文档），定位不到时跳页并给「在 MD 中查看该段」；
+  上传摄入进度条改为不确定进度 + X/Y；「重新抽取」只在 MD 模式；版本 2.1.1。
+  - [x] ① 向量库节点变黄不自动恢复：打开旧分块文档时 `_ensure_document_chunks_current` 隐式重切 / 重抽取，IngestManager 直接写
+    `needs_reindex` 而不经 `_mark_document_needs_reindex` 收口，自动重建调度器收不到信号。现在重切后补 `_notify_auto_reindex()`。
+    验证：`test_processing_recovery.py` 新增 1 项（还原修复时失败）。
+  - [x] ② 进度条：向量重建清洗阶段分母只有清洗篇数（清洗完 100% → 进入索引掉回一半），清洗阶段改按全部目标篇数估索引段；
+    进度栏计数改为当前阶段（清洗 a/b、索引 c/d），与百分比一致。LightRAG 建图每次 LLM 调用成功就 +1 个分块、只封顶到全局总数，
+    一个分块要调好几次 LLM，进度会跑到后面文档上再长时间卡住；改为封顶到本文档的分块终点。上传摄入去掉 20% / 70% 的假百分比，
+    进行中显示滑动的不确定进度条 + 「第 X/Y 步」（`IngestJob.step` / `step_total`），文件面板一批上传时再加「文件 X/Y」（`lib/uploadBatch.ts`）。
+    计划里提到的 LightRAG 前端兜底 `pctOf(0)`：后端 `progress_total` 恒 ≥1，百分比总是数字，兜底不会被用到，未改。
+    验证：`test_api.py` 新增 2 项、`test_build_hardening.py` 新增 1 项（前两项还原修复时失败）。
+  - [x] ③ PDF 模式去掉文档头（标题、作者、徽章、重新抽取）与工具栏里重复的标题，外边距 12px → 4px；阅读模式全局（`ConsoleContext.readingMode`，
+    localStorage `ka-reading-mode`），默认 PDF。
+  - [x] ④ citation 跳转：统一入口 `jumpToCitation`（带来源文字、页码、图框与 nonce）；引用文档不在左侧当前集合时用 `getDocument` 取回
+    （404 回列表）；分块界面等分块加载完再定位，chunk_id 因重切换了修订号时按来源文字回找，定位不到也清掉状态（以前会卡住，列表里点别的文档又被拉回）。
+    PDF 定位：`lib/pdfLocate.ts`（两边只留字母数字比较，分块首尾各一个 40 字符锚点，在分块页码 ±1 页内找，从锚点逐字外扩到对不上为止，可跨页）；
+    图块按 `figure_bbox` 画框；都找不到时跳到起始页、整页闪一下并提示，可「在 MD 中查看该段」（只这一次，不改全局）。高亮用固定蓝色（主题强调色在部分配色下接近白色）。
+    验证：两篇 arXiv 论文（Attention 15 页、ViT 22 页）用项目自带 pdf.js 抽文字，全部正文分块定位成功 Attention 40/40、ViT 53/53。
+  - [x] ⑤ 版本号 2.1.1；README / README_ZH 补引用跳 PDF 与默认 PDF 视图。
+  - 验证：pytest 1545 passed / 4 skipped（新增 4 项）；ruff；mypy；eslint；tsc；`next build`。真后端 + `next dev` + Playwright（`/api/ask` 用真分块拼的回答替身）15 项全过：
+    打开 PDF 默认 PDF 视图、无文档头，第一页顶部 y=153；同文档跨页正文高亮在第 2、3 页；左侧选 papersA 时跳 papersB 的 ViT 并高亮；
+    图块在第 7 页画框；文字对不上时提示并停在第 4 页，「在 MD 中查看该段」按 chunk_id 闪烁且不改全局；下一次跳转回到 PDF；
+    MD 模式跳另一篇文档在分块加载后闪烁；跳转后回列表能正常打开别的文档；刷新后模式保持。进度栏：上传时显示「step 1/2 · 文件名」、
+    滑动条、无百分比；文件面板一次传两份显示「file 1/2」「file 2/2」。
+    未验证：真实 Milvus 环境下向量库节点自动恢复（本机测试环境无 Milvus，单测覆盖信号）；Milvus / LightRAG 进度在真实任务中的观感
+    （单测覆盖算法）；索引阶段「step 2/2」（无 Milvus 时瞬间完成）；旋转页或带 CropBox 偏移的 PDF 上图框位置；桌面壳里实测。

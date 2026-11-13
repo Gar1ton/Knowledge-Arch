@@ -52,7 +52,7 @@ export function queryPattern(query: string): RegExp | null {
 }
 
 /** text 中 [start, end) 映射回各文本项的局部区间；落在补的空格上的部分丢弃。 */
-function toItemRanges(pageText: PdfPageText, start: number, end: number): PdfItemRange[] {
+export function toItemRanges(pageText: PdfPageText, start: number, end: number): PdfItemRange[] {
   const ranges: PdfItemRange[] = [];
   const { itemStarts, itemLengths } = pageText;
   for (let i = 0; i < itemStarts.length; i += 1) {

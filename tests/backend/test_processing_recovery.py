@@ -297,3 +297,28 @@ async def test_maintenance_without_vectors_reports_pending_and_retries_only_inde
     manager._extract_artifact = no_more_extraction
     result = await api.reprocess_documents_with_stale_cleaning()
     assert not result["failed"] and result["pending_reindex"] == ["legacy"]
+
+
+async def test_implicit_rechunk_on_read_wakes_auto_rebuild(tmp_path):
+    """打开旧分块文档（列 chunks）会隐式重切并标记待重建，必须同时唤醒自动重建调度器。
+
+    回归：以前只标记不通知，数据流页向量库节点一直显示待重建，只能手动点重建。
+    """
+    store = InMemorySourceDocumentStore()
+    await seed(store, tmp_path)
+    manager = IngestManager(source_store=store, config=SourceStoreConfig(), data_dir=tmp_path)
+    manager._extract_artifact = extraction
+    api = KnowledgeRepositoryApi(source_store=store, ingest_manager=manager)
+    notified: list[int] = []
+    api.attach_auto_reindex_scheduler(SimpleNamespace(notify=lambda: notified.append(1)))
+
+    chunks = await api.list_document_chunks("legacy")
+
+    assert chunks and chunks[0].metadata.get("processing_version") == PROCESSING_VERSION
+    assert (await store.get_document("legacy")).needs_reindex
+    assert notified, "implicit rechunk must notify the auto-rebuild scheduler"
+
+    # 已是新分块：再读不重切，也不再打信号。
+    notified.clear()
+    await api.list_document_chunks("legacy")
+    assert notified == []

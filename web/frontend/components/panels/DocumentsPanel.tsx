@@ -6,9 +6,11 @@ import { Tag } from "@/components/ds/Tag";
 import { Eyebrow } from "@/components/ds/Eyebrow";
 import { IconButton } from "@/components/ds/IconButton";
 import { Icon } from "@/components/ds/Icon";
-import { useConsole } from "@/lib/ConsoleContext";
+import { useConsole, type CiteTarget } from "@/lib/ConsoleContext";
 import { DOCUMENTS_CHANGED_EVENT } from "@/lib/documentEvents";
 import {
+  ApiError,
+  getDocument,
   getDocumentAnnotations,
   KrDocument,
   listDocumentChunks,
@@ -20,6 +22,7 @@ import { useToast } from "@/components/ui/Toast";
 import { PdfViewer } from "@/components/panels/PdfViewer";
 import { useI18n } from "@/lib/i18n";
 import { parseChunkText, ChunkTextPart } from "@/lib/chunkText";
+import { findChunkByText } from "@/lib/pdfLocate";
 
 type ReadingDataState = {
   docId: string;
@@ -34,9 +37,10 @@ type DocumentListState = {
   loading: boolean;
 };
 
-type ReadingModeState = {
+/** 选中的文档不在当前列表里时（引用跳到别的集合、恢复上次打开的文档）单独取回。 */
+type FetchedDocState = {
   docId: string;
-  mode: "md" | "pdf";
+  doc: KrDocument | null;
 };
 
 // ─── Doc type badge ───────────────────────────────────────────
@@ -214,6 +218,9 @@ interface ChunkItem {
   text: string;
 }
 
+const NO_CHUNKS: ChunkItem[] = [];
+const NO_ANNOTATIONS: ZoteroAnnotation[] = [];
+
 function ChunkHeading({ part }: { part: Extract<ChunkTextPart, { type: "heading" }> }) {
   const isThesis = part.kind === "thesis";
   return (
@@ -295,9 +302,11 @@ function ChunkText({ text }: { text: string }) {
 function ReadingView({
   doc,
   mode,
+  onViewInMd,
 }: {
   doc: KrDocument;
   mode: "md" | "pdf";
+  onViewInMd: (target: CiteTarget) => void;
 }) {
   const { highlightedChunk, setHighlightedChunk } = useConsole();
   const { t } = useI18n();
@@ -311,8 +320,8 @@ function ReadingView({
   }));
   const [reextracting, setReextracting] = useState(false);
   const isReadingDataCurrent = readingData.docId === doc.doc_id;
-  const chunks = isReadingDataCurrent ? readingData.chunks : [];
-  const annotations = isReadingDataCurrent ? readingData.annotations : [];
+  const chunks = isReadingDataCurrent ? readingData.chunks : NO_CHUNKS;
+  const annotations = isReadingDataCurrent ? readingData.annotations : NO_ANNOTATIONS;
   const chunkLoading = isReadingDataCurrent ? readingData.loading : true;
   const meta = doc.zotero_meta;
 
@@ -347,17 +356,25 @@ function ReadingView({
     };
   }, [doc.doc_id]);
 
+  // 分块界面的引用定位：等分块加载完再找（跨文档跳转时先渲染的是空列表）；
+  // chunk_id 因重切换了修订号时按来源文字回找。找不到也要清掉，否则状态一直挂着。
   useEffect(() => {
-    if (!highlightedChunk || highlightedChunk.docId !== doc.doc_id) return;
-    const el = chunkRefs.current[highlightedChunk.chunkId];
-    if (!el) return;
-    el.scrollIntoView({ block: "center" });
-    el.style.animation = "none";
-    void el.offsetWidth; // force reflow
-    el.style.animation = "citeFlash 1.6s ease-out forwards";
-    const timer = setTimeout(() => setHighlightedChunk(null), 1800);
+    if (mode !== "md" || !highlightedChunk || highlightedChunk.docId !== doc.doc_id || chunkLoading) return;
+    let targetId = highlightedChunk.chunkId;
+    if (!chunkRefs.current[targetId] && highlightedChunk.text) {
+      const index = findChunkByText(chunks.map((c) => c.text), highlightedChunk.text);
+      if (index >= 0) targetId = chunks[index].chunk_id;
+    }
+    const el = chunkRefs.current[targetId];
+    if (el) {
+      el.scrollIntoView({ block: "center" });
+      el.style.animation = "none";
+      void el.offsetWidth; // force reflow
+      el.style.animation = "citeFlash 1.6s ease-out forwards";
+    }
+    const timer = setTimeout(() => setHighlightedChunk(null), el ? 1800 : 0);
     return () => clearTimeout(timer);
-  }, [highlightedChunk, doc.doc_id, setHighlightedChunk]);
+  }, [mode, highlightedChunk, doc.doc_id, chunkLoading, chunks, setHighlightedChunk]);
 
   const docHeader = (
     <>
@@ -421,19 +438,18 @@ function ReadingView({
     </>
   );
 
+  // PDF 模式：标题已在面包屑，不再显示文档头（作者、徽章、重新抽取都在 MD 模式），阅读区占满面板。
   if (mode === "pdf") {
+    const locate = highlightedChunk && highlightedChunk.docId === doc.doc_id ? highlightedChunk : null;
     return (
-      <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-        <div style={{ padding: "6px 12px 12px", flexShrink: 0 }}>
-          {docHeader}
-        </div>
-        <div style={{ flex: 1, minHeight: 0, padding: "0 12px 12px", overflow: "hidden" }}>
-          <PdfViewer
-            docId={doc.doc_id}
-            title={doc.title ?? doc.filename}
-            annotations={annotations}
-          />
-        </div>
+      <div style={{ flex: 1, minHeight: 0, padding: 4, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <PdfViewer
+          docId={doc.doc_id}
+          annotations={annotations}
+          locate={locate}
+          onLocateHandled={() => setHighlightedChunk(null)}
+          onViewInMd={onViewInMd}
+        />
       </div>
     );
   }
@@ -504,7 +520,10 @@ export function DocumentsPanel() {
     setSelectedDocId,
     highlightedChunk,
     setHighlightedChunk,
+    jumpToCitation,
     setNoteDocId,
+    readingMode,
+    setReadingMode,
   } = useConsole();
 
   // Derive collection name from key (strip prefix)
@@ -517,19 +536,23 @@ export function DocumentsPanel() {
     loading: true,
   }));
   const [reloadKey, setReloadKey] = useState(0);
-  const [modeState, setModeState] = useState<ReadingModeState>(() => ({
-    docId: "",
-    mode: "md",
-  }));
+  const [fetched, setFetched] = useState<FetchedDocState | null>(null);
+  // 「在 MD 中查看该段」只对那一篇、那一次生效：记下文档，下一次普通跳转或切模式即取消。
+  const [mdOverrideDocId, setMdOverrideDocId] = useState<string | null>(null);
+  const [seenCiteNonce, setSeenCiteNonce] = useState<number | null>(null);
+  if (highlightedChunk && highlightedChunk.nonce !== seenCiteNonce) {
+    setSeenCiteNonce(highlightedChunk.nonce);
+    setMdOverrideDocId(highlightedChunk.preferMd ? highlightedChunk.docId : null);
+  }
   const docs = documentList.colName === colName ? documentList.docs : [];
   const loading = documentList.colName === colName ? documentList.loading : true;
-  const selectedDoc = selectedDocId ? docs.find((d) => d.doc_id === selectedDocId) : null;
-  const highlightedDoc = highlightedChunk ? docs.find((d) => d.doc_id === highlightedChunk.docId) : null;
-  const activeDoc = highlightedDoc ?? selectedDoc ?? null;
+  const listedDoc = selectedDocId ? docs.find((d) => d.doc_id === selectedDocId) ?? null : null;
+  const fetchedDoc = fetched && fetched.docId === selectedDocId ? fetched.doc : null;
+  const activeDoc = listedDoc ?? fetchedDoc;
   const activeDocId = activeDoc?.doc_id ?? "";
   // 只有 PDF 原件才有 PDF 阅读模式（文本原件在库里也叫 original.pdf，后端 ext 已按真实类型给出）。
   const canReadPdf = activeDoc?.ext?.toLowerCase() === "pdf";
-  const mode = canReadPdf && modeState.docId === activeDocId ? modeState.mode : "md";
+  const mode = canReadPdf && readingMode === "pdf" && mdOverrideDocId !== activeDocId ? "pdf" : "md";
 
   // 上传等操作完成后（documentEvents）与刷新键都会重新加载当前列表。
   useEffect(() => {
@@ -553,15 +576,33 @@ export function DocumentsPanel() {
     };
   }, [colName, reloadKey]);
 
+  // 选中的文档不在当前集合列表里：单独取回再打开；已被删除（404）则回到列表。
   useEffect(() => {
-    if (!highlightedDoc || selectedDocId === highlightedDoc.doc_id) return;
-    const timer = window.setTimeout(() => setSelectedDocId(highlightedDoc.doc_id), 0);
-    return () => window.clearTimeout(timer);
-  }, [highlightedDoc, selectedDocId, setSelectedDocId]);
+    if (!selectedDocId || loading || listedDoc || fetched?.docId === selectedDocId) return;
+    let cancelled = false;
+    getDocument(selectedDocId)
+      .then((doc) => {
+        if (!cancelled) setFetched({ docId: selectedDocId, doc });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setFetched({ docId: selectedDocId, doc: null });
+        if (err instanceof ApiError && err.status === 404) setSelectedDocId(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDocId, loading, listedDoc, fetched, setSelectedDocId]);
 
   function openDoc(doc: KrDocument) {
     setSelectedDocId(doc.doc_id);
-    setModeState({ docId: doc.doc_id, mode: "md" });
+    setMdOverrideDocId(null);
+  }
+
+  function viewInMd(target: CiteTarget) {
+    const { nonce, ...rest } = target;
+    void nonce;
+    jumpToCitation({ ...rest, preferMd: true });
   }
 
   function backToList() {
@@ -569,9 +610,9 @@ export function DocumentsPanel() {
     setHighlightedChunk(null);
   }
 
-  function setReadingMode(nextMode: "md" | "pdf") {
-    if (!activeDocId) return;
-    setModeState({ docId: activeDocId, mode: nextMode });
+  function switchReadingMode(nextMode: "md" | "pdf") {
+    setReadingMode(nextMode);
+    setMdOverrideDocId(null);
   }
 
   const isReading = !!activeDoc;
@@ -598,7 +639,7 @@ export function DocumentsPanel() {
       {(["md", "pdf"] as const).map((m) => (
         <button
           key={m}
-          onClick={() => setReadingMode(m)}
+          onClick={() => switchReadingMode(m)}
           style={{
             fontSize: 11,
             fontWeight: 600,
@@ -639,7 +680,7 @@ export function DocumentsPanel() {
       }
     >
       {isReading ? (
-        <ReadingView doc={activeDoc!} mode={mode} />
+        <ReadingView doc={activeDoc!} mode={mode} onViewInMd={viewInMd} />
       ) : (
         <ListView
           docs={docs}
