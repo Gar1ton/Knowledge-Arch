@@ -69,3 +69,42 @@
   background-color: rgb(255 120 0 / 0.6);
   outline: 1px solid rgb(200 80 0 / 0.8);
 }
+
+/* 引用定位高亮：PDF 纸面总是白色，主题强调色在部分配色下接近白色会看不见，因此用固定的蓝色；
+   与查找的黄 / 橙区分。到达时闪一下，之后保留到下次跳转。 */
+.textLayer .cite {
+  position: initial;
+  margin: -1px 0;
+  padding: 1px 0;
+  background-color: rgb(37 99 235 / 0.24);
+  animation: citePdfFlash 1.6s ease-out;
+}
+
+/* 图块定位：按图的 bbox 画框。 */
+.citeBox {
+  position: absolute;
+  z-index: 1;
+  pointer-events: none;
+  border: 2px solid rgb(37 99 235);
+  border-radius: 4px;
+  background-color: rgb(37 99 235 / 0.08);
+  animation: citePdfFlash 1.6s ease-out;
+}
+
+/* 定位不到原文时整页闪一下。 */
+.pageFlash {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  animation: citePdfPageFlash 1.6s ease-out forwards;
+}
+
+@keyframes citePdfFlash {
+  0%, 35% { background-color: rgb(37 99 235 / 0.55); }
+}
+
+@keyframes citePdfPageFlash {
+  0%, 35% { box-shadow: 0 0 0 4px rgb(37 99 235); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}

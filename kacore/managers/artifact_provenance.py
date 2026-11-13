@@ -13,8 +13,8 @@ if TYPE_CHECKING:
     from kacore.managers.markdown_extractor import MarkdownArtifact
 
 PROVENANCE_FILE = "provenance.json"
-# v4（2.1.0）：去图表污染（伪表格、乱码行、孤立刻度）+ 图内文字挪进图空位。
-PROCESSING_VERSION = "cleaning-v4"
+# v5：升级分块切分机制（触发全量 re-chunking 与向量重建）。
+PROCESSING_VERSION = "cleaning-v5"
 
 
 def save_provenance(directory: Path, artifact: MarkdownArtifact) -> None:

@@ -684,6 +684,9 @@ export interface IngestJob {
   title?: string;
   doc_id?: string;
   progress_percent: number;
+  /** 当前是第几步 / 共几步（解析与分块 → 向量索引）。 */
+  step?: number;
+  step_total?: number;
   elapsed_seconds?: number;
   started_at?: string;
   finished_at?: string | null;

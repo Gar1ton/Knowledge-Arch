@@ -665,3 +665,65 @@ def test_progress_does_not_reach_100_before_finalize() -> None:
     job.status = "success"
     api._refresh_build_progress(job, label="done")
     assert job.to_dict()["progress_percent"] == 100
+
+
+@pytest.mark.asyncio
+async def test_llm_call_count_does_not_run_ahead_of_document_chunks(tmp_path) -> None:
+    """一个分块触发多次 LLM 调用时，进度不得越过本文档的分块终点。
+
+    回归：曾按调用次数累加，跑到后面文档的分块上。
+    """
+    from kacore.api import KnowledgeRepositoryApi
+    from kacore.domain.models import DocumentChunk, SourceDocument
+    from kacore.index_compatibility import IndexCompatibilityStore
+    from kacore.repository.source_store.memory import InMemorySourceDocumentStore
+
+    seen: dict[str, int] = {}
+    holder: dict[str, KnowledgeRepositoryApi] = {}
+
+    class Registry:
+        enabled = True
+
+        def has_workspace(self, collection: str) -> bool:
+            return True
+
+        async def probe_llm_ready(self, *args, **kwargs):
+            return None
+
+        async def insert_document(
+            self, collection, doc_id, text, *,
+            lrag_chunks=None, progress_callback=None, pause_gate=None,
+        ) -> None:
+            for _ in range(5):  # 1 个分块：抽取 + 补抽 + 若干摘要
+                progress_callback({"status": "start"})
+                progress_callback({"status": "ok"})
+            job = next(iter(holder["api"]._graph_build_jobs.values()))
+            seen[doc_id] = job.processed_chunks
+
+    store = InMemorySourceDocumentStore()
+    for doc_id in ("d1", "d2", "d3"):
+        await store.add_document(SourceDocument(
+            doc_id=doc_id, title=doc_id, file_path=f"/tmp/{doc_id}.md",
+            content_type="text/markdown", size_bytes=1, content_hash=doc_id, collection="papers",
+        ))
+        await store.replace_chunks(
+            doc_id, [DocumentChunk(f"c-{doc_id}", doc_id, 0, f"text {doc_id}", doc_id)]
+        )
+    compatibility = IndexCompatibilityStore(tmp_path / "compat.json")
+    compatibility.mark_lightrag_compatible("papers", "fp")
+    api = KnowledgeRepositoryApi(
+        source_store=store,
+        lightrag_registry=Registry(),  # type: ignore[arg-type]
+        index_compatibility=compatibility,
+        embedding_fingerprint="fp",
+    )
+    holder["api"] = api
+    api._embedding_provider = AsyncMock()
+    api._embedding_provider.embed_query = AsyncMock(return_value=[0.1])
+    api._llm_adapter = AsyncMock()
+    api._llm_adapter.generate = AsyncMock(return_value="pong")
+
+    started = await api.build_graph("papers", confirmed=True)
+    await asyncio.wait_for(api._build_tasks[started["job_id"]], timeout=2)
+
+    assert seen == {"d1": 1, "d2": 2, "d3": 3}

@@ -4902,8 +4902,10 @@ class KnowledgeRepositoryApi(
                     elif status == "ok":
                         job.in_llm_call = False
                         if job.total_chunks > 0:
+                            # 一个分块会触发多次 LLM 调用（抽取、补抽、摘要），只按调用次数累加会
+                            # 跑到后面文档的分块上；封顶到本文档的分块终点。
                             job.processed_chunks = min(
-                                job.total_chunks,
+                                chunk_target,
                                 max(job.processed_chunks + 1, chunk_start + 1),
                             )
                             job.current_chunk_index = job.processed_chunks
@@ -5322,6 +5324,8 @@ class KnowledgeRepositoryApi(
 
         这是**全部**标记路径的唯一收口（上传自动索引失败、Zotero 同步遇不兼容、集合移动、
         reextract、删集合失败……），因此信号只需在这里打一次。
+        例外：IngestManager 内部重切 / 重抽取直接写 needs_reindex，由
+        `_ensure_document_chunks_current` 在其后补信号。
         """
         doc = await self._source_store.get_document(doc_id)
         if doc is None:
@@ -5445,10 +5449,13 @@ class KnowledgeRepositoryApi(
         doc = await self._source_store.get_document(doc_id)
         if doc is None:
             return chunks
+        # 隐式重切 / 重抽取会经 ingest_manager 把文档标成 needs_reindex，但不经过
+        # `_mark_document_needs_reindex` 收口；这里补打信号，否则打开一篇旧文档后它就一直待重建。
         if doc.local_meta.get("processing_pending"):
             if self._ingest_manager is None:
                 raise RuntimeError(f"Document processing recovery required: {doc_id}")
             await self._ingest_manager.reextract_document(doc_id)
+            self._notify_auto_reindex()
             return await self._source_store.list_chunks(doc_id)
         rebuilder = getattr(self._ingest_manager, "rebuild_document_chunks_from_artifact", None)
         needs_rebuild = getattr(self._ingest_manager, "chunk_needs_rebuild", None)
@@ -5457,6 +5464,7 @@ class KnowledgeRepositoryApi(
         try:
             if needs_rebuild(doc.doc_id, chunks, doc.local_meta):
                 await rebuilder(doc.doc_id)
+                self._notify_auto_reindex()
                 return await self._source_store.list_chunks(doc_id)
         except FileNotFoundError as exc:
             latest = await self._source_store.get_document(doc_id)

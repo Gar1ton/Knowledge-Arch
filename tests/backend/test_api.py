@@ -3421,3 +3421,26 @@ def test_capabilities_marks_zotero_server_mode_without_key_not_ready() -> None:
     api._config = Config({"zotero_sync": {"enabled": True, "access_mode": "local"}})
     secrets.delete_secret("zotero.server_api_key")
     assert _zotero_stage_after_overlay(api)["status"] == "ready"
+
+
+def test_milvus_build_progress_does_not_drop_when_indexing_starts() -> None:
+    """清洗段做完不应显示 100%、进入索引段后再掉回一半（回归）。"""
+    from kacore.milvus_build import MILVUS_BUILD_STAGE_INDEXING, MilvusBuildJob
+
+    job = MilvusBuildJob(total_docs=4, total_clean_docs=4, processed_clean_docs=4)
+    cleaned = job.to_dict()["progress_percent"]
+    job.stage = MILVUS_BUILD_STAGE_INDEXING
+    job.total_index_docs = 4
+    indexing = job.to_dict()["progress_percent"]
+
+    assert cleaned == 50
+    assert indexing >= cleaned
+
+
+def test_ingest_job_reports_step_x_of_y() -> None:
+    from kacore.ingest_job import INGEST_STAGE_INDEXING, IngestJob
+
+    job = IngestJob(title="a.pdf")
+    assert (job.to_dict()["step"], job.to_dict()["step_total"]) == (1, 2)
+    job.set_stage(INGEST_STAGE_INDEXING)
+    assert job.to_dict()["step"] == 2

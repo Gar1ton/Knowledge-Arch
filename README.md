@@ -85,10 +85,10 @@ The top bar switches between **Workspace** and **Data Flow**. The Data Flow page
 ## Features & Retrieval Modes
 
 - **Originals first**: Preserves original PDFs, page-level extraction, and cleaned Markdown; footnotes are stored separately and read back on demand. Supports nested collections, tags, batch ingestion, and re-cleaning.
-- **Evidence-grounded Ask**: Answers cite retrieved passages and render deterministic **Harvard in-text citations** and reference lists in code (never hallucinated by the LLM); click any short citation to jump to the source chunk.
+- **Evidence-grounded Ask**: Answers cite retrieved passages and render deterministic **Harvard in-text citations** and reference lists in code (never hallucinated by the LLM); click any short citation to jump to the source: in the PDF view the passage (or figure) is highlighted in the original PDF, in the MD view the source chunk flashes.
 - **Automatic index maintenance**: Adding documents or changing the embedding configuration schedules Milvus Lite index builds/rebuilds automatically.
 - **Figures and charts (2.1)**: Every figure gets a searchable chunk (caption + text found inside the figure). With **Figure recognition** on and a **Vision** model assigned, click **Describe figures** in the File panel (top bar) to have the vision model describe figures that have no description yet; the dialog shows the figure count and a token estimate first, progress appears at the bottom left, and runs can be cancelled and resumed (only missing figures are processed). Figures are rendered from the original PDF when needed, nothing is stored. Descriptions are marked as model-generated and are not added to the LightRAG graph.
-- **Find in PDF**: The PDF reader has keyword search (Ctrl/⌘+F, Enter / Shift+Enter) with highlights, and text in PDFs can now be selected.
+- **Find in PDF**: The PDF reader has keyword search (Ctrl/⌘+F, Enter / Shift+Enter) with highlights, and text in PDFs can now be selected. PDFs open in the PDF view by default; switch to MD for the chunk view (the choice is remembered on this machine).
 
 ### Six Retrieval Modes
 

@@ -45,19 +45,22 @@ export type TextLayerCtor = new (options: {
 
 const CANCELLED_ERRORS = new Set(["RenderingCancelledException", "AbortException"]);
 
-/** 本页要高亮的区间；current 为当前命中（滚动到它并加深颜色）。 */
-export type PageHighlight = { ranges: PdfItemRange[]; current: boolean };
+/** 本页要高亮的区间；current 为当前查找命中（滚动到它并加深颜色）；cite 为引用定位（另一种颜色，不参与查找滚动）。 */
+export type PageHighlight = { ranges: PdfItemRange[]; current: boolean; cite?: boolean };
+
+/** 引用定位：本页要画的图框（PDF 坐标，点，左上原点）与滚动令牌（每次新跳转变化一次，同一令牌只滚一次）。 */
+export type PageCite = { token: number; box?: number[] | null; scroll: boolean };
 
 /** 把高亮区间包进文本项：先还原原文，再按区间切成「前 / 命中 / 后」。 */
 function applyHighlights(layer: TextLayerInstance, highlights: PageHighlight[]): HTMLElement | null {
   layer.textDivs.forEach((div, index) => {
     if (div.childElementCount > 0) div.textContent = layer.textContentItemsStr[index] ?? "";
   });
-  const byItem = new Map<number, Array<{ start: number; end: number; current: boolean }>>();
-  highlights.forEach(({ ranges, current }) => {
+  const byItem = new Map<number, Array<{ start: number; end: number; current: boolean; cite: boolean }>>();
+  highlights.forEach(({ ranges, current, cite }) => {
     ranges.forEach(({ item, start, end }) => {
       const list = byItem.get(item) ?? [];
-      list.push({ start, end, current });
+      list.push({ start, end, current, cite: Boolean(cite) });
       byItem.set(item, list);
     });
   });
@@ -69,11 +72,11 @@ function applyHighlights(layer: TextLayerInstance, highlights: PageHighlight[]):
     list.sort((a, b) => a.start - b.start);
     div.textContent = "";
     let cursor = 0;
-    list.forEach(({ start, end, current }) => {
+    list.forEach(({ start, end, current, cite }) => {
       if (start < cursor) return; // 重叠的命中只画第一段
       if (start > cursor) div.append(document.createTextNode(text.slice(cursor, start)));
       const mark = document.createElement("span");
-      mark.className = current ? `${styles.hit} ${styles.hitCurrent}` : styles.hit;
+      mark.className = cite ? styles.cite : current ? `${styles.hit} ${styles.hitCurrent}` : styles.hit;
       mark.textContent = text.slice(start, end);
       div.append(mark);
       if (current && !currentEl) currentEl = mark;
@@ -94,18 +97,22 @@ export function PdfPageView({
   scale,
   textLayerCtor,
   highlights,
+  cite,
 }: {
   pdf: PdfDocument;
   pageNumber: number;
   scale: number;
   textLayerCtor: TextLayerCtor | null;
   highlights: PageHighlight[];
+  cite?: PageCite | null;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const textRef = useRef<HTMLDivElement | null>(null);
   const layerRef = useRef<TextLayerInstance | null>(null);
   const [rendering, setRendering] = useState(true);
   const [layerVersion, setLayerVersion] = useState(0);
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const scrolledTokenRef = useRef<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -173,10 +180,34 @@ export function PdfPageView({
     current?.scrollIntoView({ block: "center", inline: "nearest" });
   }, [highlights, layerVersion]);
 
+  // 引用定位：文字层（或图框）就绪后滚到第一处，每个令牌只滚一次，之后缩放、查找都不再抢滚动。
+  useEffect(() => {
+    if (!cite?.scroll || scrolledTokenRef.current === cite.token) return;
+    const target = cite.box
+      ? boxRef.current
+      : textRef.current?.querySelector<HTMLElement>(`.${styles.cite}`) ?? null;
+    if (!target || (!cite.box && !layerRef.current)) return;
+    scrolledTokenRef.current = cite.token;
+    target.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+  }, [cite, layerVersion, highlights]);
+
   return (
     <>
       <canvas ref={canvasRef} style={{ display: "block" }} />
       <div ref={textRef} className={styles.textLayer} style={{ ["--scale-round-x" as string]: "1px", ["--scale-round-y" as string]: "1px" }} />
+      {cite?.box && cite.box.length === 4 && (
+        <div
+          key={cite.token}
+          ref={boxRef}
+          className={styles.citeBox}
+          style={{
+            left: cite.box[0] * scale,
+            top: cite.box[1] * scale,
+            width: (cite.box[2] - cite.box[0]) * scale,
+            height: (cite.box[3] - cite.box[1]) * scale,
+          }}
+        />
+      )}
       {rendering && (
         <div
           style={{

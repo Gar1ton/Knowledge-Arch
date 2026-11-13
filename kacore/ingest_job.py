@@ -32,6 +32,9 @@ INGEST_STAGE_LABELS = {
     INGEST_STAGE_INDEXING: "Vector indexing",
 }
 
+# 阶段序号（X/Y 显示用）：解析一篇 PDF 拿不到真实百分比，前端只显示「第 X/Y 步」与不确定进度条。
+_STAGE_ORDER = (INGEST_STAGE_PARSING, INGEST_STAGE_INDEXING)
+
 _STAGE_BASE_PCT = {
     INGEST_STAGE_PARSING: 20,
     INGEST_STAGE_INDEXING: 70,
@@ -43,7 +46,8 @@ class IngestJob:
     """单次文档摄入的进度快照。
 
     契约：`status` running → 终态 success / error；`stage` 见 `INGEST_STAGE_*`；
-    `progress_percent` 终态 success 固定 100，否则取阶段底值（封顶 99）。
+    `progress_percent` 终态 success 固定 100，否则取阶段底值（封顶 99，只供日志事件）；
+    界面用 `step` / `step_total` 显示第 X/Y 步。
     """
 
     job_id: str = field(default_factory=lambda: uuid.uuid4().hex)
@@ -75,6 +79,10 @@ class IngestJob:
             return 100
         return min(99, max(0, _STAGE_BASE_PCT.get(self.stage, 0)))
 
+    def step(self) -> int:
+        """当前阶段在 `_STAGE_ORDER` 中的序号（从 1 起）；未知阶段记 1。"""
+        return _STAGE_ORDER.index(self.stage) + 1 if self.stage in _STAGE_ORDER else 1
+
     def to_dict(self) -> dict[str, Any]:
         elapsed_end = self.finished_at or time.monotonic()
         elapsed = max(0.0, elapsed_end - self.started_at)
@@ -87,6 +95,8 @@ class IngestJob:
             "title": self.title,
             "doc_id": self.doc_id,
             "progress_percent": self.progress_percent(),
+            "step": self.step(),
+            "step_total": len(_STAGE_ORDER),
             "elapsed_seconds": round(elapsed, 2),
             "started_at": self.started_at_iso,
             "finished_at": self.finished_at_iso,
