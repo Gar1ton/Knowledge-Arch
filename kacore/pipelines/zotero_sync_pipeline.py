@@ -102,7 +102,6 @@ class ZoteroSyncResult:
     detached_document_ids: list[str] = field(default_factory=list)
     reattached_document_ids: list[str] = field(default_factory=list)
     skipped_unchanged: int = 0
-    needs_milvus_rebuild: bool = False
     errors: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
@@ -119,7 +118,6 @@ class ZoteroSyncResult:
             "detached": list(self.detached_document_ids),
             "reattached": list(self.reattached_document_ids),
             "skipped_unchanged": self.skipped_unchanged,
-            "needs_milvus_rebuild": self.needs_milvus_rebuild,
             "errors": list(self.errors),
         }
 
@@ -307,10 +305,9 @@ class ZoteroSyncPipeline:
             progress.removed_count = len(result.removed_document_ids)
             progress.detached_count = len(result.detached_document_ids)
 
-        if cfg.sync_mode == ZOTERO_SYNC_STRICT and (
-            result.new_document_ids or result.changed_document_ids or result.removed_document_ids
-        ):
-            result.needs_milvus_rebuild = True
+        # 不再因 strict 有变化就全量重建 Milvus：新增 / 变更文档已在 `_index_and_mark` 逐篇索引
+        # （`retain_document_chunks` 清掉旧分块），删除已在 `_apply_removals` 逐篇移出；
+        # 逐篇失败由 `needs_reindex` 队列与自动重建调度器兜底。
 
         result.finished_at = datetime.now(timezone.utc)
         logger.info(

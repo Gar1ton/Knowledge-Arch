@@ -210,6 +210,26 @@ async def test_list_documents_and_filter(tmp_path: Path) -> None:
         await client.close()
 
 
+async def test_list_documents_does_not_wait_for_processing_lock(tmp_path: Path) -> None:
+    """全量向量重建 / 同步摄入持处理锁数分钟时，文档列表照常返回。
+
+    以前列表排队等锁到前端超时，界面显示「0 篇文献」。
+    """
+    import asyncio
+
+    api = await _make_api()
+    app = build_app(api=api, upload_dir=tmp_path, token=TOKEN)
+    client = TestClient(TestServer(app), headers=AUTH)
+    await client.start_server()
+    try:
+        async with api._processing_lock:  # 模拟 rebuild_vector_store 正持锁
+            resp = await asyncio.wait_for(client.get("/api/documents?collection=papers"), 2)
+            assert resp.status == 200
+            assert [d["doc_id"] for d in await resp.json()] == ["d1"]
+    finally:
+        await client.close()
+
+
 async def test_upload_classify_delete_document(tmp_path: Path) -> None:
     client = await _client(tmp_path)
     try:

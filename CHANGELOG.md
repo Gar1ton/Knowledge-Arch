@@ -4,6 +4,23 @@
 
 ## [Unreleased]
 
+### 修复 (Fixed)
+
+- **Zotero 同步后整库向量重灌（「文档爆炸」）**：严格镜像模式只要拉到一篇新增 / 变更 / 删除，同步收尾就清空 Milvus、把全库约 3 万分块重新写入
+  （真实日志里每次 new>0 都触发，一次约 6 分钟）。新文档在同步中已逐篇索引并清掉旧分块，删除也已逐篇移出 Milvus，
+  所以去掉这次全量重建；逐篇失败仍进待重建队列由自动重建补上。strict 删除时 Milvus 删不掉才把向量库标为需重建
+  （`kacore/pipelines/zotero_sync_pipeline.py` 去掉 `needs_milvus_rebuild`、`kacore/api.py` 的 `_run_zotero_pull` 与 `_remove_document_index`）。
+- **重建或同步期间集合显示「0 篇文献」**：文档列表为每篇文档取分块数时走了带处理锁的 `list_document_chunks`，全量重建持锁数分钟，
+  列表请求排队到前端 30 秒超时，界面把失败当成空集合。列表改用只读、不取锁的 `count_document_chunks`
+  （旧分块的重切留到打开文档或重建清洗时）；前端列表加载失败时显示「加载失败 + 重试」，不再显示 0 篇
+  （`web/server.py` 的 `_document_dict`、`kacore/api.py`、`web/frontend/components/panels/DocumentsPanel.tsx`、`lib/i18n.ts`）。
+
+### 变更 (Changed)
+
+- 版本号 2.1.2（正式版本累计后再打标签）。
+
+## [v2.1.1] — 2026-11-13
+
 ### 新增 (Added)
 
 - **引用跳到 PDF 原文**：PDF 视图里点回答中的引用（或来源卡片），在原 PDF 上高亮这段原文（可跨页），图块画出图的框；

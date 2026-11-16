@@ -1748,7 +1748,8 @@ def _document_ext(d: object) -> str:
 
 
 async def _document_dict(api: KnowledgeRepositoryApi, d: object) -> dict:
-    chunks = await api.list_document_chunks(d.doc_id)  # type: ignore[attr-defined]
+    # 只读计数，不取处理锁：重建 / 同步持锁期间列表照常返回。
+    chunk_count = await api.count_document_chunks(d.doc_id)  # type: ignore[attr-defined]
     lightrag_status = await api.get_lightrag_index_status(d.doc_id)  # type: ignore[attr-defined]
     updated_at = d.updated_at.isoformat() if d.updated_at else None  # type: ignore[attr-defined]
     filename = Path(d.file_path).name  # type: ignore[attr-defined]
@@ -1761,7 +1762,7 @@ async def _document_dict(api: KnowledgeRepositoryApi, d: object) -> dict:
     last_synced_iso = last_synced.isoformat() if last_synced else None
     needs_reindex = getattr(d, "needs_reindex", False)
     # Milvus 覆盖指示：active + 有 chunk + 未待重索引（无 bug 时应全勾）。
-    milvus_covered = bool(chunks) and not needs_reindex and lifecycle_val == "active"
+    milvus_covered = chunk_count > 0 and not needs_reindex and lifecycle_val == "active"
     result = {
         "doc_id": d.doc_id,  # type: ignore[attr-defined]
         "title": d.title,  # type: ignore[attr-defined]
@@ -1772,7 +1773,7 @@ async def _document_dict(api: KnowledgeRepositoryApi, d: object) -> dict:
         "collection": d.collection,  # type: ignore[attr-defined]
         "tags": d.tags,  # type: ignore[attr-defined]
         "content_hash": d.content_hash,  # type: ignore[attr-defined]
-        "chunks": len(chunks),
+        "chunks": chunk_count,
         "updated_at": updated_at,
         "updated": updated_at,
         "ext": ext,

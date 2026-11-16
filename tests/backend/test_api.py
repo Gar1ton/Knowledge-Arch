@@ -3369,6 +3369,70 @@ async def test_zotero_pull_marks_stale_documents_after_sync() -> None:
     assert scheduler.notified == 1
 
 
+async def test_zotero_strict_pull_with_new_documents_does_not_rebuild_milvus() -> None:
+    """strict 同步拉到新文献后不再清空并全量重灌 Milvus（新文献已在同步中逐篇索引）。"""
+    from datetime import datetime, timezone
+
+    from kacore.pipelines.zotero_sync_pipeline import ZoteroSyncResult
+    from kacore.zotero_sync_job import ZOTERO_SYNC_SUCCESS, ZoteroSyncJob
+
+    api = KnowledgeRepositoryApi(source_store=InMemorySourceDocumentStore(), sync_targets={})
+
+    class FakePipeline:
+        async def pull(self, *, incremental: bool, progress: ZoteroSyncJob) -> ZoteroSyncResult:
+            del incremental, progress
+            return ZoteroSyncResult(
+                sync_mode="strict_mirror",
+                storage_mode="zotmoov",
+                started_at=datetime.now(timezone.utc),
+                new_document_ids=["new-doc"],
+                removed_document_ids=["gone-doc"],
+            )
+
+    rebuilds: list[object] = []
+
+    async def fail_rebuild(job: object = None) -> dict:
+        rebuilds.append(job)
+        raise AssertionError("full Milvus rebuild must not run after a Zotero pull")
+
+    api.rebuild_vector_store = fail_rebuild  # type: ignore[method-assign]
+    api.attach_zotero_pipeline(FakePipeline())
+
+    job = ZoteroSyncJob(incremental=True)
+    await api._run_zotero_pull(job, incremental=True)
+
+    assert job.status == ZOTERO_SYNC_SUCCESS
+    assert rebuilds == []
+    assert api._last_zotero_sync is not None
+    assert "milvus_rebuild" not in api._last_zotero_sync
+
+
+async def test_zotero_remove_index_failure_marks_milvus_incompatible(tmp_path: Path) -> None:
+    """strict 删除时 Milvus 删不掉：文档随后会从 SQLite 删除，只能靠全量重建清掉残留向量。"""
+    from kacore.index_compatibility import IndexCompatibilityStore
+
+    store = InMemorySourceDocumentStore()
+    await store.add_document(_doc("gone"))
+    await store.replace_chunks("gone", [DocumentChunk("gone:0", "gone", 0, "text", "h")])
+    compat = IndexCompatibilityStore(tmp_path / "index_compatibility.json")
+    compat.mark_milvus_compatible("fp")
+
+    class BrokenVectorStore:
+        async def delete_chunks(self, chunk_ids: list[str]) -> None:
+            raise RuntimeError("milvus down")
+
+    api = KnowledgeRepositoryApi(
+        source_store=store,
+        sync_targets={},
+        vector_store=BrokenVectorStore(),  # type: ignore[arg-type]
+        index_compatibility=compat,
+    )
+    await api._remove_document_index("gone")
+
+    assert not compat.is_milvus_compatible("fp")
+    assert "milvus down" in compat.reason("milvus")
+
+
 async def test_notion_initialize_persists_both_data_sources_and_exposes_auto_sync() -> None:
     class Pipeline:
         async def initialize_databases(self, **kwargs) -> dict:

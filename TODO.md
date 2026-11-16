@@ -539,3 +539,18 @@
     滑动条、无百分比；文件面板一次传两份显示「file 1/2」「file 2/2」。
     未验证：真实 Milvus 环境下向量库节点自动恢复（本机测试环境无 Milvus，单测覆盖信号）；Milvus / LightRAG 进度在真实任务中的观感
     （单测覆盖算法）；索引阶段「step 2/2」（无 Milvus 时瞬间完成）；旋转页或带 CropBox 偏移的 PDF 上图框位置；桌面壳里实测。
+- [x] P28 · 2.1.2（2.1.1 之后的修复）。决策（已批准）：Zotero 严格镜像不再全量重建向量库；文档列表不再等处理锁；
+  列表加载失败显示错误与重试；版本 2.1.2，先推 developer，正式版本累计后再打标签。
+  - [x] ① Zotero 同步后「文档爆炸」：strict_mirror 只要有新增 / 变更 / 删除就 `needs_milvus_rebuild=True`，同步收尾调
+    `rebuild_vector_store()` 清空 Milvus 再把全库重灌一遍（真实日志：11-10 ×3、11-12、11-13、11-16 每次 new>0 都触发，一次约 6 分钟）。
+    新文档在同步中已逐篇索引（`retain_document_chunks` 清掉旧分块），删除也已逐篇移出 Milvus，全量重建是多余的。
+  - [x] ② 重建期间集合显示「0 篇文献」：`/api/documents` 的 `_document_dict` 调 `list_document_chunks`（`@serialized_processing`，
+    还会顺手重切旧分块），全量重建持锁数分钟，列表请求排队到前端 30 s 超时，`catch` 把列表置空。
+  - [x] ③ 前端列表请求失败时显示错误与重试，不再显示「0 篇 / 该集合暂无文档」。
+  - [x] ④ 版本号 2.1.2；CHANGELOG。
+  - 验证：pytest 1548 passed / 4 skipped（新增 3 项：`test_zotero_strict_pull_with_new_documents_does_not_rebuild_milvus`、
+    `test_zotero_remove_index_failure_marks_milvus_incompatible`、`test_list_documents_does_not_wait_for_processing_lock`；
+    后两项还原修复时失败，strict 全量重建由 `test_pull_strict_hard_deletes_removed` 的 `to_dict()` 断言兜住）；ruff；mypy；eslint；tsc；`next build`。
+    未验证：桌面壳里真实 Zotero 同步 + Milvus 实测。用户本机 11-16 03:27 在全量重建中途退出，`index_compatibility.json` 仍是
+    「重建进行中」，升级后首次启动会再完整重建一次（属正常恢复，期间列表不再显示 0 篇）。
+    遗留：`XT7UNQSM` 每次同步 Web 下载 Not found，`MTA6FXYE` 每次以 0 分块「重建」，未查。

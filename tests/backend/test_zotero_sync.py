@@ -377,7 +377,7 @@ async def test_pull_strict_hard_deletes_removed(tmp_path: Path) -> None:
     data_dir = tmp_path / "Zotero"
     data_dir.mkdir()
     _build_zotero_db(data_dir)
-    store, pipeline, _, removed = _pipeline(tmp_path, data_dir, "strict_mirror")
+    store, pipeline, indexed, removed = _pipeline(tmp_path, data_dir, "strict_mirror")
     cleaned: list[str] = []
 
     async def lightrag_cleanup(doc_id: str, collection: str) -> None:
@@ -385,7 +385,10 @@ async def test_pull_strict_hard_deletes_removed(tmp_path: Path) -> None:
 
     pipeline._lightrag_cleanup = lightrag_cleanup
     result1 = await pipeline.pull()
-    assert result1.needs_milvus_rebuild is True
+    # strict 新增文档逐篇索引，不再要求同步后全量重建 Milvus。
+    assert result1.new_document_ids == [DOC_ID]
+    assert indexed == [DOC_ID]
+    assert "needs_milvus_rebuild" not in result1.to_dict()
     assert await store.get_document(DOC_ID) is not None
 
     # 模拟 Zotero 删除附件：重建无附件的 DB → strict 硬删除（文档记录 + Milvus + LRAG）
@@ -394,7 +397,6 @@ async def test_pull_strict_hard_deletes_removed(tmp_path: Path) -> None:
     result2 = await pipeline.pull()
     assert result2.removed_document_ids == [DOC_ID]
     assert result2.detached_document_ids == []
-    assert result2.needs_milvus_rebuild is True
     assert await store.get_document(DOC_ID) is None
     assert removed == [DOC_ID]
     assert cleaned == [DOC_ID]
@@ -439,8 +441,7 @@ async def test_pull_conservative_detaches_removed_and_reattaches(tmp_path: Path)
         cleaned.append(doc_id)
 
     pipeline._lightrag_cleanup = lightrag_cleanup
-    result1 = await pipeline.pull()
-    assert result1.needs_milvus_rebuild is False
+    await pipeline.pull()
 
     # Zotero 删除附件 → conservative 脱管（detached），不删文档、不动 LRAG，仅移除 Milvus
     (data_dir / "zotero.sqlite").unlink()
@@ -448,7 +449,6 @@ async def test_pull_conservative_detaches_removed_and_reattaches(tmp_path: Path)
     result2 = await pipeline.pull()
     assert result2.detached_document_ids == [DOC_ID]
     assert result2.removed_document_ids == []
-    assert result2.needs_milvus_rebuild is False
     assert DOC_ID in removed  # Milvus 移除
     assert cleaned == []  # LRAG 保留
     doc = await store.get_document(DOC_ID)

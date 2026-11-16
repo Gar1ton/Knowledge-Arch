@@ -1588,6 +1588,14 @@ class KnowledgeRepositoryApi(
             source["zotero_pdf_uri"] = meta.get("zotero_pdf_uri", "")
         return source
 
+    async def count_document_chunks(self, doc_id: str) -> int:
+        """文档当前落盘的分块数；只读、不取处理锁、不触发旧分块重切（供文档列表）。
+
+        列表若走 `list_document_chunks`（持 `serialized_processing`），向量重建或同步摄入持锁期间
+        整个列表请求会排队到前端超时；旧分块的重切留到打开文档或重建清洗时再做。
+        """
+        return len(await self._source_store.list_chunks(doc_id))
+
     async def get_lightrag_index_status(self, doc_id: str) -> dict[str, str] | None:
         return await self._source_store.get_lightrag_index_status(doc_id)
 
@@ -5560,7 +5568,12 @@ class KnowledgeRepositoryApi(
 
     @serialized_processing
     async def _remove_document_index(self, doc_id: str) -> None:
-        """从 Milvus 移除某文档的全部 chunk（conservative 脱管 / strict 删除时调用）。"""
+        """从 Milvus 移除某文档的全部 chunk（conservative 脱管 / strict 删除时调用）。
+
+        删除失败时把 Milvus 标为不兼容：strict 随后会删掉 SQLite 里的文档，残留向量再无文档
+        可挂 `needs_reindex`，只有全量重建能清掉（同步不再无条件全量重建，见
+        `ZoteroSyncPipeline.pull`）。
+        """
         if not self._vector_store:
             return
         try:
@@ -5570,6 +5583,9 @@ class KnowledgeRepositoryApi(
                 await self._vector_store.delete_chunks(ids)
         except Exception as exc:
             logger.warning("Zotero remove index failed for %s: %s", doc_id, exc)
+            self._mark_milvus_incompatible(
+                f"Milvus delete failed for {doc_id}: {exc}"
+            )
 
     async def _lightrag_cleanup(self, doc_id: str, collection: str) -> None:
         """删除某文档在 LightRAG workspace 的贡献（strict 硬删除时调用）。"""
@@ -6085,12 +6101,6 @@ class KnowledgeRepositoryApi(
                 payload["stale_marked"] = await self.mark_stale_processing_documents_needs_reindex()
             except Exception as exc:  # noqa: BLE001 - 扫描失败不应改变同步终态
                 logger.warning("Stale document scan after Zotero pull failed: %s", exc)
-            if result.needs_milvus_rebuild:
-                try:
-                    payload["milvus_rebuild"] = await self.rebuild_vector_store()
-                except Exception as exc:
-                    logger.error("Zotero strict rebuild failed: %s", exc, exc_info=True)
-                    payload["milvus_rebuild_error"] = str(exc)
             self._last_zotero_sync = payload
             logger.info("Zotero sync job %s finished: status=%s", job.job_id, status)
         except asyncio.CancelledError:

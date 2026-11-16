@@ -2,6 +2,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Panel } from "@/components/ds/Panel";
 import { Badge } from "@/components/ds/Badge";
+import { Button } from "@/components/ds/Button";
 import { Tag } from "@/components/ds/Tag";
 import { Eyebrow } from "@/components/ds/Eyebrow";
 import { IconButton } from "@/components/ds/IconButton";
@@ -35,6 +36,8 @@ type DocumentListState = {
   colName?: string;
   docs: KrDocument[];
   loading: boolean;
+  /** 列表请求失败（超时 / 后端错误）：显示错误与重试，不能当成「集合为空」。 */
+  failed?: boolean;
 };
 
 /** 选中的文档不在当前列表里时（引用跳到别的集合、恢复上次打开的文档）单独取回。 */
@@ -165,12 +168,16 @@ function ListView({
   docs,
   title,
   loading,
+  failed,
+  onRetry,
   onOpen,
   onNote,
 }: {
   docs: KrDocument[];
   title: string;
   loading: boolean;
+  failed: boolean;
+  onRetry: () => void;
   onOpen: (doc: KrDocument) => void;
   onNote: (docId: string) => void;
 }) {
@@ -188,13 +195,20 @@ function ListView({
         >
           {title}
         </span>
-        {!loading && (
+        {!loading && !failed && (
           <span style={{ fontSize: 12, color: "var(--fg-muted)" }}>· {t("documents_count", { n: docs.length })}</span>
         )}
       </div>
       {loading ? (
         <div style={{ padding: 40, textAlign: "center", color: "var(--fg-subtle)", fontSize: 13 }}>
           {t("panel_loading")}
+        </div>
+      ) : failed ? (
+        <div style={{ padding: 40, textAlign: "center", color: "var(--fg-subtle)", fontSize: 13 }}>
+          <div>{t("documents_list_failed")}</div>
+          <Button variant="outline" size="sm" style={{ marginTop: 10 }} onClick={onRetry}>
+            {t("btn_retry")}
+          </Button>
         </div>
       ) : docs.length === 0 ? (
         <div style={{ padding: 40, textAlign: "center", color: "var(--fg-subtle)", fontSize: 13 }}>
@@ -546,6 +560,7 @@ export function DocumentsPanel() {
   }
   const docs = documentList.colName === colName ? documentList.docs : [];
   const loading = documentList.colName === colName ? documentList.loading : true;
+  const listFailed = documentList.colName === colName && !!documentList.failed;
   const listedDoc = selectedDocId ? docs.find((d) => d.doc_id === selectedDocId) ?? null : null;
   const fetchedDoc = fetched && fetched.docId === selectedDocId ? fetched.doc : null;
   const activeDoc = listedDoc ?? fetchedDoc;
@@ -569,7 +584,7 @@ export function DocumentsPanel() {
         if (!cancelled) setDocumentList({ colName, docs: nextDocs, loading: false });
       })
       .catch(() => {
-        if (!cancelled) setDocumentList({ colName, docs: [], loading: false });
+        if (!cancelled) setDocumentList({ colName, docs: [], loading: false, failed: true });
       });
     return () => {
       cancelled = true;
@@ -686,6 +701,8 @@ export function DocumentsPanel() {
           docs={docs}
           title={title}
           loading={loading}
+          failed={listFailed}
+          onRetry={() => setReloadKey((k) => k + 1)}
           onOpen={openDoc}
           onNote={(docId) => setNoteDocId(docId)}
         />
