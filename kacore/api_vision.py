@@ -85,14 +85,8 @@ class VisionApiMixin:
 
     async def _vision_docs(self, collection: str | None) -> list[SourceDocument]:
         if collection:
-            # 与图谱构建一致：集合连同全部子集合；查不到集合对象时按文档的主归属名筛。
-            col = await self._source_store.get_collection_by_name(collection)
-            if col is not None:
-                docs = await self._source_store.list_documents_by_collection_key(
-                    col.coll_key, descendants=True
-                )
-            else:
-                docs = await self._source_store.list_documents(collection=collection)
+            # 与图谱构建、文档列表一致：集合连同全部子集合。
+            docs = await self.list_scope_documents(collection)  # type: ignore[attr-defined]
         else:
             docs = await self._source_store.list_documents()
         return [d for d in docs if d.lifecycle_state == DocumentLifecycle.ACTIVE]

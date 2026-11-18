@@ -241,11 +241,6 @@
   --ann-blue-bg: color-mix(in srgb, var(--ann-blue) 15%, var(--surface));
 }
 
-/* ─── LightRAG 高级模式：全站向当前主题 primary 偏色 ──────────── */
-/* （预览卡片等主题边界元素在派生块中重置 --mode-tint: 0%，不受影响） */
-[data-mode="lightrag"] { --mode-tint: 5%; }
-.dark[data-mode="lightrag"], .dark [data-mode="lightrag"] { --mode-tint: 8%; }
-
 /* ─── Flow 拓扑图 token ──────────────────────────────────────── */
 /* 灰阶全部别名到 DS token（随主题/明暗自动生效）；状态语义色与阴影保持固定 */
 :root {

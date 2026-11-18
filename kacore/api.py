@@ -1186,10 +1186,56 @@ class KnowledgeRepositoryApi(
     async def list_documents_by_collection_key(
         self, coll_key: str, *, descendants: bool = False
     ) -> list[SourceDocument]:
-        """按 coll_key 列出归属文档（descendants=False 仅本级，供 DocumentsPanel）。"""
+        """按 coll_key 列出归属文档（descendants=False 仅本级）。"""
         return await self._source_store.list_documents_by_collection_key(
             coll_key, descendants=descendants
         )
+
+    async def list_scope_documents(self, collection: str) -> list[SourceDocument]:
+        """一个集合「范围」内的文档：集合本身 + 全部子集合（按归属表，多归属去重）。
+
+        文档列表、图谱就绪 / 构建、识图都用这一份，界面上列出的就是这些功能处理的文档。
+        按名字找不到集合对象时（旧数据），退回按文档的主归属名筛。
+        """
+        col = await self._source_store.get_collection_by_name(collection)
+        if col is not None:
+            return await self._source_store.list_documents_by_collection_key(
+                col.coll_key, descendants=True
+            )
+        return await self._source_store.list_documents(collection=collection)
+
+    async def collection_doc_counts(self) -> dict[str, tuple[int, int]]:
+        """集合树上的篇数：coll_key → (本级, 含全部子集合)，只数 active 文档。
+
+        「含子集合」按文档去重，一篇论文同时在两个子集合里只算一次，与 `list_scope_documents`
+        列出的篇数一致。没有文档的集合不出现在结果里。
+        """
+        parent_of = {
+            c.coll_key: c.parent_key for c in await self._source_store.list_collections()
+        }
+        direct: dict[str, int] = {}
+        members: dict[str, set[str]] = {}
+        for doc in await self._source_store.list_documents():
+            if doc.lifecycle_state != DocumentLifecycle.ACTIVE:
+                continue
+            for key in dict.fromkeys(doc.collection_keys):
+                direct[key] = direct.get(key, 0) + 1
+                seen: set[str] = set()
+                node = key
+                while node and node in parent_of and node not in seen:  # seen 防环
+                    seen.add(node)
+                    members.setdefault(node, set()).add(doc.doc_id)
+                    node = parent_of[node]
+        return {key: (direct.get(key, 0), len(ids)) for key, ids in members.items()}
+
+    async def library_summary(self) -> dict[str, int]:
+        """整个库的 active 论文数（左栏「全部文档」行；多归属只算一次）。"""
+        docs = await self._source_store.list_documents()
+        return {
+            "document_count": sum(
+                1 for d in docs if d.lifecycle_state == DocumentLifecycle.ACTIVE
+            )
+        }
 
     async def get_document(self, doc_id: str) -> SourceDocument | None:
         """取单个文档；不存在返回 None。"""
@@ -1486,6 +1532,10 @@ class KnowledgeRepositoryApi(
             "url": item.url,
             "abstract": item.abstract,
         }
+
+    async def document_biblio_meta(self, doc: SourceDocument) -> dict[str, Any]:
+        """文档的书目字段（标题以外）：文档列表与回答引用用同一份。见 `_document_biblio_meta`。"""
+        return await self._document_biblio_meta(doc)
 
     async def _document_biblio_meta(self, doc: SourceDocument | None) -> dict[str, Any]:
         """取文档的归一化书目字段；Zotero 与本地文档同构。
@@ -3462,13 +3512,7 @@ class KnowledgeRepositoryApi(
                 "build_available": False,
             }
         # 含后代：父集合的就绪度按「父 + 全部后代」的文档集判定（与 build 合并 workspace 一致）。
-        col = await self._source_store.get_collection_by_name(collection)
-        if col is not None:
-            docs = await self._source_store.list_documents_by_collection_key(
-                col.coll_key, descendants=True
-            )
-        else:
-            docs = await self._source_store.list_documents(collection=collection)
+        docs = await self.list_scope_documents(collection)
         if not docs:
             return {
                 "ready": False,
@@ -5091,13 +5135,7 @@ class KnowledgeRepositoryApi(
 
     async def _lightrag_docs_for_build(self, collection: str) -> list[SourceDocument]:
         # 合并单 workspace：以选中集合为根，纳入「父 + 全部后代」的文档（多归属去重）。
-        col = await self._source_store.get_collection_by_name(collection)
-        if col is not None:
-            docs = await self._source_store.list_documents_by_collection_key(
-                col.coll_key, descendants=True
-            )
-        else:
-            docs = await self._source_store.list_documents(collection=collection)
+        docs = await self.list_scope_documents(collection)
         if (
             self._lightrag_registry is None
             or not self._lightrag_registry.has_workspace(collection)

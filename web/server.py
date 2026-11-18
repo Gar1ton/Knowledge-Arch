@@ -319,7 +319,8 @@ async def handle_list_collections(request: web.Request) -> web.Response:
     api = _api(request)
     cols = await api.list_collections()
     default_name = api.default_collection_name()
-    return web.json_response([_collection_dict(c, default_name) for c in cols])
+    counts = await api.collection_doc_counts()
+    return web.json_response([_collection_dict(c, default_name, counts) for c in cols])
 
 
 async def handle_create_collection(request: web.Request) -> web.Response:
@@ -391,9 +392,16 @@ async def handle_list_documents(request: web.Request) -> web.Response:
     collection = request.query.get("collection") or None
     collection_key = request.query.get("collection_key") or None
     tag = request.query.get("tag") or None
+    descendants = request.query.get("descendants") == "1"
     api = _api(request)
-    if collection_key is not None:
-        # DocumentsPanel 选中集合：仅本级文档（不递归后代）。
+    if collection is not None and descendants:
+        # 文档列表：与对话检索、图谱、识图同一批——集合 + 全部子集合，按归属表取，
+        # 不看 documents.collection 旧列（Zotero 改过名的集合在旧列里留着已不存在的名字）。
+        docs = await api.list_scope_documents(collection)
+        if tag is not None:
+            docs = [d for d in docs if tag in d.tags]
+    elif collection_key is not None:
+        # 仅本级文档（不递归后代）。
         docs = await api.list_documents_by_collection_key(collection_key, descendants=False)
         if tag is not None:
             docs = [d for d in docs if tag in d.tags]
@@ -1704,7 +1712,9 @@ async def handle_ask_evidence(request: web.Request) -> web.Response:
 # ── 序列化 helper（domain → JSON-safe dict）─────────────────────
 
 
-def _collection_dict(c: object, default_name: str = "") -> dict:
+def _collection_dict(
+    c: object, default_name: str = "", counts: dict[str, tuple[int, int]] | None = None
+) -> dict:
     from kacore.api import SYSTEM_COLLECTION_UNCATEGORIZED
 
     origin = getattr(c, "origin", None)
@@ -1721,6 +1731,9 @@ def _collection_dict(c: object, default_name: str = "") -> dict:
         "coll_key": getattr(c, "coll_key", ""),
         "parent_key": getattr(c, "parent_key", ""),
         "library_id": getattr(c, "library_id", "LOCAL"),
+        # active 文档数：本级 / 含全部子集合（按文档去重，与文档列表的篇数一致）。
+        "doc_count": (counts or {}).get(getattr(c, "coll_key", ""), (0, 0))[0],
+        "doc_count_total": (counts or {}).get(getattr(c, "coll_key", ""), (0, 0))[1],
     }
 
 
@@ -1788,17 +1801,14 @@ async def _document_dict(api: KnowledgeRepositoryApi, d: object) -> dict:
         "attachment_key": getattr(d, "attachment_key", ""),
         "last_synced_at": last_synced_iso,
         "milvus_covered": milvus_covered,
+        # 全部归属的集合键：父集合的列表按它分到子集合。
+        "collection_keys": list(getattr(d, "collection_keys", []) or []),
     }
-    if origin_val == "zotero":
-        meta = await api.get_zotero_item_meta(
-            getattr(d, "library_id", ""), getattr(d, "zotero_item_key", "")
-        )
-        if meta:
-            result["zotero_meta"] = meta
-    elif origin_val == "local":
-        local_meta = getattr(d, "local_meta", {}) or {}
-        if local_meta:
-            result["zotero_meta"] = local_meta
+    # 与回答引用同一份书目字段：Zotero 条目字段优先，空的用文件名猜出的作者 / 年份补。
+    # Zotero 里没有父条目的独立附件只有这份猜测，以前列表因此只剩标题。
+    meta = await api.document_biblio_meta(d)  # type: ignore[arg-type]
+    if meta:
+        result["zotero_meta"] = meta
     return result
 
 

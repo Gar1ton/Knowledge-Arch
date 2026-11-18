@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+### 变更 (Changed)
+
+- **选论文的交互（2.1.2 第二批）**：不再照搬 Zotero，改成「左栏选范围、中栏选论文、右栏提问」。
+  - **中栏列表 = 对话范围**：点一个集合，列出「集合 + 全部子集合」的论文，与对话、图谱、识图处理的是同一批（以前照 Zotero 只列本级，
+    父集合显示「暂无文档」，对话却在搜子集合里的论文；Zotero 改过名的集合里的论文哪个集合都列不出来）。父集合按子集合分组，组头可折叠
+    （`kacore/api.py` 的 `list_scope_documents`，图谱就绪 / 建图 / 识图三处同一段逻辑合并到它；`web/server.py` 的 `descendants=1`）。
+  - **两行列表**：每篇一行标题、一行作者 · 年份；Zotero 独立附件用文件名猜出的作者与年份，与回答引用同一份（以前 Zotero 论文在列表里
+    只剩标题）。常驻查找框（标题 / 作者 / 年份 / 标签）、排序（标题 / 作者 / 年份 / 加入时间，记在本机）、只看有问题的论文；
+    正常论文不画状态图标，没切出文字或等待重建向量的才提示；↑↓ 移动、Enter 打开；去掉每行的 PDF 标与点了没反应的查找键
+    （`web/frontend/lib/docList.ts`、`lib/useCollectionDocs.ts`、`components/panels/DocList.tsx`、`DocumentsPanel.tsx`；`_document_dict`
+    改用 `document_biblio_meta` 并带 `collection_keys`）。
+  - **左栏一棵集合树**：顶上「全部文档」，Zotero 与本地两组，每行是含子集合的篇数（`/api/collections` 的 `doc_count` /
+    `doc_count_total`，新路由 `/api/library/summary`）；图谱是行上的状态点（建好 / 正在建 / 中断，没建不画）；构建图谱、补全图表描述、
+    新建子集合、改名、删除收进行尾 ⋯ 菜单（右键同样打开，每项带图标）；去掉「LightRAG 集合」区、它的进度卡（进度在左下角进度栏）与
+    紫色 LightRAG 模式；每个操作只出现一次（`components/panels/CollectionTree.tsx`、`FilePanel.tsx`，对话框拆到 `CollectionDialogs.tsx`、
+    `UploadDocumentDialog.tsx`）。
+  - **阅读时左栏**：「‹ 集合名」+「论文」「笔记」两个页签（记在本机），在「论文」里直接换一篇；阅读器栏头 ‹ n/m › 按当前查找与排序
+    换上一篇 / 下一篇；返回列表时停在刚读的那篇（`components/panels/ReadingSidebar.tsx`、`app/(console)/layout.tsx`）。
+    笔记面板改按 doc_id 取文档，子集合里的论文不再一直「加载中」（`NotePanel.tsx`）。
+
 ### 修复 (Fixed)
 
 - **Zotero 同步后整库向量重灌（「文档爆炸」）**：严格镜像模式只要拉到一篇新增 / 变更 / 删除，同步收尾就清空 Milvus、把全库约 3 万分块重新写入

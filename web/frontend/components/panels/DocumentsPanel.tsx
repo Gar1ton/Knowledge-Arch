@@ -2,25 +2,23 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Panel } from "@/components/ds/Panel";
 import { Badge } from "@/components/ds/Badge";
-import { Button } from "@/components/ds/Button";
-import { Tag } from "@/components/ds/Tag";
 import { Eyebrow } from "@/components/ds/Eyebrow";
 import { IconButton } from "@/components/ds/IconButton";
 import { Icon } from "@/components/ds/Icon";
 import { useConsole, type CiteTarget } from "@/lib/ConsoleContext";
-import { DOCUMENTS_CHANGED_EVENT } from "@/lib/documentEvents";
 import {
   ApiError,
   getDocument,
   getDocumentAnnotations,
   KrDocument,
   listDocumentChunks,
-  listDocuments,
   reextractDocument,
   ZoteroAnnotation,
 } from "@/lib/api";
 import { useToast } from "@/components/ui/Toast";
 import { PdfViewer } from "@/components/panels/PdfViewer";
+import { DocList, DocListToolbar, DocStepper } from "@/components/panels/DocList";
+import { scopeName, useCollectionDocs } from "@/lib/useCollectionDocs";
 import { useI18n } from "@/lib/i18n";
 import { parseChunkText, ChunkTextPart } from "@/lib/chunkText";
 import { findChunkByText } from "@/lib/pdfLocate";
@@ -32,196 +30,12 @@ type ReadingDataState = {
   loading: boolean;
 };
 
-type DocumentListState = {
-  colName?: string;
-  docs: KrDocument[];
-  loading: boolean;
-  /** 列表请求失败（超时 / 后端错误）：显示错误与重试，不能当成「集合为空」。 */
-  failed?: boolean;
-};
 
 /** 选中的文档不在当前列表里时（引用跳到别的集合、恢复上次打开的文档）单独取回。 */
 type FetchedDocState = {
   docId: string;
   doc: KrDocument | null;
 };
-
-// ─── Doc type badge ───────────────────────────────────────────
-
-function ExtBadge({ ext }: { ext?: string }) {
-  const e = ext?.toLowerCase() ?? "?";
-  const isPdf = e === "pdf";
-  return (
-    <span
-      style={{
-        width: 30,
-        height: 38,
-        flexShrink: 0,
-        borderRadius: 4,
-        background: isPdf ? "var(--danger-soft)" : "var(--info-soft)",
-        color: isPdf ? "var(--danger)" : "var(--info)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        fontSize: 8.5,
-        fontWeight: 700,
-        fontFamily: "var(--font-mono)",
-        textTransform: "uppercase",
-        border: "1px solid color-mix(in srgb, currentColor 22%, transparent)",
-      }}
-    >
-      {e}
-    </span>
-  );
-}
-
-// ─── DocRow ───────────────────────────────────────────────────
-
-function DocRow({ doc, onOpen, onNote }: { doc: KrDocument; onOpen: () => void; onNote: () => void }) {
-  const [hover, setHover] = useState(false);
-  const { t } = useI18n();
-  const meta = doc.zotero_meta;
-
-  return (
-    <div
-      onClick={onOpen}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{
-        display: "flex",
-        gap: 12,
-        padding: "13px 14px",
-        borderRadius: "var(--radius-lg)",
-        cursor: "pointer",
-        background: hover ? "var(--surface-hover)" : "transparent",
-        border: `1px solid ${hover ? "var(--border)" : "transparent"}`,
-        transition: "background .12s, border-color .12s",
-      }}
-    >
-      <ExtBadge ext={doc.ext} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div
-          style={{
-            fontSize: 13.5,
-            fontWeight: 600,
-            color: "var(--heading)",
-            lineHeight: 1.35,
-            marginBottom: 3,
-          }}
-        >
-          {doc.title ?? doc.filename ?? t("panel_untitled")}
-        </div>
-        {meta?.creators && meta.creators.length > 0 && (
-          <div
-            style={{
-              fontSize: 11.5,
-              color: "var(--fg-muted)",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {meta.creators.join(", ")}
-          </div>
-        )}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
-          {meta?.venue && (
-            <span style={{ fontSize: 11, fontStyle: "italic", color: "var(--fg)" }}>
-              {meta.venue}
-            </span>
-          )}
-          {(meta?.year || doc.origin) && (
-            <span style={{ fontSize: 11, color: "var(--fg-subtle)" }}>
-              {[meta?.year, meta?.item_type].filter(Boolean).join(" · ")}
-            </span>
-          )}
-          {doc.lightrag_index_status?.status === "built" && (
-            <Badge tone="violet">
-              <Icon name="graph" size={10} /> LightRAG
-            </Badge>
-          )}
-          <span style={{ flex: 1 }} />
-          {doc.tags.slice(0, 3).map((t) => <Tag key={t} label={t} />)}
-        </div>
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-        {hover && (
-          <span
-            onClick={(e) => { e.stopPropagation(); onNote(); }}
-            title={t("documents_open_note")}
-            style={{ cursor: "pointer", color: "var(--fg-subtle)", opacity: 0.7 }}
-          >
-            <Icon name="note" size={14} />
-          </span>
-        )}
-        <span style={{ color: "var(--fg-subtle)", opacity: hover ? 1 : 0 }}>
-          <Icon name="chevR" size={16} />
-        </span>
-      </div>
-    </div>
-  );
-}
-
-// ─── ListView ─────────────────────────────────────────────────
-
-function ListView({
-  docs,
-  title,
-  loading,
-  failed,
-  onRetry,
-  onOpen,
-  onNote,
-}: {
-  docs: KrDocument[];
-  title: string;
-  loading: boolean;
-  failed: boolean;
-  onRetry: () => void;
-  onOpen: (doc: KrDocument) => void;
-  onNote: (docId: string) => void;
-}) {
-  const { t } = useI18n();
-  return (
-    <div style={{ maxWidth: 760, margin: "0 auto" }}>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "4px 14px 10px" }}>
-        <span
-          style={{
-            fontSize: 18,
-            fontWeight: 700,
-            color: "var(--heading)",
-            letterSpacing: "-.02em",
-          }}
-        >
-          {title}
-        </span>
-        {!loading && !failed && (
-          <span style={{ fontSize: 12, color: "var(--fg-muted)" }}>· {t("documents_count", { n: docs.length })}</span>
-        )}
-      </div>
-      {loading ? (
-        <div style={{ padding: 40, textAlign: "center", color: "var(--fg-subtle)", fontSize: 13 }}>
-          {t("panel_loading")}
-        </div>
-      ) : failed ? (
-        <div style={{ padding: 40, textAlign: "center", color: "var(--fg-subtle)", fontSize: 13 }}>
-          <div>{t("documents_list_failed")}</div>
-          <Button variant="outline" size="sm" style={{ marginTop: 10 }} onClick={onRetry}>
-            {t("btn_retry")}
-          </Button>
-        </div>
-      ) : docs.length === 0 ? (
-        <div style={{ padding: 40, textAlign: "center", color: "var(--fg-subtle)", fontSize: 13 }}>
-          {t("documents_empty_collection")}
-        </div>
-      ) : (
-        docs.map((d) => (
-          <DocRow key={d.doc_id} doc={d} onOpen={() => onOpen(d)} onNote={() => onNote(d.doc_id)} />
-        ))
-      )}
-    </div>
-  );
-}
 
 // ─── ReadingView ──────────────────────────────────────────────
 
@@ -540,16 +354,10 @@ export function DocumentsPanel() {
     setReadingMode,
   } = useConsole();
 
-  // Derive collection name from key (strip prefix)
-  const colName = selectedCollection
-    ? selectedCollection.replace(/^(z:|l:|lr:)/, "")
-    : undefined;
-  const [documentList, setDocumentList] = useState<DocumentListState>(() => ({
-    colName,
-    docs: [],
-    loading: true,
-  }));
-  const [reloadKey, setReloadKey] = useState(0);
+  // 选中集合（含全部子集合）的论文：与对话范围同一批；阅读时左栏共用这一份。
+  const model = useCollectionDocs(selectedCollection);
+  const colName = scopeName(selectedCollection);
+  const { docs, loading } = model;
   const [fetched, setFetched] = useState<FetchedDocState | null>(null);
   // 「在 MD 中查看该段」只对那一篇、那一次生效：记下文档，下一次普通跳转或切模式即取消。
   const [mdOverrideDocId, setMdOverrideDocId] = useState<string | null>(null);
@@ -558,38 +366,19 @@ export function DocumentsPanel() {
     setSeenCiteNonce(highlightedChunk.nonce);
     setMdOverrideDocId(highlightedChunk.preferMd ? highlightedChunk.docId : null);
   }
-  const docs = documentList.colName === colName ? documentList.docs : [];
-  const loading = documentList.colName === colName ? documentList.loading : true;
-  const listFailed = documentList.colName === colName && !!documentList.failed;
   const listedDoc = selectedDocId ? docs.find((d) => d.doc_id === selectedDocId) ?? null : null;
   const fetchedDoc = fetched && fetched.docId === selectedDocId ? fetched.doc : null;
   const activeDoc = listedDoc ?? fetchedDoc;
   const activeDocId = activeDoc?.doc_id ?? "";
+  // 最近读过的一篇：返回列表时停在它那里（集合换了就作废）。
+  const [lastRead, setLastRead] = useState<{ scope: string | null; docId: string } | null>(null);
+  if (activeDocId && (lastRead?.docId !== activeDocId || lastRead.scope !== selectedCollection)) {
+    setLastRead({ scope: selectedCollection, docId: activeDocId });
+  }
+  const revealDocId = lastRead && lastRead.scope === selectedCollection ? lastRead.docId : null;
   // 只有 PDF 原件才有 PDF 阅读模式（文本原件在库里也叫 original.pdf，后端 ext 已按真实类型给出）。
   const canReadPdf = activeDoc?.ext?.toLowerCase() === "pdf";
   const mode = canReadPdf && readingMode === "pdf" && mdOverrideDocId !== activeDocId ? "pdf" : "md";
-
-  // 上传等操作完成后（documentEvents）与刷新键都会重新加载当前列表。
-  useEffect(() => {
-    const reload = () => setReloadKey((k) => k + 1);
-    window.addEventListener(DOCUMENTS_CHANGED_EVENT, reload);
-    return () => window.removeEventListener(DOCUMENTS_CHANGED_EVENT, reload);
-  }, []);
-
-  // 切换集合或请求刷新时加载；未选集合时列出全部文档。
-  useEffect(() => {
-    let cancelled = false;
-    listDocuments(colName ? { collection: colName } : undefined)
-      .then((nextDocs) => {
-        if (!cancelled) setDocumentList({ colName, docs: nextDocs, loading: false });
-      })
-      .catch(() => {
-        if (!cancelled) setDocumentList({ colName, docs: [], loading: false, failed: true });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [colName, reloadKey]);
 
   // 选中的文档不在当前集合列表里：单独取回再打开；已被删除（404）则回到列表。
   useEffect(() => {
@@ -632,16 +421,21 @@ export function DocumentsPanel() {
 
   const isReading = !!activeDoc;
   const title = colName ?? t("docs_all");
+  const countLabel = loading || model.failed
+    ? null
+    : model.grouped
+      ? t("doclist_count_with_sub", { n: docs.length })
+      : t("documents_count", { n: docs.length });
 
   const crumbs = isReading
     ? [
         { label: t("panel_documents"), onClick: backToList },
-        { label: activeDoc!.collection, onClick: backToList, separator: "  " },
+        { label: colName ?? activeDoc!.collection, onClick: backToList, separator: "  " },
         { label: activeDoc!.title ?? activeDoc!.filename ?? "" },
       ]
     : [{ label: title }];
 
-  const right = isReading ? (canReadPdf ? (
+  const modeSwitch = canReadPdf ? (
     <div
       style={{
         display: "flex",
@@ -674,11 +468,22 @@ export function DocumentsPanel() {
         </button>
       ))}
     </div>
-  ) : null) : (
-    <div style={{ display: "flex", gap: 2 }}>
-      <IconButton name="sync" label={t("documents_refresh")} onClick={() => setReloadKey((k) => k + 1)} />
-      <IconButton name="search" label={t("documents_search_in_collection")} />
-    </div>
+  ) : null;
+
+  const right = isReading ? (
+    <>
+      <DocStepper model={model} docId={activeDocId} onGo={openDoc} />
+      {modeSwitch}
+    </>
+  ) : (
+    <>
+      {countLabel && (
+        <span style={{ fontSize: 11.5, color: "var(--fg-muted)", marginRight: 4, whiteSpace: "nowrap" }}>
+          {countLabel}
+        </span>
+      )}
+      <IconButton name="sync" label={t("documents_refresh")} onClick={model.reload} />
+    </>
   );
 
   return (
@@ -691,21 +496,25 @@ export function DocumentsPanel() {
       bodyStyle={
         isReading && mode === "pdf"
           ? { padding: 0, overflow: "hidden", display: "flex", flexDirection: "column" }
-          : { padding: "14px 0" }
+          : isReading
+            ? { padding: "14px 0" }
+            : { padding: 0 }
       }
     >
       {isReading ? (
         <ReadingView doc={activeDoc!} mode={mode} onViewInMd={viewInMd} />
       ) : (
-        <ListView
-          docs={docs}
-          title={title}
-          loading={loading}
-          failed={listFailed}
-          onRetry={() => setReloadKey((k) => k + 1)}
-          onOpen={openDoc}
-          onNote={(docId) => setNoteDocId(docId)}
-        />
+        <>
+          {!loading && !model.failed && docs.length > 0 && <DocListToolbar model={model} />}
+          <DocList
+            model={model}
+            density="two-line"
+            activeDocId={selectedDocId}
+            revealDocId={revealDocId}
+            onOpen={openDoc}
+            onNote={(docId) => setNoteDocId(docId)}
+          />
+        </>
       )}
     </Panel>
   );

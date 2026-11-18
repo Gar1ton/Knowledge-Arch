@@ -22,7 +22,7 @@ import { TopBar } from "@/components/layout/TopBar";
 import { FilePanel } from "@/components/panels/FilePanel";
 import { DocumentsPanel } from "@/components/panels/DocumentsPanel";
 import { ChatPanel } from "@/components/panels/ChatPanel";
-import { NotePanel } from "@/components/panels/NotePanel";
+import { ReadingSidebar } from "@/components/panels/ReadingSidebar";
 
 // ─── I18n Provider ────────────────────────────────────────────
 
@@ -64,7 +64,7 @@ const MAX_FILE_W = 528;
 type DragTarget = "file" | "chat" | null;
 
 function ConsoleCanvas() {
-  const { noteDocId, selectedDocId, selectedCollection, view, setView, openPrefs } = useConsole();
+  const { noteDocId, selectedDocId, view, setView, openPrefs } = useConsole();
 
   // 菜单 / 托盘 Preferences…（桌面壳）与 ⌘, / Ctrl+,（窗口内）都打开偏好设置。
   // Windows / Linux 没有菜单栏，Ctrl+Q 在这里退出（macOS 的 ⌘Q 由系统菜单处理）。
@@ -135,11 +135,6 @@ function ConsoleCanvas() {
     e.preventDefault();
   }, [chatWidth]);
 
-  useEffect(() => {
-    const isLightRAG = selectedCollection?.startsWith("lr:") ?? false;
-    document.documentElement.dataset.mode = isLightRAG ? "lightrag" : "";
-  }, [selectedCollection]);
-
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }}>
       <TopBar />
@@ -161,7 +156,7 @@ function ConsoleCanvas() {
           overflow: "hidden",
         }}
       >
-        {/* Left: File OR Note */}
+        {/* Left: 浏览时集合树；阅读（或只开笔记）时同集合论文 + 笔记 */}
         <div
           style={{
             width: fileWidth,
@@ -172,7 +167,8 @@ function ConsoleCanvas() {
           }}
         >
           {(selectedDocId || noteDocId) ? (
-            <NotePanel docId={selectedDocId ?? noteDocId!} />
+            // 从列表行上的笔记键进来（不开阅读器）时先显示「笔记」页签。
+            <ReadingSidebar docId={selectedDocId ?? noteDocId!} openNotes={!selectedDocId} />
           ) : (
             <FilePanel />
           )}

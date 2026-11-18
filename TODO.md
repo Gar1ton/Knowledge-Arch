@@ -554,3 +554,29 @@
     未验证：桌面壳里真实 Zotero 同步 + Milvus 实测。用户本机 11-16 03:27 在全量重建中途退出，`index_compatibility.json` 仍是
     「重建进行中」，升级后首次启动会再完整重建一次（属正常恢复，期间列表不再显示 0 篇）。
     遗留：`XT7UNQSM` 每次同步 Web 下载 Not found，`MTA6FXYE` 每次以 0 分块「重建」，未查。
+- [x] P29 · 2.1.2 第二批：「文件」「文档」两栏的选论文交互。方案页 `data/ka_doclist/ka_doclist_plan.html`（工作区本地，未入库），
+  决策（已批准，11-17）：列表两行（标题 / 作者 · 年份）；父集合含子集合、按子集合分组可折叠；去掉「LightRAG 集合」区，
+  图谱状态点在集合行上、构建进 ⋯ 菜单；阅读时左栏「论文」「笔记」两个页签、记住上次。评论：⋯ 菜单项文字左边加图标。
+  - [x] ① 后端：`api.list_scope_documents(name)`（集合 + 全部子集合，按归属表）合并图谱就绪 / 建图 / 识图三处同一段逻辑；
+    `/api/documents?collection=&descendants=1` 用它；`_document_dict` 改用 `document_biblio_meta`（Zotero 字段优先、文件名猜测补空）
+    并带 `collection_keys`；`/api/collections` 带 `doc_count`（本级）与 `doc_count_total`（含子集合、按论文去重），由
+    `api.collection_doc_counts()` 从全部 active 文档算出（不改 store 接口）；新路由 `GET /api/library/summary`（全库 active 篇数，
+    放在 `web/desktop_routes.py`）。
+  - [x] ② 前端纯函数 `lib/docList.ts`（第二行、查找、排序、问题标记、子树先序、按子集合分组）+ `tests/frontend/test_doc_list.py`。
+  - [x] ③ 中栏：`DocList`（两行 / 一行两种密度、查找框、排序、只看有问题、组头折叠、↑↓ Enter）、`lib/useCollectionDocs.ts`
+    （模块级 store，中栏与左栏共用一份列表、查找词与排序；排序记在本机）、阅读时栏头 ‹ n/m ›；去掉 PDF 标与无效查找键；
+    返回列表时停在刚读的那篇。
+  - [x] ④ 左栏：`CollectionTree` 从 `FilePanel` 拆出，对话框拆到 `CollectionDialogs.tsx` 与 `UploadDocumentDialog.tsx`（FilePanel
+    1500 → 360 行）；「全部文档」行、含子集合篇数、选中项的祖先自动展开；图谱点只画建好 / 正在建 / 中断；⋯ 菜单（右键同样打开，
+    每项带图标）收构建图谱（中断时为「继续构建图谱」）/ 补全图表描述 / 新建子集合 / 改名 / 删除；去掉 LightRAG 区、
+    `ActiveBuildCard`（进度在 ProgressDock）、`data-mode="lightrag"` 与对应 CSS；栏头只留 R2；旧的 `lr:` 选择键自动换成树上的键。
+  - [x] ⑤ 阅读时左栏 `ReadingSidebar`（‹ 集合名、论文 / 笔记页签，页签记在本机；从行上笔记键进来先开笔记）；`NotePanel`
+    改按 doc_id 取文档（以前按集合名在列表里找，子集合的论文会一直「加载中」）、`embedded` 时不画外框与返回键。
+  - [x] ⑥ i18n（zh / en 各 25 条）、README / README_ZH、CHANGELOG。
+  - 验证：pytest 1556 passed / 4 skipped（新增：`test_web_server.py` 3 项、`tests/frontend/test_doc_list.py` 5 项；后端 3 项还原修复时失败）；
+    ruff；mypy；eslint；tsc；`next build`。真后端（用户库 `knowledge_repository.db` 的副本，148 篇）+ `next dev` + Playwright 19 项全过：
+    「[26.2]」显示 64 篇（含子集合）且按子集合分组、Yuk Hui 两本书出现、折叠 Sage Handbook 组少 38 行、查找「hui」2 行、
+    Zotero 集合菜单 2 项 / 本地集合 5 项、打开论文后左栏两个页签与 41/64、下一篇 42/64、左栏点第一篇 1/64、笔记页签加载出来、
+    返回后树可见且列表停在刚读的论文、「[25.1]」有问题 1 篇且筛出 Mediascapes、全部文档 148 篇、↓↓ Enter 打开第 2 篇；
+    后端 110/148 篇带作者或年份（以前 6 篇）。
+    未验证：桌面壳里实测；中文界面截图（测试机缺中文字体）；有真实 PDF 时的阅读器（副本没带 library 原件，PDF 为 404）。
