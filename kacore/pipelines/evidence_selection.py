@@ -36,6 +36,9 @@ class AspectCandidates:
 
     aspect_id: str
     scores: dict[str, float] = field(default_factory=dict)
+    # 主方面 1.0（每个保底一条）；次方面 <1：不保底，补位时分数乘以它
+    # （深度思考的补检 / 发现 / 校验缺口）。
+    weight: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -105,7 +108,7 @@ def select_evidence(
     # 1) 优先遍历有相关证据的 aspect，每个 aspect 本轮只取一条最相关的未覆盖候选，
     #    避免单个 aspect 在第一轮就吃满预算，保证「多方面保留」优先于「单方面吃满」。
     for aspect in aspects:
-        if len(selected) >= max_evidence or not aspect.scores:
+        if len(selected) >= max_evidence or not aspect.scores or aspect.weight < 1.0:
             continue
         for eid in _ordered_by_relevance(aspect.scores):
             if eid in selected_set:
@@ -134,7 +137,8 @@ def select_evidence(
                 all_candidate_ids.add(eid)
                 if eid in selected_set:
                     continue
-                remaining[eid] = max(remaining.get(eid, score), score)
+                weighted = score * aspect.weight
+                remaining[eid] = max(remaining.get(eid, weighted), weighted)
 
         def _fill_order(eid: str) -> tuple[bool, float, str, str, int, str]:
             candidate = candidates.get(eid)

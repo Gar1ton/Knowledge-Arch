@@ -751,6 +751,24 @@ async def test_per_aspect_ranking_surfaces_high_rrf_subquery_chunk():
     assert result.trace[0].kept_chunk_ids[:2] == ["c1", "c3"]
 
 
+@pytest.mark.asyncio
+async def test_structural_anchor_survives_tight_budget_in_session_path():
+    # 锚点块 rrf 最低；预算 2 时以前会被两个高分块挤掉（会话路径从不填 pinned_ids）。
+    base = _oc([(_chunk("c1"), 0.9), (_chunk("c2"), 0.8), (_chunk("tab"), 0.01)], {"tab"})
+    sub = _oc([(_chunk("c3"), 0.95)])
+    orch = DeepThinkingOrchestrator(
+        retrieval_orchestrator=SequenceRetrieval([base, sub]),
+        reranker=NoopReranker(),
+        llm_adapter=ScriptedLLM([PLAN_1ITEM, SEA_SUFFICIENT]),
+        dt_config=DeepThinkingConfig(
+            max_rounds=1, max_sub_queries=1, wide_top_k=5, deep_keep=2,
+            max_final_evidence=2, verify_enabled=False,
+        ),
+    )
+    result = await orch.run("papers", "what does Table 2 show")
+    assert "tab" in [c.chunk_id for c in result.evidence]
+
+
 def test_reranker_is_passthrough_flags():
     from kacore.repository.reranker.bge_local import CrossEncoderReranker
 

@@ -660,3 +660,8 @@
     首次出现时补一次、之后沿用同一批（不再随新块反复补、反复重打分），匹配词改用 `search_text.query_terms`（去停用词）。
     代码已落地：`kacore/pipelines/evidence_session.py`（`_padding_for` / `_rerank_missing`）；`test_evidence_session.py` 新增 3 项
     （旧代码下均失败）；全量 pytest 1616 passed、ruff、mypy。mini：重排 −34%、中位耗时 −10~25%，答对未降（见计划文档）。
+  - [ ] P2 · 证据稀释（🚧）：主方面（原问题 + PLAN 子问题）每个保底一条；次方面（第 2 轮起的补检 query、校验缺口）不保底、
+    补位时分数 × `secondary_aspect_weight`（0.5）；`max_final_evidence` 18 → 12（与 enhanced 同；外部 agent 取 deep 证据的
+    每次上限随之变为 12）；会话路径补回结构锚点保护（以前从不填 `pinned_ids`）。enhanced 不登记次方面，行为不变。
+    代码：`evidence_selection.py`（`AspectCandidates.weight`）、`evidence_session.py`（`mark_secondary`）、
+    `deep_thinking_orchestrator.py`（`_gather_round(secondary=)`、锚点）、`config.py`。测试新增 4 项（锚点用例旧代码下失败）。

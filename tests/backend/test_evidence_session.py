@@ -167,3 +167,10 @@ async def test_padding_ignores_stopwords():
     await session.select(NoopReranker(), limit=4, weight=0)
     assert session.padding["what is the limitation"] == []          # "the/what/is" 不再命中 x
     assert session.padding["seen"] == []
+
+
+def test_mark_secondary_never_downgrades_a_primary_query():
+    session = EvidenceSession()
+    session.absorb([("main question", _outcome(chunk("a", "d")))])
+    session.mark_secondary(["main question", "follow-up gap"], 0.5)
+    assert session.secondary == {"follow-up gap": 0.5}

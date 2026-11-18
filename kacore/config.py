@@ -296,7 +296,8 @@ class DeepThinkingConfig:
     max_sub_queries: int = 4
     wide_top_k: int = 24  # v0.25.9：20→24，每个 sub_query 多给候选以捞具体机制 chunk。
     gap_ratio_threshold: float = 0.5  # gaps 占 checklist 比例 ≥ 此值视为证据不足。
-    max_final_evidence: int = 18  # v0.25.9：16→18，合成上下文更厚；fallback 仍用 baseline。
+    # P32 P2：18→12（与 enhanced 同）。18 条里常混进补检 / 发现方面的偏题证据，挤掉原问题的证据。
+    max_final_evidence: int = 12
     token_budget: int = 36000  # 内部安全阀（字符近似估算，不暴露 schema）；含多轮+更长证据。
     call_budget: int = 18  # 内部安全阀（PLAN+SEA+REFINE 全局计数）。
     json_max_retries: int = 2
@@ -310,6 +311,9 @@ class DeepThinkingConfig:
     # 默认 0 = 纯 rrf（契合「未引入 rerank 模型」，无模型时不退化为候选插入顺序）。
     rerank_weight: float = 0.2
     deep_keep: int = 12  # 每轮 rerank+cutoff 保留上限（deep 专用，不动共享 RerankConfig.keep）。
+    # 次方面（第 2 轮起的补检 query、校验缺口）不保底，补位时分数乘以此权重；
+    # 主方面 = 原问题 + PLAN 子问题。
+    secondary_aspect_weight: float = 0.5
     # 开放式发现护栏：每轮新增 aspect 上限与累计上限，防止 checklist 无限膨胀、循环不收敛。
     max_discovered_per_round: int = 3
     max_discovered_total: int = 8
@@ -881,6 +885,9 @@ class Config:
                 1.0, max(0.0, float(s.get("rerank_weight", DeepThinkingConfig.rerank_weight)))
             ),
             deep_keep=max(1, int(s.get("deep_keep", DeepThinkingConfig.deep_keep))),
+            secondary_aspect_weight=min(1.0, max(0.0, float(
+                s.get("secondary_aspect_weight", DeepThinkingConfig.secondary_aspect_weight)
+            ))),
             max_discovered_per_round=max(
                 0,
                 int(

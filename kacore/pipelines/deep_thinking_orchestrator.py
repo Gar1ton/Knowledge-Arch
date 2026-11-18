@@ -176,6 +176,7 @@ class DeepThinkingOrchestrator:
                 evidence,
                 pinned_ids,
                 include_baseline=baseline_outcome if rnd == 1 else None,
+                secondary=rnd > 1,
             )
 
             # 2f SEA。每条证据标注来源文档，防跨文档知识串线。
@@ -473,6 +474,7 @@ class DeepThinkingOrchestrator:
         pinned_ids: set[str],
         *,
         include_baseline: RetrievalOutcome | None,
+        secondary: bool = False,
     ) -> list[str]:
         """一轮检索：sub_queries 检索 → pinned 结构保护 → per-aspect 排序+cutoff → 累积进 evidence。
 
@@ -510,10 +512,25 @@ class DeepThinkingOrchestrator:
                 raise first_failure
         session = current_evidence_session.get()
         if session is not None:
+            # 原问题与 PLAN 子问题是主方面；之后的补检 / 发现 / 校验缺口是次方面，
+            # 不抢主方面的保底名额。
+            if secondary:
+                session.mark_secondary(
+                    [q for q, _ in query_outcomes], self._cfg.secondary_aspect_weight
+                )
             session.absorb(query_outcomes)
+            # 结构锚点（题目点名的表 / 节）无条件保留：以前会话路径从不填 pinned_ids，锚点保护失效。
+            for _q, oc in query_outcomes:
+                for chunk in oc.chunks:
+                    sig = oc.per_chunk_signals.get(chunk.chunk_id)
+                    if sig and sig.anchor_hit:
+                        pinned_ids.add(chunk.chunk_id)
+                        evidence.setdefault(
+                            chunk.chunk_id, EvidenceItem(chunk, "structural_anchor")
+                        )
             selected = await session.select(
                 self._reranker, limit=self._cfg.deep_keep,
-                weight=self._cfg.rerank_weight,
+                weight=self._cfg.rerank_weight, pinned=pinned_ids,
             )
             store = getattr(self._retrieval, "_source_store", None)
             if store is not None:
@@ -647,6 +664,7 @@ class DeepThinkingOrchestrator:
                 evidence,
                 pinned_ids,
                 include_baseline=None,
+                secondary=True,
             )
             final = await self._select_final(
                 evidence, pinned_ids, conflicting_ids, self._cfg.max_final_evidence

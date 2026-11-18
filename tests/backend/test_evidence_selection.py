@@ -194,3 +194,24 @@ def test_fill_recomputes_redundancy_after_each_selection() -> None:
         candidates, max_evidence=3,
     )
     assert result.selected_ids == ["a", "b", "d"]
+
+
+def test_secondary_aspect_gets_no_guaranteed_slot_and_is_down_weighted() -> None:
+    candidates = {
+        eid: EvidenceCandidate(eid, "d", "r", i, eid)
+        for i, eid in enumerate(["p1", "p2", "s1", "s2"])
+    }
+    aspects = [
+        AspectCandidates("main", {"p1": 1.0, "p2": 0.6}),
+        AspectCandidates("gap", {"s1": 1.0, "s2": 0.4}, weight=0.5),
+    ]
+    # 预算 2：主方面保底 p1；补位时 p2（0.6）胜过次方面第一名 s1（1.0 × 0.5）。
+    assert select_evidence(aspects, candidates, max_evidence=2).selected_ids == ["p1", "p2"]
+    # 预算 3：次方面的强证据仍能补进来。
+    assert select_evidence(aspects, candidates, max_evidence=3).selected_ids == ["p1", "p2", "s1"]
+
+
+def test_all_primary_aspects_keep_previous_behaviour() -> None:
+    candidates = {eid: EvidenceCandidate(eid, "d", "r", i, eid) for i, eid in enumerate("abc")}
+    aspects = [AspectCandidates("x", {"a": 1.0, "b": 0.9}), AspectCandidates("y", {"c": 0.1})]
+    assert select_evidence(aspects, candidates, max_evidence=2).selected_ids == ["a", "c"]
