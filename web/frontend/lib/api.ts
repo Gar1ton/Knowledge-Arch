@@ -20,6 +20,10 @@ export interface Collection {
   coll_key?: string;
   parent_key?: string;
   library_id?: string;
+  /** 本级归属的 active 论文数。 */
+  doc_count?: number;
+  /** 含全部子集合的 active 论文数（按论文去重）：与 `listDocuments({descendants: true})` 一致。 */
+  doc_count_total?: number;
 }
 
 export interface ZoteroMeta {
@@ -37,6 +41,8 @@ export interface KrDocument {
   title?: string;
   filename?: string;
   collection: string;
+  /** 归属的全部集合键（多归属）：父集合的列表按它分到子集合。 */
+  collection_keys?: string[];
   tags: string[];
   size?: number;
   chunks?: number;
@@ -553,12 +559,20 @@ export async function deleteCollectionByKey(collKey: string): Promise<void> {
 export async function listDocuments(opts?: {
   collection?: string;
   tag?: string;
+  /** 含全部子集合：与对话检索、图谱、识图同一批论文。 */
+  descendants?: boolean;
 }): Promise<KrDocument[]> {
   const params = new URLSearchParams();
   if (opts?.collection) params.set("collection", opts.collection);
   if (opts?.tag) params.set("tag", opts.tag);
+  if (opts?.collection && opts.descendants) params.set("descendants", "1");
   const qs = params.toString();
   return apiFetch<KrDocument[]>(`/api/documents${qs ? `?${qs}` : ""}`);
+}
+
+/** 全库 active 论文数（左栏「全部文档」行）。 */
+export async function getLibrarySummary(): Promise<{ document_count: number }> {
+  return apiFetch<{ document_count: number }>("/api/library/summary");
 }
 
 export async function getDocument(docId: string): Promise<KrDocument> {

@@ -11,7 +11,7 @@ import {
   createDocumentNote,
   getDocumentAnnotations,
   getDocumentNotes,
-  listDocuments,
+  getDocument,
   patchDocument,
   syncZoteroPull,
   updateDocumentMeta,
@@ -92,8 +92,12 @@ function toDocumentNote(n: LocalStoredNote, docId: string): DocumentNote {
 
 // ─── NotePanel ────────────────────────────────────────────────
 
-export function NotePanel({ docId }: { docId: string }) {
-  const { setNoteDocId, setSelectedDocId, selectedCollection } = useConsole();
+/**
+ * 一篇论文的元数据、标签、Zotero 批注与笔记。`embedded`：放在阅读时左栏的「笔记」页签里，
+ * 不画自己的卡片外框与「返回列表」键（外层侧栏已有）。
+ */
+export function NotePanel({ docId, embedded = false }: { docId: string; embedded?: boolean }) {
+  const { setNoteDocId, setSelectedDocId } = useConsole();
   const { toast } = useToast();
   const { t, lang } = useI18n();
   const [doc, setDoc] = useState<KrDocument | null>(null);
@@ -172,17 +176,14 @@ export function NotePanel({ docId }: { docId: string }) {
     }
   }
 
-  const colName = selectedCollection?.replace(/^(z:|l:|lr:)/, "");
-
+  // 按 doc_id 直接取：论文可能来自子集合，或是引用跳过来的别的集合（以前按集合名在列表里找，找不到就一直显示加载中）。
   useEffect(() => {
-    if (!colName) return;
-    listDocuments({ collection: colName })
-      .then((docs) => {
-        const found = docs.find((d) => d.doc_id === docId);
-        setDoc(found ?? null);
-      })
-      .catch(() => {});
-  }, [docId, colName]);
+    let alive = true;
+    getDocument(docId)
+      .then((found) => { if (alive) setDoc(found); })
+      .catch(() => { if (alive) setDoc(null); });
+    return () => { alive = false; };
+  }, [docId]);
 
   useEffect(() => {
     getDocumentAnnotations(docId)
@@ -239,11 +240,16 @@ export function NotePanel({ docId }: { docId: string }) {
         display: "flex",
         flexDirection: "column",
         height: "100%",
-        background: "var(--surface)",
-        border: "1px solid var(--border)",
-        borderRadius: "var(--radius-2xl)",
-        boxShadow: "var(--shadow-card)",
+        minHeight: 0,
         overflow: "hidden",
+        ...(embedded
+          ? null
+          : {
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius-2xl)",
+              boxShadow: "var(--shadow-card)",
+            }),
       }}
     >
       {/* Header */}
@@ -276,6 +282,7 @@ export function NotePanel({ docId }: { docId: string }) {
           <IconButton name="edit" label={t("note_edit_meta")} onClick={openMetaEdit} />
         )}
         <IconButton name="sync" label={t("file_action_zotero_sync")} onClick={handleZoteroSync} active={syncing} />
+        {!embedded && (
         <button
           onClick={handleBack}
           style={{
@@ -298,6 +305,7 @@ export function NotePanel({ docId }: { docId: string }) {
           <Icon name="chevL" size={11} />
           {t("note_back_to_list")}
         </button>
+        )}
       </header>
 
       {/* Body */}

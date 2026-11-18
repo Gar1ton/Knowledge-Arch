@@ -210,6 +210,119 @@ async def test_list_documents_and_filter(tmp_path: Path) -> None:
         await client.close()
 
 
+async def test_list_documents_does_not_wait_for_processing_lock(tmp_path: Path) -> None:
+    """全量向量重建 / 同步摄入持处理锁数分钟时，文档列表照常返回。
+
+    以前列表排队等锁到前端超时，界面显示「0 篇文献」。
+    """
+    import asyncio
+
+    api = await _make_api()
+    app = build_app(api=api, upload_dir=tmp_path, token=TOKEN)
+    client = TestClient(TestServer(app), headers=AUTH)
+    await client.start_server()
+    try:
+        async with api._processing_lock:  # 模拟 rebuild_vector_store 正持锁
+            resp = await asyncio.wait_for(client.get("/api/documents?collection=papers"), 2)
+            assert resp.status == 200
+            assert [d["doc_id"] for d in await resp.json()] == ["d1"]
+    finally:
+        await client.close()
+
+
+async def _make_tree_api() -> KnowledgeRepositoryApi:
+    """父集合 parent（本级无文档）→ 子集合 child；child 里一篇主归属名已过时的 Zotero 附件。"""
+    api = await _make_api()
+    store = api._source_store
+    await store.upsert_collection(Collection(name="parent", coll_key="Lparent"))
+    await store.upsert_collection(Collection(name="child", coll_key="Lchild", parent_key="Lparent"))
+    await store.add_document(
+        SourceDocument(
+            "z1",
+            "Art and Cosmotechnics",
+            "/p/z1.pdf",
+            "application/pdf",
+            100,
+            "hz",
+            "Renamed Away",  # 旧主归属名：Zotero 里这个集合已改名
+            collection_keys=["Lchild"],
+            origin=DocumentOrigin.ZOTERO,
+            read_only=True,
+            library_id="123",
+            zotero_item_key="ATTACH1",
+            local_meta={"creators": ["Hui"], "year": "2021"},
+        )
+    )
+    return api
+
+
+async def test_list_documents_with_descendants_matches_chat_scope(tmp_path: Path) -> None:
+    """父集合的列表与对话范围同一批：含子集合，按归属表而不是旧主归属名。
+
+    以前列表照 Zotero 只列本级，父集合显示「暂无文档」，对话却在搜子集合里的论文。
+    """
+    api = await _make_tree_api()
+    app = build_app(api=api, upload_dir=tmp_path, token=TOKEN)
+    client = TestClient(TestServer(app), headers=AUTH)
+    await client.start_server()
+    try:
+        scoped = await (await client.get("/api/documents?collection=parent&descendants=1")).json()
+        assert [d["doc_id"] for d in scoped] == ["z1"]
+        assert scoped[0]["collection_keys"] == ["Lchild"]
+        assert [d.doc_id for d in await api.list_scope_documents("parent")] == ["z1"]
+        child = await (await client.get("/api/documents?collection=child&descendants=1")).json()
+        assert [d["doc_id"] for d in child] == ["z1"]
+        # 不带 descendants 的旧调用不变：按主归属名，只列本级。
+        legacy = await (await client.get("/api/documents?collection=parent")).json()
+        assert legacy == []
+    finally:
+        await client.close()
+
+
+async def test_document_list_shows_filename_biblio_for_zotero_attachments(tmp_path: Path) -> None:
+    """没有父条目的 Zotero 附件：列表用文件名猜出的作者 / 年份（与引用同一份）。"""
+    api = await _make_tree_api()
+    app = build_app(api=api, upload_dir=tmp_path, token=TOKEN)
+    client = TestClient(TestServer(app), headers=AUTH)
+    await client.start_server()
+    try:
+        doc = await (await client.get("/api/documents/z1")).json()
+        assert doc["zotero_meta"]["creators"] == ["Hui"]
+        assert doc["zotero_meta"]["year"] == "2021"
+    finally:
+        await client.close()
+
+
+async def test_list_collections_reports_doc_counts(tmp_path: Path) -> None:
+    """集合带本级与含子集合的 active 文档数；多归属在同一棵子树里只算一次。"""
+    api = await _make_tree_api()
+    store = api._source_store
+    await store.upsert_collection(
+        Collection(name="child2", coll_key="Lchild2", parent_key="Lparent")
+    )
+    await store.add_document(
+        SourceDocument(
+            "z2", "Two homes", "/p/z2.pdf", "application/pdf", 10, "h2", "child",
+            collection_keys=["Lchild", "Lchild2"],
+        )
+    )
+    app = build_app(api=api, upload_dir=tmp_path, token=TOKEN)
+    client = TestClient(TestServer(app), headers=AUTH)
+    await client.start_server()
+    try:
+        cols = {c["name"]: c for c in await (await client.get("/api/collections")).json()}
+        assert (cols["parent"]["doc_count"], cols["parent"]["doc_count_total"]) == (0, 2)
+        assert (cols["child"]["doc_count"], cols["child"]["doc_count_total"]) == (2, 2)
+        assert (cols["child2"]["doc_count"], cols["child2"]["doc_count_total"]) == (1, 1)
+        assert cols["papers"]["doc_count"] == 1
+        scoped = await (await client.get("/api/documents?collection=parent&descendants=1")).json()
+        assert len(scoped) == cols["parent"]["doc_count_total"]
+        summary = await (await client.get("/api/library/summary")).json()
+        assert summary == {"document_count": 3}  # d1 + z1 + z2，多归属只算一次
+    finally:
+        await client.close()
+
+
 async def test_upload_classify_delete_document(tmp_path: Path) -> None:
     client = await _client(tmp_path)
     try:

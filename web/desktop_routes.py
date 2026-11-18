@@ -1,5 +1,5 @@
-"""桌面版新增的 HTTP 路由：可选组件（偏好设置 › 组件）、旧版插件数据导入（欢迎页）
-与「删除全部数据」的主密钥清除。
+"""桌面版新增的 HTTP 路由：可选组件（偏好设置 › 组件）、旧版插件数据导入（欢迎页）、
+「删除全部数据」的主密钥清除与文献库概览（左栏「全部文档」的篇数）。
 
 与 `server.py` 同样只做 HTTP↔`kacore/api` 的翻译；拆成独立模块是因为 server.py 已超出
 文件大小红线。门面经 `register_desktop_routes(app, api_of)` 注入的取值函数获得
@@ -113,6 +113,13 @@ def register_desktop_routes(app: web.Application, api_of: ApiOf) -> None:
         except RuntimeError as exc:
             return _error(str(exc), 501)
 
+    # ── 文献库概览 ────────────────────────────────────────────────
+
+    async def library_summary(request: web.Request) -> web.Response:
+        """GET /api/library/summary — 全库 active 论文数（左栏「全部文档」行的篇数）。"""
+        return web.json_response(await api_of(request).library_summary())
+
+    app.router.add_get("/api/library/summary", library_summary)
     app.router.add_get("/api/components", components_list)
     app.router.add_post("/api/components/{key}/install", component_install)
     app.router.add_delete("/api/components/{key}", component_uninstall)
