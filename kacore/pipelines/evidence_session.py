@@ -58,8 +58,6 @@ class EvidenceSession:
     raw_scores: dict[tuple[str, str, int], float] = field(default_factory=dict)
     # 每个 query 首次参与选择时补进来的已见候选（固定下来，之后各轮沿用；见 select）。
     padding: dict[str, list[str]] = field(default_factory=dict)
-    # 次方面 query → 权重（见 evidence_selection.AspectCandidates.weight）；未登记的都是主方面。
-    secondary: dict[str, float] = field(default_factory=dict)
     rank_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def absorb(self, outcomes: list[tuple[str, RetrievalOutcome]]) -> None:
@@ -73,13 +71,6 @@ class EvidenceSession:
                 edge = {"source": aspect, "target": chunk.chunk_id, "kind": "retrieved"}
                 if edge not in self.edges:
                     self.edges.append(edge)
-
-    def mark_secondary(self, queries: list[str], weight: float) -> None:
-        """在 absorb 之前登记次方面；已作为主方面出现过的 query 不降级。"""
-        primary = {q for q, _ in self.outcomes}
-        for query in queries:
-            if query not in primary:
-                self.secondary[query] = weight
 
     @staticmethod
     def aspect_id(query: str) -> str:
@@ -135,9 +126,7 @@ class EvidenceSession:
                     cid: (1 - weight) * rrf[cid] + weight * rr[cid] if cid in rr else rrf[cid]
                     for cid in pool
                 }
-                aspects.append(
-                    AspectCandidates(self.aspect_id(query), scores, self.secondary.get(query, 1.0))
-                )
+                aspects.append(AspectCandidates(self.aspect_id(query), scores))
         candidates = {
             cid: EvidenceCandidate(
                 cid,

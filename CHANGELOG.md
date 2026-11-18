@@ -38,13 +38,10 @@
 
 ### 变更 (Changed)
 
-- **深度思考的最终证据不再被补检方面稀释**（P32 P2）：以前每轮每个 query 都是平等方面、各保底一条，补位也近似轮流分，
-  偏题的补检 / 发现证据挤掉原问题的证据（s01：找到的文献最多、证据命中最低）。现在原问题与 PLAN 子问题是主方面、各保底一条；
-  第 2 轮起的补检 query 与校验缺口是次方面，不保底、补位时分数乘 `secondary_aspect_weight`（默认 0.5）。
-  `max_final_evidence` 默认 18 → 12（外部 agent 的 deep 证据每次上限随之为 12）。会话路径补回结构锚点保护：题目点名的表 / 节
-  无条件保留（以前会话路径从不填 `pinned_ids`）。enhanced 不登记次方面，选择不变。`kacore/pipelines/evidence_selection.py`、
-  `evidence_session.py`、`deep_thinking_orchestrator.py`、`kacore/config.py`；测试 `test_evidence_selection.py`、
-  `test_evidence_session.py`、`test_deep_thinking_orchestrator.py`。
+- **深度思考在会话路径上保住结构锚点**（P32 P2）：题目点名的表 / 节（锚点命中）无条件保留进证据——以前证据会话路径从不填
+  `pinned_ids`，锚点块会被高分块挤掉。`kacore/pipelines/deep_thinking_orchestrator.py`；测试
+  `tests/backend/test_deep_thinking_orchestrator.py`。（同批试过的「次方面降权 + 最终证据 18→12」在 mini 上丢了金标证据，已撤回，
+  见 `docs/deep-thinking-iteration-plan.md`。）
 
 - **深度思考 / 增强召回的证据选择少做重排**（P32 P1）：各 query 池的重排改为并发（锁只护打分缓存）；「补候选」每个 query
   只在首次出现时补一次、之后沿用（以前每轮按新进的块重补，旧方面的池不断变、新块逐个重打分）；补候选的匹配词改用
