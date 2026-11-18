@@ -655,8 +655,8 @@
     - [ ] 性能：5 万分块 LIKE vs FTS5 中位耗时、启动补索引耗时（批量写入后未测）。用户 11-18：先实现并推送，性能稍后。
 - [ ] P32 · Deep Thinking 迭代（🚧）。计划：`docs/deep-thinking-iteration-plan.md`（用户 11-18：跑完汇报，可暂缓 push）。
   每个 Phase 一个提交，用 KA-Benchmark 的 mini（24 题）与基线运行对比；噪声约 3 题翻转。
-  - [ ] P0 · 基线：`ab9c749` 上跑两次 mini。
-  - [ ] P1 · 重排提速（🚧）：`EvidenceSession.select` 各 query 池的重排并发（锁只护缓存）；「补候选」每个 query 只在
+  - [x] P0 · 基线：`ab9c749` 上跑两次 mini（18/24、19/24，噪声 3 题翻转；数字见计划文档「结果」）。
+  - [x] P1 · 重排提速：`EvidenceSession.select` 各 query 池的重排并发（锁只护缓存）；「补候选」每个 query 只在
     首次出现时补一次、之后沿用同一批（不再随新块反复补、反复重打分），匹配词改用 `search_text.query_terms`（去停用词）。
     代码已落地：`kacore/pipelines/evidence_session.py`（`_padding_for` / `_rerank_missing`）；`test_evidence_session.py` 新增 3 项
-    （旧代码下均失败）；全量 pytest 1616 passed、ruff、mypy。mini 对比待跑。
+    （旧代码下均失败）；全量 pytest 1616 passed、ruff、mypy。mini：重排 −34%、中位耗时 −10~25%，答对未降（见计划文档）。
