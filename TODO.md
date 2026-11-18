@@ -597,5 +597,7 @@
   - [ ] ⑤ 长跑内存（P2）：换索引后用 KA_Benchmark 内存探针连续提问，确认是否仍只涨不落；再决定是否需要剖析。
   - 验证（①–④）：pytest 1566 passed / 4 skipped（新增 `tests/backend/test_milvus_index.py` 10 项，含真实 Milvus Lite 小库
     FLAT → HNSW 迁移；4 个文件里替身 Milvus 构造器补 `**kwargs`）；ruff；mypy。真实库副本（52,477 片段）实测见上。
-  - 说明：上游断连时 deep / enhanced 降级到 default，界面已有「已降级」标识（`ChatPanel.tsx`）；重试再拉长也扛不住
-    十几分钟的断网，故 KA 侧不改（P3 归入评测侧：把断网期间的降级答案判为基础设施错误并重答）。
+  - [x] ⑥ 上游断连（P3）：已分配对话模型但合成调用失败时，`api.ask` 不再用离线占位文本冒充答案（评测断网期间 8 题拿到
+    「This is an offline placeholder answer…」），改为检索摘录排版（`_excerpt_answer`，与未接模型时同一段），响应新增
+    `generation_status`（失败为 `llm_unavailable`，正常为空）。离线占位只留给未分配模型。降级为 default 本身界面已有标识；
+    重试再拉长扛不住十几分钟的断网，不改。验证：pytest 1568 passed / 4 skipped（`test_api.py` 新增 2 项）。

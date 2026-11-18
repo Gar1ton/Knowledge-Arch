@@ -2478,6 +2478,54 @@ async def test_llm_unavailable_fallback_is_formatted_excerpts() -> None:
     assert "**[1] " in result["answer"]
 
 
+async def test_failed_synthesis_with_assigned_model_returns_excerpts_not_placeholder() -> None:
+    """P30：已分配模型但合成调用失败（断网 / 5xx）时不再用离线占位冒充答案。"""
+
+    class FailingLLM:
+        configured = True
+        allow_mock_seen: list[bool] = []
+
+        async def generate_result(self, prompt: str, system_prompt: str = "", **kw):
+            FailingLLM.allow_mock_seen.append(kw.get("allow_mock", True))
+            raise RuntimeError("No real LLM response; mock fallback is disabled")
+
+    store = InMemorySourceDocumentStore()
+    await store.add_document(_doc("d1", "kb1"))
+    kb = StaticRetriever({"kb1": [DocumentChunk("c0", "d1", 0, "relevant text", "h0")]})
+    api = KnowledgeRepositoryApi(
+        source_store=store, retrieval_orchestrator=kb,
+        llm_adapter=FailingLLM(),  # type: ignore[arg-type]
+    )
+    result = await api.ask(question="relevant", collection="kb1")
+    assert FailingLLM.allow_mock_seen == [False]
+    assert result["answer"].startswith("⚠️ The LLM is unavailable, so no answer could be written.")
+    assert "placeholder" not in result["answer"]
+    assert result["generation_status"] == "llm_unavailable"
+
+
+async def test_unassigned_model_still_allows_offline_placeholder() -> None:
+    from kacore.domain.llm_generation import GenerationResult
+
+    class UnassignedLLM:
+        configured = False
+        allow_mock_seen: list[bool] = []
+
+        async def generate_result(self, prompt: str, system_prompt: str = "", **kw):
+            UnassignedLLM.allow_mock_seen.append(kw.get("allow_mock", True))
+            return GenerationResult(text="offline placeholder [1]")
+
+    store = InMemorySourceDocumentStore()
+    await store.add_document(_doc("d1", "kb1"))
+    kb = StaticRetriever({"kb1": [DocumentChunk("c0", "d1", 0, "relevant text", "h0")]})
+    api = KnowledgeRepositoryApi(
+        source_store=store, retrieval_orchestrator=kb,
+        llm_adapter=UnassignedLLM(),  # type: ignore[arg-type]
+    )
+    result = await api.ask(question="relevant", collection="kb1")
+    assert UnassignedLLM.allow_mock_seen == [True]
+    assert result["generation_status"] == ""
+
+
 async def test_restart_service_unsupported_without_callback() -> None:
     """未注入 reload_callback（如无法程序化重启的环境）时返回 unsupported，不报错。"""
     api = await _make_api()

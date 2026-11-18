@@ -15,6 +15,12 @@
   - 同时在跑的向量检索有上限（默认 4）；索引类型与 HNSW 参数是内部配置项 `vector_db.index_type` / `hnsw_*` / `search_concurrency`
     （`kacore/config.py`，不进设置界面）。测试：`tests/backend/test_milvus_index.py`。
 
+### 修复 (Fixed)
+
+- **模型调用失败时不再给出假答案**：已分配对话模型、但这次合成调用失败（断网、5xx、超时、空响应）时，以前会把
+  「This is an offline placeholder answer…」当作回答返回；现在改为「LLM 暂不可用」加检索到的原文摘录，响应带
+  `generation_status: "llm_unavailable"`（`kacore/api.py` 的 `_excerpt_answer` 与通用合成分支）。离线占位只在未分配模型时出现。
+
 ## [v2.1.2] — 2026-11-18
 
 ### 变更 (Changed)
