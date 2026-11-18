@@ -1,8 +1,8 @@
 # Deep Thinking 迭代计划（2026-11-18，待批准后执行）
 
-> 来源：对 `kacore/pipelines/deep_thinking_*` 的审查（代码与 TSRA-Benchmark s01 所测 `38446f4` 一致）+ s01 结果
+> 来源：对 `kacore/pipelines/deep_thinking_*` 的审查（代码与 KA-Benchmark s01 所测 `38446f4` 一致）+ s01 结果
 > （deep_thinking 找到的文献最多，但证据命中最低、正确性不如 enhanced，调用是 enhanced 的约 5 倍）。
-> 验证工具：TSRA-Benchmark 的轻量 benchmark（`kabench mini`，24 题，约 7–10 分钟一次）。
+> 验证工具：KA-Benchmark 的轻量 benchmark（`kabench mini`，24 题，约 7–10 分钟一次）。
 > 本文件是计划，不是已批准的执行令；每个 Phase 开工前在 `TODO.md` 登记并按 CLAUDE.md §3–§4 走。
 
 ## 0. 怎么判断一次改动
@@ -30,7 +30,7 @@
 
 - P1 的「补候选」在 `EvidenceSession` 里，enhanced 也用它：P1 那次加跑 enhanced（`--systems deep_thinking,enhanced`），确认没变差。
 - 每个 Phase 跑 KA 自己的测试（`python -m pytest`、`ruff check .`）；远端操作每次单独批准。
-- mini 结果只在本地 `TSRA-Benchmark/runs/mini/`；结论写回本文件对应 Phase 的「结果」行。
+- mini 结果只在本地 `KA-Benchmark/runs/mini/`；结论写回本文件对应 Phase 的「结果」行。
 
 ## 3. 结果
 
