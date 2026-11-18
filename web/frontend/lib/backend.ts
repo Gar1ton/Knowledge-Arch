@@ -109,6 +109,23 @@ export async function backendState(): Promise<BackendState> {
   return invokeShell<BackendState>("backend_state");
 }
 
+/**
+ * 后端是否还在接受连接：只有连接层失败（fetch 抛 TypeError，如端口不再监听）才算不可达；
+ * 超时或任何 HTTP 响应都算「活着」（忙于重建时慢，不该被当成崩溃）。
+ */
+export async function backendReachable(timeoutMs = 10_000): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    await fetch(await apiUrl("/api/health"), { headers: await authHeaders(), signal: controller.signal });
+    return true;
+  } catch (err) {
+    return !(err instanceof TypeError);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** 让壳重启后端进程（崩溃页「重启服务」）；返回新的连接信息。 */
 export async function restartBackendProcess(): Promise<BackendInfo> {
   resetBackendInfo();

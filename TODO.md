@@ -608,3 +608,11 @@
     `bundle_python.py` 的 `install_requirements` 加 `--only-binary :all:`（uv 在 x86_64-apple-darwin 上自动解析到
     cryptography 48.0.1，其余依赖不变；四个平台 `uv pip compile --only-binary :all:` 均可解析），冒烟导入加
     `kacore.secret_store`。待 CI 出 x64 DMG 后在 Intel Mac 上验证。
+  - [ ] ②（代码已落地，壳待 CI 编译、待 Windows 实测）Windows 后端「活着但不听」：asyncio Proactor 循环在 accept 出错（`WinError 64`，客户端在握手中途断开）时
+    `sock.close()` 关掉监听 socket 且不再恢复（`proactor_events.py` `_start_serving`），进程不退出，壳不报崩溃，
+    界面停在 Loading / 「Log endpoint is unavailable」，偏好里的「重启服务」走 HTTP 软重启同样发不出去。
+    后端每秒检查监听 socket，被关就在原端口重新监听（`ka_server/lifecycle.py` 的 `keep_listening`）；
+    桌面界面连续连不上后端时进入崩溃页，「重启服务」由壳重启进程（`BackendGate`）。
+    托盘菜单加「Restart service」（进程级重启，`desktop/src-tauri/src/lib.rs` 的 `restart_sidecar` 与崩溃页共用）。
+    验证：pytest 1575 passed（`test_ka_server.py` 新增 2 项：模拟 Proactor 关掉监听后原端口恢复、正常监听不重建）；
+    ruff / mypy；前端 lint / tsc / build。未验证（本机无 Rust）：`cargo check` / `clippy` / `fmt`。

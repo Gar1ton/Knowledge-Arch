@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### 修复 (Fixed)
+
+- **Windows 上后端「活着但连不上」**：客户端在连接握手中途断开时（`WinError 64`），asyncio 的 Proactor 循环会关掉监听
+  socket 且不再恢复；进程不退出，壳不报崩溃，界面停在 Loading / 「Log endpoint is unavailable」，偏好里的「重启服务」
+  走 HTTP 也发不出去，只能退出应用重开。现在后端每秒检查监听 socket，被关就在原端口重新监听
+  （`ka_server/lifecycle.py` 的 `keep_listening`，`ka_server/__main__.py` 接入）；桌面界面每 5 秒探活，壳报告就绪却连续
+  3 次连不上时进入崩溃页，「重启服务」由壳重启进程（`web/frontend/components/desktop/BackendGate.tsx`、
+  `lib/backend.ts` 的 `backendReachable`）。测试：`tests/backend/test_ka_server.py`。
+
+### 新增 (Added)
+
+- **托盘菜单「Restart service」**：进程级重启后端，界面卡住时也能用（`desktop/src-tauri/src/lib.rs` 的 `restart_sidecar`，
+  与崩溃页的 `restart_backend` 共用）。
+
 ## [v2.1.3] — 2026-11-18
 
 ### 变更 (Changed)
