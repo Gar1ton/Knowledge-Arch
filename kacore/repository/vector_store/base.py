@@ -72,6 +72,14 @@ class VectorStore(ABC):
         """
         ...
 
+    async def migrate_index(self) -> bool:
+        """把已有索引换成当前配置的索引类型；无需更换或不支持时返回 False（默认空操作）。
+
+        供组合根在启动后的后台调用：实现须保证更换期间到达的检索 / 写入排队等待而非报错，
+        更换失败时索引仍可用（异常抛给调用方记录）。返回 True 表示本次完成了更换。
+        """
+        return False
+
     @abstractmethod
     async def clear(self) -> None:
         """清空向量数据库中的全部数据及索引。"""

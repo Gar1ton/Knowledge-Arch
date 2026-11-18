@@ -377,6 +377,31 @@ _GENERATION_STATUS_NOTICE_EN: dict[str, str] = {
 }
 
 
+# 已分配对话模型但合成调用失败：答案是检索摘录而非模型回答（摘录正文自带说明，不再加提示）。
+GENERATION_LLM_UNAVAILABLE = "llm_unavailable"
+
+
+def _excerpt_answer(sources: list[dict], answer_language: str, question: str) -> str:
+    """LLM 不可用的降级排版：引导行说明「未合成」+ 每条摘录带标题/页码、按句边界截断。
+
+    不把句中硬切的原文碎片直接拼成正文（流畅性）；正文里的 `**[n] 标题**` 不是引用，不做改写。
+    """
+    excerpts = []
+    for s in sources:
+        meta = s.get("metadata") or {}
+        page_info = f" (p. {meta['page_number']})" if meta.get("page_number") else ""
+        excerpts.append(
+            f"**[{s['n']}] {s['title']}**{page_info}\n{clip_at_sentence(s['text'], 300)}"
+        )
+    lead = (
+        f"⚠️ LLM 暂不可用，未能合成回答。以下为检索到的 {len(sources)} 段原文摘录：\n\n"
+        if _answers_in_chinese(answer_language, question)
+        else f"⚠️ The LLM is unavailable, so no answer could be written. Here are "
+        f"{len(sources)} retrieved passages:\n\n"
+    )
+    return lead + "\n\n".join(excerpts)
+
+
 def _generation_status_notice(
     generation_status: str, answer_language: str, question: str
 ) -> str:
@@ -3224,6 +3249,7 @@ class KnowledgeRepositoryApi(
                 answer = deep_answer
                 citable = True
             elif self._llm_adapter is not None and has_evidence:
+                llm_failed = False
                 lang = prompt_lang(answer_language, question)
                 rules = rag_rules(lang, answer_language, cite=True)
                 # deep / enhanced 的兜底合成保持原样，只有普通检索路径叠加用户系统提示。
@@ -3240,35 +3266,33 @@ class KnowledgeRepositoryApi(
                 user_prompt = context_prompt(
                     lang, graph_header + "\n\n---\n\n".join(context_parts), question
                 )
-                generic_result = await self._llm_adapter.generate_result(
-                    user_prompt, system_prompt=system_prompt
-                )
-                answer = generic_result.text
-                citable = True
-                # 这条调用 allow_mock=True（默认）：真正的空文本状态（reasoning_only/empty/
-                # timeout/error）会被离线占位文本覆盖，此时不能把「模型可能不完整」的提示
-                # 挂在一段完全虚构的占位答案上；只有 length/content_filter 通常仍带着真实
-                # （哪怕不完整）的文本，值得透给用户。
-                if generic_result.status in (STATUS_LENGTH, STATUS_CONTENT_FILTER):
-                    generation_status = generic_result.status
-            elif context_parts:
-                # LLM 不可用的降级排版：引导行说明「未合成」+ 每条摘录带标题/页码、按句边界
-                # 截断——不再把句中硬切的原文碎片直接拼成正文（流畅性）。
-                excerpts = []
-                for s in sources:
-                    meta = s.get("metadata") or {}
-                    page_info = f" (p. {meta['page_number']})" if meta.get("page_number") else ""
-                    excerpts.append(
-                        f"**[{s['n']}] {s['title']}**{page_info}\n"
-                        f"{clip_at_sentence(s['text'], 300)}"
+                # 离线占位只留给「没分配对话模型」：已分配模型但这次调用失败（断网 / 5xx / 超时 /
+                # 空响应）时，占位文本会冒充一段正常答案（P30：评测断网期间 8 题拿到占位）。
+                # 改走下方的摘录排版，并以 generation_status=llm_unavailable 结构化告知调用方。
+                try:
+                    generic_result = await self._llm_adapter.generate_result(
+                        user_prompt,
+                        system_prompt=system_prompt,
+                        allow_mock=not getattr(self._llm_adapter, "configured", True),
                     )
-                lead = (
-                    f"⚠️ LLM 暂不可用，未能合成回答。以下为检索到的 {len(sources)} 段原文摘录：\n\n"
-                    if _answers_in_chinese(answer_language, question)
-                    else f"⚠️ The LLM is unavailable, so no answer could be written. Here are "
-                    f"{len(sources)} retrieved passages:\n\n"
-                )
-                answer = lead + "\n\n".join(excerpts)
+                except RuntimeError as exc:
+                    logger.warning("Answer synthesis failed; returning excerpts: %s", exc)
+                    llm_failed = True
+                    generation_status = GENERATION_LLM_UNAVAILABLE
+                if not llm_failed:
+                    answer = generic_result.text
+                    citable = True
+                    # 未分配模型时 allow_mock=True：空文本状态会被离线占位覆盖，不能把「模型可能
+                    # 不完整」的提示挂在占位答案上；只有 length/content_filter 通常仍带着真实
+                    # （哪怕不完整）的文本，值得透给用户。
+                    if generic_result.status in (STATUS_LENGTH, STATUS_CONTENT_FILTER):
+                        generation_status = generic_result.status
+                elif context_parts:
+                    answer = _excerpt_answer(sources, answer_language, question)
+                else:
+                    answer = lightrag_context
+            elif context_parts:
+                answer = _excerpt_answer(sources, answer_language, question)
             elif lightrag_context:
                 answer = lightrag_context
             else:
@@ -3385,6 +3409,8 @@ class KnowledgeRepositoryApi(
                 "retrieval_engines": engines,
                 "fallback_reason": fallback_reason,
                 "thinking_trace": _serialize_deep_thinking(deep_outcome) if deep_outcome else None,
+                # 生成状态：length / content_filter / reasoning_only / llm_unavailable，正常为空。
+                "generation_status": generation_status,
             }
 
         def _finish(result: dict) -> dict:

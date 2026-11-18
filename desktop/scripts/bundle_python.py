@@ -118,8 +118,11 @@ def site_packages(python: Path) -> Path:
 
 
 def install_requirements(uv: str, python: Path) -> None:
+    # 只装预编译 wheel：源码构建会链接 runner 上的库（如 Homebrew 的 /usr/local/opt/openssl@3），
+    # 在 runner 上能跑、到用户机器上 dlopen 失败。cryptography 49 起没有 Intel macOS wheel，
+    # 加了这个参数后 uv 在 x86_64-apple-darwin 上自动解析到带 wheel 的 48.x。
     run([
-        uv, "pip", "install", "--no-config", "--python", str(python),
+        uv, "pip", "install", "--no-config", "--only-binary", ":all:", "--python", str(python),
         "-r", str(ROOT / "requirements.txt"),
     ])
     # 运行期由 uv 安装组件，pip 用不上（还占十几 MB）。
@@ -271,7 +274,8 @@ def smoke_test(python: Path) -> None:
     """用 -I 启动打包后的解释器，确认后端可导入、核心依赖齐全、Milvus Lite 可用。"""
     code = (
         "import ka_server, kacore.app_initializer, web.server, aiohttp, pymupdf, pymilvus,"
-        " milvus_lite; from kacore.agent_skill import skill_source_dir; skill_source_dir();"
+        " milvus_lite, kacore.secret_store;"
+        " from kacore.agent_skill import skill_source_dir; skill_source_dir();"
         " print(ka_server.APP_VERSION)"
     )
     log(f"smoke test ok, backend version {python_output(python, code)}")

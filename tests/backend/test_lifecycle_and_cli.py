@@ -130,7 +130,7 @@ async def test_initializer_passes_probed_dimension_to_milvus_and_lightrag(
             return [[0.1] * 7 for _ in texts]
 
     class Milvus:
-        def __init__(self, *, db_path: str, dim: int) -> None:
+        def __init__(self, *, db_path: str, dim: int, **_kwargs: Any) -> None:
             captured["milvus"] = dim
 
         def validate_schema(self) -> None:
@@ -346,7 +346,7 @@ async def test_initializer_keeps_mismatched_milvus_available_for_manual_rebuild(
             return [0.1] * 7
 
     class Milvus:
-        def __init__(self, *, db_path: str, dim: int) -> None:
+        def __init__(self, *, db_path: str, dim: int, **_kwargs: Any) -> None:
             self.dim = dim
 
         def validate_schema(self) -> None:
@@ -391,7 +391,7 @@ async def test_initializer_records_milvus_init_error_for_generic_failure(
             return [0.1] * 7
 
     class Milvus:
-        def __init__(self, *, db_path: str, dim: int) -> None:
+        def __init__(self, *, db_path: str, dim: int, **_kwargs: Any) -> None:
             pass
 
         def validate_schema(self) -> None:
@@ -451,7 +451,7 @@ async def test_initializer_marks_recreated_empty_milvus_incompatible_when_docs_e
     class Milvus:
         created_collection = True
 
-        def __init__(self, *, db_path: str, dim: int) -> None:
+        def __init__(self, *, db_path: str, dim: int, **_kwargs: Any) -> None:
             pass
 
         def validate_schema(self) -> None:

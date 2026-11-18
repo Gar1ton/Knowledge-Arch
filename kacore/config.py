@@ -33,6 +33,11 @@ VECTOR_BACKEND_MILVUS = "milvus"
 VECTOR_BACKEND_LEXICAL = "lexical"
 # 旧版「知识库回退」后端的写法，读取时归一为 lexical（完整的旧键翻译见 legacy_import）。
 LEGACY_LEXICAL_BACKENDS = frozenset({"astr"})
+# Milvus 向量索引类型：HNSW 近似检索（默认）| FLAT 暴力检索
+# （Lite 每次检索复制整段向量，大库内存陡增）。
+VECTOR_INDEX_HNSW = "HNSW"
+VECTOR_INDEX_FLAT = "FLAT"
+VECTOR_INDEX_TYPES = frozenset({VECTOR_INDEX_HNSW, VECTOR_INDEX_FLAT})
 EMBEDDING_PROVIDERS = frozenset({"local", "external"})
 
 
@@ -77,6 +82,11 @@ def _int_or_default(value: Any, default: int) -> int:
         return int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return default
+
+
+def _clamped_int(value: Any, default: int, low: int, high: int) -> int:
+    """`_int_or_default` 后夹到 [low, high]。"""
+    return min(high, max(low, _int_or_default(value, default)))
 
 
 # ── 各子系统专属 typed config ────────────────────────────────────
@@ -205,6 +215,15 @@ class VectorDbConfig:
     auto_rebuild_enabled: bool = True
     # 防抖静默期：Zotero 批量同步会连打上百次信号，静默这么久没有新信号才真正开跑。
     auto_rebuild_delay_seconds: int = 30
+    # 以下为内部参数（不进设置界面）。索引默认 HNSW：Milvus Lite 的 FLAT 每次检索复制一份有效向量，
+    # 52k×2048 维的库单次 +0.6G、并发即爆内存；HNSW 实测 top-10 与 FLAT 重合 99.5%
+    # （KA_Benchmark，11-18）。
+    index_type: str = VECTOR_INDEX_HNSW
+    hnsw_m: int = 16
+    hnsw_ef_construction: int = 200
+    hnsw_ef_search: int = 64
+    # 同时在跑的向量检索上限（enhanced 一题会并行检索多个子查询）。
+    search_concurrency: int = 4
 
 
 @dataclass
@@ -708,6 +727,9 @@ class Config:
             backend = VECTOR_BACKEND_LEXICAL
         if backend not in {VECTOR_BACKEND_MILVUS, VECTOR_BACKEND_LEXICAL}:
             backend = VectorDbConfig.backend
+        index_type = str(s.get("index_type", VectorDbConfig.index_type)).strip().upper()
+        if index_type not in VECTOR_INDEX_TYPES:
+            index_type = VectorDbConfig.index_type
         return VectorDbConfig(
             backend=backend,
             db_filename=s.get("db_filename", VectorDbConfig.db_filename),
@@ -720,6 +742,17 @@ class Config:
                     s.get("auto_rebuild_delay_seconds"),
                     VectorDbConfig.auto_rebuild_delay_seconds,
                 ),
+            ),
+            index_type=index_type,
+            hnsw_m=_clamped_int(s.get("hnsw_m"), VectorDbConfig.hnsw_m, 4, 64),
+            hnsw_ef_construction=_clamped_int(
+                s.get("hnsw_ef_construction"), VectorDbConfig.hnsw_ef_construction, 16, 800,
+            ),
+            hnsw_ef_search=_clamped_int(
+                s.get("hnsw_ef_search"), VectorDbConfig.hnsw_ef_search, 10, 1024,
+            ),
+            search_concurrency=_clamped_int(
+                s.get("search_concurrency"), VectorDbConfig.search_concurrency, 1, 32,
             ),
         )
 
