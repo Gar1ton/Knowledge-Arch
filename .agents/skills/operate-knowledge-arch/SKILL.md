@@ -34,7 +34,7 @@ The app publishes its address and a per-launch token in a connection file that o
 ## Route the request
 
 - First-run setup, "help me configure Knowledge Arch", connecting a model provider, Zotero, Notion or R2: read [references/setup.md](references/setup.md) and follow it.
-- Research, source discovery, comparison, synthesis or citation questions: read [references/research.md](references/research.md). Answers cite in Harvard style using the `harvard_in_text` and `harvard_reference` strings the server returns with every evidence item — never a `doc_id`, chunk id or bare `[n]`.
+- Research, source discovery, comparison, synthesis or citation questions: read [references/research.md](references/research.md). If `doctor` shows `"vector_recall": false` or evidence comes back with `milvus_unavailable`, follow its "Keyword-only recall" section when writing queries. Answers cite in Harvard style using the `harvard_in_text` and `harvard_reference` strings the server returns with every evidence item — never a `doc_id`, chunk id or bare `[n]`.
 - A user-requested LightRAG build: read [references/lightrag.md](references/lightrag.md).
 - Configuration inspection, adjustment, restart, index-rebuild status or consequences: read [references/settings.md](references/settings.md).
 - A user-requested save of conversation questions/answers to Notion: follow [Save conversation Q&A to Notion](#save-conversation-qa-to-notion).

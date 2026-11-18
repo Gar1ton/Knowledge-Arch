@@ -35,6 +35,25 @@ The endpoint performs deterministic retrieval, fusion, reranking, cutoff, and me
 returns evidence only with `plugin_llm_used=false` and `full_text_used=false`. Codex performs all
 planning, assessment, correction, and synthesis.
 
+### Keyword-only recall
+
+Without an embedding model (and so without a vector index), retrieval falls back to structural anchors
+plus SQLite keyword search (BM25). You are in this state when the response's `fallback_reasons` contains
+`milvus_unavailable`, or `retrieval_engines` has no `milvus`; `KA doctor` also reports
+`"vector_recall": false`. Keyword search matches words, not meaning, so write queries for it:
+
+- Write keyword groups, not sentences: `transformer attention limitation`, not
+  `what is the main limitation of the model in this paper`.
+- Cover one concept several ways: synonyms, abbreviation and full form (`RAG`, `retrieval-augmented
+  generation`), and other variants. Plural / singular is already handled (stemming).
+- Use the documents' language: English terms for English papers, Chinese terms for Chinese documents.
+  When unsure, send one query in each language.
+- Keep names, DOI fragments and numbered labels (`Table 1`, `Section 2.1`) verbatim; they hit the anchor
+  channel.
+- After the first round, take the terms the source text itself uses from the evidence you got and use
+  them as the next round's queries.
+- Use the full per-round query allowance (`limits`); several narrow queries beat one broad one here.
+
 ## 3. Correct only material gaps
 
 Check whether evidence covers the requested entities, relationships, comparison dimensions, time period,

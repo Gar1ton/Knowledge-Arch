@@ -67,6 +67,8 @@ class _State:
         # 全文读门禁：单个用例可调大文档长度/调小阈值来触发 409 预览。
         self.doc_chars = 100
         self.confirm_threshold = 60000
+        # 能力快照 retrieval 环节的生效引擎；去掉 milvus = 只有关键词召回。
+        self.retrieval_engines = ["milvus", "sqlite_lexical"]
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -251,7 +253,13 @@ class _Handler(BaseHTTPRequestHandler):
                                 "auto_rebuild_delay_seconds": 30,
                                 "reason": "",
                             },
-                        }
+                        },
+                        {
+                            "id": "retrieval",
+                            "current": "rrf_fusion",
+                            "status": "ready",
+                            "detail": {"engines": list(self.state.retrieval_engines)},
+                        },
                     ]
                 },
             )
@@ -392,9 +400,19 @@ def test_doctor_and_catalog_use_read_only_endpoints() -> None:
         catalog = CLIENT.catalog(client, "Ada Alpha", 20)
     assert result["status"] == "ok"
     assert result["plugin_llm_used"] is False
+    assert result["vector_recall"] is True
+    assert result["retrieval_engines"] == ["milvus", "sqlite_lexical"]
     assert catalog["documents"][0]["doc_id"] == "d1"
     assert catalog["documents"][0]["authors"] == ["Ada Lovelace"]
     assert state.config_updates == []
+
+
+def test_doctor_reports_keyword_only_recall() -> None:
+    with _mock_api() as (state, url):
+        state.retrieval_engines = ["sqlite_lexical"]
+        result = CLIENT.doctor(CLIENT.KnowledgeArchClient(url, TOKEN))
+    assert result["vector_recall"] is False
+    assert result["retrieval_engines"] == ["sqlite_lexical"]
 
 
 def _write_connection(path: Path, url: str, *, pid: int | None = None, **extra: Any) -> Path:

@@ -40,6 +40,11 @@
 
 - **托盘菜单「Restart service」**：进程级重启后端，界面卡住时也能用（`desktop/src-tauri/src/lib.rs` 的 `restart_sidecar`，
   与崩溃页的 `restart_backend` 共用）。
+- **skill：只有关键词召回时怎么写 query**：`references/research.md` 新增「Keyword-only recall」一节（关键词组而非整句、
+  同义词与缩写全称、按文献语言写、编号原样保留、从首轮证据取原文术语、用满每轮 query 数）；`SKILL.md` 一句指针。
+  `KA doctor` 新增 `retrieval_engines` 与 `vector_recall`，取自 `/api/capabilities` 的 retrieval 环节，服务端未改
+  （`scripts/knowledge_arch_client.py` 的 `_pipeline_stage` 由原 `_vector_store_stage` 泛化，索引状态共用）。
+  测试：`tests/backend/test_knowledge_arch_skill_client.py`。
 
 ## [v2.1.3] — 2026-11-18
 

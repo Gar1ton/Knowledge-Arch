@@ -646,4 +646,10 @@
       现有测试断言均未修改。验证：`test_search_text.py` 6 项、`test_keyword_recall.py` 23 项新增；retrieval / scope / api /
       agent_evidence / skill client 相关测试全过；ruff。未做（用户 11-18 要求先推送）：全量 pytest、mypy、5 万分块性能对比
       （首轮合成数据词频失真，作废；Zipf 数据那轮未跑完）、端到端实测。
-    - [ ] skill：`references/research.md` 增「只有关键词召回」一节，`SKILL.md` 一句指针，`doctor` 显示有没有向量召回。
+    - [x] skill：`references/research.md` 增「Keyword-only recall」一节，`SKILL.md` 一句指针；`doctor` 新增 `retrieval_engines` /
+      `vector_recall`（取自 `/api/capabilities` 的 retrieval 环节，服务端未改）。`_vector_store_stage` 泛化为 `_pipeline_stage`。
+      验证（11-18）：全量 pytest 1612 passed / 1 failed（`test_legacy_import.py::test_api_import_end_to_end_through_soft_restart`，
+      本机断网 DNS 解析失败；`0c1ee58` 上同样失败，与本次改动无关，联网后复跑）；ruff；mypy。端到端（全新数据目录、无 embedding /
+      rerank，中英各一篇 Markdown）6 个用例全部符合：长句 Limitations 段排第一、中文长句命中正文、`Table 1` 锚点 + 关键词、
+      全局 deep_thinking 中英都召回、`doctor` 显示 `vector_recall: false`。
+    - [ ] 性能：5 万分块 LIKE vs FTS5 中位耗时、启动补索引耗时（批量写入后未测）。用户 11-18：先实现并推送，性能稍后。

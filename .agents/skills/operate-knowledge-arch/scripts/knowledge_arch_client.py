@@ -450,6 +450,11 @@ def doctor(client: KnowledgeArchClient) -> dict[str, Any]:
     config = _expect_dict(
         client.request_json("/api/config/effective"), "/api/config/effective"
     )
+    # 当前生效的召回引擎（能力快照 retrieval 环节）：没有 milvus 就只剩锚点 + 关键词召回，
+    # agent 要按 references/research.md「Keyword-only recall」改写 query。
+    # 拿不到快照时为 None（未知）。
+    engines = _pipeline_stage(client, "retrieval").get("detail", {}).get("engines")
+    engines = [str(e) for e in engines] if isinstance(engines, list) else None
     return {
         "status": "ok",
         "url": client.base_url,
@@ -457,6 +462,8 @@ def doctor(client: KnowledgeArchClient) -> dict[str, Any]:
         "local_collection_count": len(collections),
         "kb_collection_count": len(kb_collections),
         "config_sections": sorted(config),
+        "retrieval_engines": engines,
+        "vector_recall": None if engines is None else "milvus" in engines,
         "plugin_llm_used": False,
     }
 
@@ -1066,10 +1073,10 @@ def config_set(
     return preview
 
 
-def _vector_store_stage(client: KnowledgeArchClient) -> dict[str, Any]:
-    """从能力快照里取 vector_store 阶段；拿不到时返回空 dict 而不是抛错。
+def _pipeline_stage(client: KnowledgeArchClient, stage_id: str) -> dict[str, Any]:
+    """从能力快照（/api/capabilities）里取一个环节；拿不到时返回空 dict 而不是抛错。
 
-    索引状态本身不该因为能力端点的形状变化而整个失败——待重建数量才是主信号。
+    索引状态与 doctor 都不该因为能力端点的形状变化而整个失败——它们各自另有主信号。
     """
     try:
         capabilities = client.request_json("/api/capabilities")
@@ -1081,7 +1088,7 @@ def _vector_store_stage(client: KnowledgeArchClient) -> dict[str, Any]:
     if not isinstance(pipeline, list):
         return {}
     for stage in pipeline:
-        if isinstance(stage, dict) and stage.get("id") == "vector_store":
+        if isinstance(stage, dict) and stage.get("id") == stage_id:
             return stage
     return {}
 
@@ -1097,7 +1104,7 @@ def index_status(client: KnowledgeArchClient) -> dict[str, Any]:
         "/api/documents/rebuild-index/active",
     )
     job = active_payload.get("job")
-    stage = _vector_store_stage(client)
+    stage = _pipeline_stage(client, "vector_store")
     detail = stage.get("detail") if isinstance(stage.get("detail"), dict) else {}
     return {
         "status": "ok",
