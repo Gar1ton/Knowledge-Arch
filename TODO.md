@@ -665,5 +665,6 @@
     稳定答对题 W2988278250 金标证据 2/2→0/2、来源从 2 篇散到 8 篇；W2560622558 没找到对的论文。结论：第 2 轮起的 query 是 SEA
     针对缺口生成的补检，金标常靠它们找到，不是偏题方面——假设不成立。保留：会话路径补回结构锚点保护（`_gather_round` 收集
     `anchor_hit` 进 `pinned_ids` 并传给 `select`；`test_structural_anchor_survives_tight_budget_in_session_path` 旧代码下失败）。
-  - [ ] P3 · 收敛条件（🚧）：关键项都满足且 SEA 判充分即收敛，新发现的方面不再强制追一轮（以前 `converged` 要求本轮无新发现）。
+  - [x] P3 · 收敛条件：关键项都满足且 SEA 判充分即收敛，新发现的方面不再强制追一轮（以前 `converged` 要求本轮无新发现）。
     `deep_thinking_orchestrator.py`；测试 `test_sufficient_round_with_new_discovery_converges`（旧代码下失败）。
+    mini 两次 21/24（基线 21/24）；ResearchQA 调用 −15~21%、中位耗时 −20~27%，MultiHop-RAG 不变。保留。
