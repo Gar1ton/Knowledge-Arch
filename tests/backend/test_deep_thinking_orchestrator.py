@@ -629,6 +629,54 @@ async def test_verify_json_contract_error_marks_answer_unverified():
     assert result.verified is False
 
 
+VERIFY_PARTIAL_AND_GAP = (
+    '{"supported":false,"complete":false,"partial_claims":["答案里部分有据的断言句"],'
+    '"info_gaps":["缺失的术语"]}'
+)
+VERIFY_ONE_HARD = '{"supported":false,"complete":false,"unsupported_claims":["断言A无证据"]}'
+
+
+@pytest.mark.asyncio
+async def test_verify_recheck_uses_info_gaps_not_partial_claims():
+    outcome = _outcome([_chunk("c1"), _chunk("c2")])
+    retrieval = MockRetrieval(outcome)
+    orch = DeepThinkingOrchestrator(
+        retrieval_orchestrator=retrieval,
+        reranker=NoopReranker(),
+        llm_adapter=ScriptedLLM(
+            [PLAN_1ITEM, SEA_SUFFICIENT, "草稿1 [1]", VERIFY_PARTIAL_AND_GAP,
+             "草稿2 [1]", VERIFY_OK]
+        ),
+        dt_config=DeepThinkingConfig(
+            max_rounds=1, max_sub_queries=2, wide_top_k=5, json_max_retries=1, verify_enabled=True
+        ),
+    )
+    await orch.run("papers", "综述", answer_language="zh")
+    assert "缺失的术语" in retrieval.queries
+    assert "答案里部分有据的断言句" not in retrieval.queries
+
+
+@pytest.mark.asyncio
+async def test_worse_second_draft_keeps_first_draft():
+    outcome = _outcome([_chunk("c1"), _chunk("c2")])
+    orch = _make_verify(
+        outcome, [PLAN_1ITEM, SEA_SUFFICIENT, "草稿1 [1]", VERIFY_BAD, "草稿2 [1]", VERIFY_ONE_HARD]
+    )
+    result = await orch.run("papers", "综述", answer_language="zh")
+    assert result.answer == "草稿1 [1]"            # 第二稿多了一条硬缺失 → 退回第一稿
+    assert result.verify_missing == []
+
+
+@pytest.mark.asyncio
+async def test_failed_second_synthesis_keeps_verified_first_draft():
+    outcome = _outcome([_chunk("c1"), _chunk("c2")])
+    orch = _make_verify(
+        outcome, [PLAN_1ITEM, SEA_SUFFICIENT, "草稿1 [1]", VERIFY_BAD, RuntimeError("synth down")]
+    )
+    result = await orch.run("papers", "综述", answer_language="zh")
+    assert result.answer == "草稿1 [1]"            # 以前这里返回 None，交给 api.ask 重新合成
+
+
 @pytest.mark.asyncio
 async def test_verify_claim_level_hard_to_warning_soft_to_notes():
     outcome = _outcome([_chunk("c1")])

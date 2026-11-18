@@ -26,7 +26,7 @@
 | P3 收敛条件 | `0fa30f8` | P2 后基线 | 21/24、21/24（两次） | 2 / 2、2 / 2 | 21.4 / 15.5 · 27.4 / 20.9；19.9 / 14.2 · 28.6 / 21.7 | 214 s · 272 s；195 s · 253 s | — | **保留**：答对持平；ResearchQA 调用 −15~21%、中位耗时 −20~27%；MultiHop-RAG 不变（多跳题少有判充分的轮次） |
 | P2 证据稀释（已试，撤回大部分） | 最终证据名额先保原问题与关键检查项，发现项 / 校验缺口只补空位；`max_final_evidence` 18 → 12；会话路径补回结构锚点保护 | 每轮每个 query 都是平等 aspect，按 aspect 归一化后各池第一名都是 1.0，补位也近似轮流分（`evidence_selection.py:96-117`、`evidence_session.py:104-167`）；会话路径从不填 `pinned_ids`（`deep_thinking_orchestrator.py:511-525`） | 证据命中上升；原答错组变对 |
 | P3 收敛条件 | 关键项都满足且 SEA 判充分时，新发现的方面不再强制多跑一轮 | `converged` 要求本轮无新发现，SEA 几乎总有发现（`deep_thinking_orchestrator.py:244-249`） | 调用下降；答对不降 |
-| P4 校验闭环 | 只用 `hard_missing` + `info_gaps` 补检，不用 `partial_claims`；第二稿校验不优于第一稿时保留第一稿 | `recheck_gaps = soft or hard`，soft 含答案里的断言句；第二稿总是替换第一稿（`deep_thinking_orchestrator.py:636-641`） | 对→错减少 |
+| P4 校验闭环 | 只用 `hard_missing` + `info_gaps` 补检，不用 `partial_claims`；第二稿校验明显更差（第一稿合格而它不合格、或硬缺失更多）时保留第一稿，打平用第二稿 | `recheck_gaps = soft or hard`，soft 含答案里的断言句；第二稿总是替换第一稿（`deep_thinking_orchestrator.py:636-641`） | 对→错减少 |
 | P5 单变量试验 | 各跑一次：`rerank_weight` 0.2 → 0.5（与 enhanced 同）；合成模板对短答案题不强制报告体 | 假设，需要实测（`config.py:311`、`answer_synthesis.py:124-138`） | 各自的翻转 |
 
 ## 2. 注意

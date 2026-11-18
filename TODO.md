@@ -668,3 +668,6 @@
   - [x] P3 · 收敛条件：关键项都满足且 SEA 判充分即收敛，新发现的方面不再强制追一轮（以前 `converged` 要求本轮无新发现）。
     `deep_thinking_orchestrator.py`；测试 `test_sufficient_round_with_new_discovery_converges`（旧代码下失败）。
     mini 两次 21/24（基线 21/24）；ResearchQA 调用 −15~21%、中位耗时 −20~27%，MultiHop-RAG 不变。保留。
+  - [ ] P4 · 校验闭环（🚧）：补检词只用 `info_gaps` + 硬缺失（不再用 `partial_claims` 断言句）；补检后的一稿只在不比上一稿差时
+    替换它（上一稿合格而新稿不合格、或新稿硬缺失更多 → 退回上一稿，与它的证据一起返回；打平用新稿）；第二次合成或校验失败时
+    返回已校验的上一稿（以前返回 None 交 api.ask 重合成）。`deep_thinking_orchestrator.py`；测试新增 3 项（旧代码下均失败）。

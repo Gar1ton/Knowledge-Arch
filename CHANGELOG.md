@@ -38,6 +38,11 @@
 
 ### 变更 (Changed)
 
+- **深度思考的校验补检用对检索词，且不再用更差的第二稿换掉第一稿**（P32 P4）：校验不合格后的补检以前把「部分有据的断言句」
+  （`partial_claims`）也当检索词；现在只用信息缺口与硬缺失。补检后的第二稿以前总是替换第一稿；现在只有不比第一稿差才替换
+  （第一稿合格而第二稿不合格、或第二稿硬缺失更多 → 用第一稿及其证据）；第二次合成 / 校验失败时返回已校验的第一稿。
+  `kacore/pipelines/deep_thinking_orchestrator.py`；测试 `tests/backend/test_deep_thinking_orchestrator.py`。
+
 - **深度思考证据充分时不再因「新发现」多跑一轮**（P32 P3）：以前收敛要求本轮 SEA 没有新发现的方面，而 SEA 几乎每轮都有发现，
   于是多跑一轮检索 + 审计。现在关键检查项都满足且 SEA 判充分即收敛；发现项仍并入检查清单与思考过程。
   `kacore/pipelines/deep_thinking_orchestrator.py`；测试 `tests/backend/test_deep_thinking_orchestrator.py`。
