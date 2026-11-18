@@ -36,6 +36,13 @@
   3 次连不上时进入崩溃页，「重启服务」由壳重启进程（`web/frontend/components/desktop/BackendGate.tsx`、
   `lib/backend.ts` 的 `backendReachable`）。测试：`tests/backend/test_ka_server.py`。
 
+### 变更 (Changed)
+
+- **深度思考 / 增强召回的证据选择少做重排**（P32 P1）：各 query 池的重排改为并发（锁只护打分缓存）；「补候选」每个 query
+  只在首次出现时补一次、之后沿用（以前每轮按新进的块重补，旧方面的池不断变、新块逐个重打分）；补候选的匹配词改用
+  `kacore/utils/search_text.py` 的 `query_terms`（去中英停用词，中文按二元组——以前整句中文几乎补不进候选）。
+  `kacore/pipelines/evidence_session.py`；测试 `tests/backend/test_evidence_session.py`。
+
 ### 新增 (Added)
 
 - **托盘菜单「Restart service」**：进程级重启后端，界面卡住时也能用（`desktop/src-tauri/src/lib.rs` 的 `restart_sidecar`，

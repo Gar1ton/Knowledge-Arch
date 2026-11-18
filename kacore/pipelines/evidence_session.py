@@ -22,6 +22,7 @@ from kacore.pipelines.evidence_selection import (
     select_evidence,
 )
 from kacore.pipelines.evidence_views import build_evidence_views, prefix_within_budget
+from kacore.utils.search_text import query_terms
 
 if TYPE_CHECKING:
     from kacore.domain.deep_thinking import DeepThinkingOutcome
@@ -33,6 +34,8 @@ if TYPE_CHECKING:
 from kacore.utils.usage_ledger import current_usage, usage_request
 
 P = ParamSpec("P")
+# 补候选后每个 query 池的候选上限（与原实现一致）。
+_POOL_PAD_LIMIT = 32
 
 
 @dataclass
@@ -53,6 +56,8 @@ class EvidenceSession:
     requested_reads: dict[str, set[str]] = field(default_factory=dict)
     documents: dict[str, list[DocumentChunk]] = field(default_factory=dict)
     raw_scores: dict[tuple[str, str, int], float] = field(default_factory=dict)
+    # 每个 query 首次参与选择时补进来的已见候选（固定下来，之后各轮沿用；见 select）。
+    padding: dict[str, list[str]] = field(default_factory=dict)
     rank_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def absorb(self, outcomes: list[tuple[str, RetrievalOutcome]]) -> None:
@@ -91,54 +96,24 @@ class EvidenceSession:
                 signal = outcome.per_chunk_signals.get(cid)
                 score = signal.rrf_score if signal else 1 / (60 + rank + 1)
                 pool[cid] = max(pool.get(cid, score), score)
-        # 新方面先复用已有候选中包含查询词的段落；只补到有界候选数，不新增模型规划。
+        # 新方面先复用已有候选中包含查询词（去停用词）的段落，补到有界候选数，不新增模型规划。
+        # 每个 query 只在首次出现时补一次并固定下来：以前每轮都按新进来的块重补，旧方面的池不断变、
+        # 新进的块又要逐个重打分（P32 P1：deep_thinking 每题 23–34 次重排）。
         for query, pool in pools.items():
-            terms = {word.casefold() for word in query.split() if len(word) > 2}
-            for cid, chunk in self.chunks.items():
-                if len(pool) >= 32:
-                    break
-                if eligible is not None and cid not in eligible:
-                    continue
-                if cid not in pool and terms and any(t in chunk.text.casefold() for t in terms):
+            for cid in self._padding_for(query, pool):
+                if cid not in pool and (eligible is None or cid in eligible):
                     pool[cid] = 0.0
         aspects: list[AspectCandidates] = []
         async with self.rank_lock:
+            if weight > 0 and not reranker.is_passthrough:
+                # 各池互相独立：先收集缺分的候选，再并发重排（以前在锁内逐池串行等待）。
+                await asyncio.gather(
+                    *(self._rerank_missing(reranker, query, pool) for query, pool in pools.items())
+                )
             for query, pool in pools.items():
                 if not pool:
                     aspects.append(AspectCandidates(self.aspect_id(query), {}))
                     continue
-                if weight > 0 and not reranker.is_passthrough:
-                    missing = [
-                        self.chunks[cid]
-                        for cid in pool
-                        if (query, self.chunks[cid].content_hash or cid, id(reranker))
-                        not in self.raw_scores
-                    ]
-                    missing = list({c.content_hash or c.chunk_id: c for c in missing}.values())
-                    if missing:
-                        try:
-                            pair_query = prefix_within_budget(query, 128)
-                            allowance = max(
-                                1,
-                                TokenBudgetConfig().rerank_pair_limit
-                                - default_tokenizer().count(pair_query)
-                                - 32,
-                            )
-                            windows = [
-                                replace(c, text=prefix_within_budget(c.text, allowance))
-                                for c in missing
-                            ]
-                            for scored in await reranker.rerank(pair_query, windows):
-                                original = self.chunks[scored.chunk.chunk_id]
-                                key = (
-                                    query,
-                                    original.content_hash or original.chunk_id,
-                                    id(reranker),
-                                )
-                                self.raw_scores[key] = scored.score
-                        except Exception:
-                            # 不缓存失败；下一次可重试，当前保留 RRF 基线。
-                            pass
                 rrf = self._normalize(pool)
                 raw = {
                     cid: self.raw_scores[query, self.chunks[cid].content_hash or cid, id(reranker)]
@@ -167,6 +142,46 @@ class EvidenceSession:
         selected = select_evidence(aspects, candidates, max_evidence=max(0, limit))
         self.selections.append(asdict(selected))
         return [self.chunks[cid] for cid in selected.selected_ids]
+
+    def _padding_for(self, query: str, pool: dict[str, float]) -> list[str]:
+        """该 query 的补位候选：首次调用时按当时已见的块算出并缓存，之后原样返回。"""
+        if query not in self.padding:
+            terms = query_terms(query)
+            room = max(0, _POOL_PAD_LIMIT - len(pool))
+            picked: list[str] = []
+            for cid, chunk in self.chunks.items():
+                if len(picked) >= room:
+                    break
+                text = chunk.text.casefold()
+                if cid not in pool and terms and any(t in text for t in terms):
+                    picked.append(cid)
+            self.padding[query] = picked
+        return self.padding[query]
+
+    async def _rerank_missing(self, reranker: Reranker, query: str, pool: dict[str, float]) -> None:
+        """给池里还没有原始重排分的候选打分并缓存；失败不缓存，当前保留 RRF 基线。"""
+        missing = [
+            self.chunks[cid]
+            for cid in pool
+            if (query, self.chunks[cid].content_hash or cid, id(reranker)) not in self.raw_scores
+        ]
+        missing = list({c.content_hash or c.chunk_id: c for c in missing}.values())
+        if not missing:
+            return
+        try:
+            pair_query = prefix_within_budget(query, 128)
+            allowance = max(
+                1,
+                TokenBudgetConfig().rerank_pair_limit - default_tokenizer().count(pair_query) - 32,
+            )
+            windows = [replace(c, text=prefix_within_budget(c.text, allowance)) for c in missing]
+            for scored in await reranker.rerank(pair_query, windows):
+                original = self.chunks[scored.chunk.chunk_id]
+                key = (query, original.content_hash or original.chunk_id, id(reranker))
+                self.raw_scores[key] = scored.score
+        except Exception:
+            # 不缓存失败；下一次可重试，当前保留 RRF 基线。
+            pass
 
     @staticmethod
     def _normalize(scores: dict[str, float]) -> dict[str, float]:
