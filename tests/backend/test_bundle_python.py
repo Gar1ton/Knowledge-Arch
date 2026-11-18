@@ -184,3 +184,13 @@ def test_every_web_module_is_bundled() -> None:
     """web/ 下的路由模块逐个列在 SOURCES 里：新增模块忘了登记，打包后的后端就起不来。"""
     modules = {f"web/{p.name}" for p in (ROOT / "web").glob("*.py") if p.name != "__init__.py"}
     assert modules <= set(bundle.SOURCES), modules - set(bundle.SOURCES)
+
+
+def test_install_requirements_refuses_source_builds(tmp_path: Path, monkeypatch) -> None:
+    """只许装 wheel：源码构建会链接 runner 上的库（如 Homebrew openssl）。"""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(bundle, "run", lambda cmd, **_: calls.append(cmd))
+    bundle.install_requirements("uv", tmp_path / "python3")
+    install = calls[0]
+    assert install[:3] == ["uv", "pip", "install"]
+    assert install[install.index("--only-binary") + 1] == ":all:"

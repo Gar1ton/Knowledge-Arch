@@ -17,6 +17,10 @@
 
 ### 修复 (Fixed)
 
+- **Intel Mac 安装包后端起不来**：v2.1.1 的 x64 DMG 启动即报 `Library not loaded: /usr/local/opt/openssl@3/lib/libssl.3.dylib`。
+  cryptography 49 起没有 Intel macOS wheel，CI 从源码构建并链接了 runner 上的 Homebrew openssl。打包时改为只装预编译 wheel
+  （`desktop/scripts/bundle_python.py` 的 `install_requirements` 加 `--only-binary :all:`，Intel Mac 上 cryptography 解析为 48.0.1），
+  冒烟测试加导入 `kacore.secret_store`。测试：`tests/backend/test_bundle_python.py`。
 - **模型调用失败时不再给出假答案**：已分配对话模型、但这次合成调用失败（断网、5xx、超时、空响应）时，以前会把
   「This is an offline placeholder answer…」当作回答返回；现在改为「LLM 暂不可用」加检索到的原文摘录，响应带
   `generation_status: "llm_unavailable"`（`kacore/api.py` 的 `_excerpt_answer` 与通用合成分支）。离线占位只在未分配模型时出现。

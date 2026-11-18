@@ -601,3 +601,10 @@
     「This is an offline placeholder answer…」），改为检索摘录排版（`_excerpt_answer`，与未接模型时同一段），响应新增
     `generation_status`（失败为 `llm_unavailable`，正常为空）。离线占位只留给未分配模型。降级为 default 本身界面已有标识；
     重试再拉长扛不住十几分钟的断网，不改。验证：pytest 1568 passed / 4 skipped（`test_api.py` 新增 2 项）。
+- [ ] P31 · 2.1.2 之后的修复（🚧）。
+  - [ ] ① Intel macOS 安装包后端起不来：v2.1.1 x64 DMG 启动即 `ImportError: Library not loaded:
+    /usr/local/opt/openssl@3/lib/libssl.3.dylib`（cryptography 的 `_rust.abi3.so`）。cryptography 49.0.0 起不再发布
+    Intel macOS wheel，`macos-15-intel` runner 从源码构建并链接了 runner 的 Homebrew openssl；runner 上有这个库，冒烟没拦住。
+    `bundle_python.py` 的 `install_requirements` 加 `--only-binary :all:`（uv 在 x86_64-apple-darwin 上自动解析到
+    cryptography 48.0.1，其余依赖不变；四个平台 `uv pip compile --only-binary :all:` 均可解析），冒烟导入加
+    `kacore.secret_store`。待 CI 出 x64 DMG 后在 Intel Mac 上验证。
