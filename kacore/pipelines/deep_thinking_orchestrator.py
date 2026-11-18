@@ -241,12 +241,9 @@ class DeepThinkingOrchestrator:
             # 本轮 SEA 审计完成 → 增量推送该轮 trace，前端逐轮可见推演过程。
             _progress(f"deep_round_{rnd}", round_pct, live_detail("round", checklist, trace))
 
-            # 2g 收敛 / 预算安全阀。本轮有新发现则再追一轮深挖（即便 sufficient）。
-            converged = (
-                sufficient
-                and not round_discovered
-                and not self._has_unmet_critical(checklist)
-            )
+            # 2g 收敛 / 预算安全阀。关键项都满足且 SEA 判充分即收敛；新发现的方面不再强制追一轮
+            # （P32 P3：SEA 几乎每轮都有发现，以前因此多跑一轮）。发现项仍记入 checklist 与 trace。
+            converged = sufficient and not self._has_unmet_critical(checklist)
             if converged or rnd == self._cfg.max_rounds or self._over_budget(
                 calls_used, est_tokens
             ):

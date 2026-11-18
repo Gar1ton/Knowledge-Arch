@@ -769,6 +769,25 @@ async def test_structural_anchor_survives_tight_budget_in_session_path():
     assert "tab" in [c.chunk_id for c in result.evidence]
 
 
+@pytest.mark.asyncio
+async def test_sufficient_round_with_new_discovery_converges():
+    sea_sufficient_discover = SEA_DISCOVER.replace('"sufficient":false', '"sufficient":true')
+    retrieval = MockRetrieval(_outcome([_chunk("c1"), _chunk("c2")]))
+    llm = ScriptedLLM([PLAN_1ITEM, sea_sufficient_discover])   # 若追第二轮会因缺响应而 IndexError。
+    orch = DeepThinkingOrchestrator(
+        retrieval_orchestrator=retrieval,
+        reranker=NoopReranker(),
+        llm_adapter=llm,
+        dt_config=DeepThinkingConfig(
+            max_rounds=3, max_sub_queries=2, wide_top_k=5, verify_enabled=False
+        ),
+    )
+    result = await orch.run("papers", "综述问题")
+    assert len(result.trace) == 1
+    assert result.trace[0].discovered == ["新机制X"]             # 发现项仍可观测
+    assert any(i.origin == "discovered" for i in result.checklist.items)
+
+
 def test_reranker_is_passthrough_flags():
     from kacore.repository.reranker.bge_local import CrossEncoderReranker
 

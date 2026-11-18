@@ -38,6 +38,10 @@
 
 ### 变更 (Changed)
 
+- **深度思考证据充分时不再因「新发现」多跑一轮**（P32 P3）：以前收敛要求本轮 SEA 没有新发现的方面，而 SEA 几乎每轮都有发现，
+  于是多跑一轮检索 + 审计。现在关键检查项都满足且 SEA 判充分即收敛；发现项仍并入检查清单与思考过程。
+  `kacore/pipelines/deep_thinking_orchestrator.py`；测试 `tests/backend/test_deep_thinking_orchestrator.py`。
+
 - **深度思考在会话路径上保住结构锚点**（P32 P2）：题目点名的表 / 节（锚点命中）无条件保留进证据——以前证据会话路径从不填
   `pinned_ids`，锚点块会被高分块挤掉。`kacore/pipelines/deep_thinking_orchestrator.py`；测试
   `tests/backend/test_deep_thinking_orchestrator.py`。（同批试过的「次方面降权 + 最终证据 18→12」在 mini 上丢了金标证据，已撤回，
