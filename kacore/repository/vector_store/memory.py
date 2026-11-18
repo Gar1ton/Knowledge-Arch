@@ -83,7 +83,7 @@ class InMemoryVectorStore(VectorStore):
 
             # 过滤 collection (利用已注册的映射)
             col_mapped = doc_to_col.get(chunk.doc_id)
-            if col_mapped and col_mapped != collection:
+            if collection and col_mapped and col_mapped != collection:
                 continue
 
             # metadata 过滤 (测试辅助)

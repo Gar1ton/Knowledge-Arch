@@ -296,3 +296,43 @@ async def test_milvus_lite_search_excludes_before_top_k(tmp_path) -> None:
     retained = await store.search("col1", [1.0, 0.0, 0.0, 0.0], top_k=3)
     assert [cid for cid, _ in retained] == ["c3"]
     await store.close()
+
+
+_CROSS_CHUNKS = [
+    DocumentChunk("c1", "doc1", 0, "text one", "h1"),
+    DocumentChunk("c3", "doc3", 0, "text three", "h3"),
+]
+_CROSS_EMBEDDINGS = [[1.0, 0.0, 0.0, 0.0], [0.9, 0.1, 0.0, 0.0]]
+
+
+@pytest.mark.asyncio
+async def test_search_empty_collection_spans_all_collections(
+    vector_store: InMemoryVectorStore,
+) -> None:
+    """空 collection = 不按集合过滤（base 契约）；allowed_doc_ids 仍照常约束。"""
+    await vector_store.upsert_chunks(_CROSS_CHUNKS, _CROSS_EMBEDDINGS)
+
+    everywhere = await vector_store.search("", [1.0, 0.0, 0.0, 0.0], top_k=5)
+    assert [cid for cid, _ in everywhere] == ["c1", "c3"]
+    only_doc3 = await vector_store.search(
+        "", [1.0, 0.0, 0.0, 0.0], top_k=5, allowed_doc_ids=frozenset({"doc3"})
+    )
+    assert [cid for cid, _ in only_doc3] == ["c3"]
+
+
+@pytest.mark.asyncio
+async def test_milvus_lite_search_empty_collection_spans_all_collections(tmp_path) -> None:
+    """真实 Milvus Lite：空 collection 不拼 collection_tag 过滤，跨集合命中。"""
+    store = MilvusLiteVectorStore(str(tmp_path / "milvus_cross.db"), dim=4)
+    store.set_doc_collection_mapping("doc1", "col1")
+    store.set_doc_collection_mapping("doc3", "col2")
+    await store.upsert_chunks(_CROSS_CHUNKS, _CROSS_EMBEDDINGS)
+
+    assert [cid for cid, _ in await store.search("col1", [1.0, 0.0, 0.0, 0.0], top_k=5)] == ["c1"]
+    everywhere = await store.search("", [1.0, 0.0, 0.0, 0.0], top_k=5)
+    assert [cid for cid, _ in everywhere] == ["c1", "c3"]
+    scoped = await store.search(
+        "", [1.0, 0.0, 0.0, 0.0], top_k=5, allowed_doc_ids=frozenset({"doc3"})
+    )
+    assert [cid for cid, _ in scoped] == ["c3"]
+    await store.close()

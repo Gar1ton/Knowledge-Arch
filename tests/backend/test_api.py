@@ -2013,17 +2013,18 @@ async def test_strict_graph_modes_require_collection() -> None:
             await api.ask(question="q", retrieval_mode=mode)
 
 
-async def test_resolve_ask_collections_global_covers_all_active() -> None:
-    """全局（无 collection）覆盖所有 active 集合，不再截断到前 5 个，且排除 '_' 系统集合。"""
+async def test_default_ask_retrieves_once_over_the_whole_scope() -> None:
+    """default 档召回一次覆盖整个范围：全局传空 collection，不再按集合名逐个扇出。"""
     store = InMemorySourceDocumentStore()
-    for name in ["_uncategorized", "a", "b", "c", "d", "e", "f"]:
+    for name in ["a", "b", "c", "d", "e", "f"]:
         await store.upsert_collection(Collection(name=name))
     kb = StaticRetriever({})
     api = KnowledgeRepositoryApi(source_store=store, retrieval_orchestrator=kb, sync_targets={})
-    cols = await api._resolve_ask_collections(None, None)
-    assert set(cols) == {"a", "b", "c", "d", "e", "f"}
-    assert "_uncategorized" not in cols
-    assert len(cols) == 6  # 6 > 5：证明 [:5] 截断已移除
+    await api.ask(question="q", retrieval_mode="default")
+    assert [collection for collection, _, _ in kb.queries] == [""]
+    kb.queries.clear()
+    await api.ask(question="q", collection="b", retrieval_mode="default")
+    assert [collection for collection, _, _ in kb.queries] == ["b"]
 
 
 async def test_search_exact_mentions_wrapper_scopes_by_name() -> None:

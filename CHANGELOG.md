@@ -6,6 +6,16 @@
 
 ### 修复 (Fixed)
 
+- **深度思考不选集合也能用（全局或限定范围）**：以前没选集合时深度思考按钮是灰的，外部 agent 取证据接口和 skill 客户端也要求
+  `--collection`。现在三档（default / enhanced / deep_thinking）都可全局或按集合 / 范围检索（`kacore/api.py` 的
+  `retrieve_agent_evidence`、`web/frontend/components/panels/ChatPanel.tsx`、`.agents/skills/operate-knowledge-arch/`，README 中英）。
+- **全局与父集合检索补上语义召回**：集合为空时召回编排器跳过了向量检索，全局的深度思考 / 增强只剩关键词召回；选父集合时向量
+  检索只按父集合自己的标签过滤，子集合与多归属文档召不到。向量库本是单表，现在有范围时按文档白名单约束、不再按集合标签过滤，
+  全局时不过滤并剔除脱管（detached）文档（`kacore/pipelines/retrieval_orchestrator.py` 的 `_search_dense`；
+  `kacore/repository/vector_store/` 的 `base.py` 契约：空 collection = 不按集合过滤，`milvus_lite.py` / `memory.py` 实现）。
+  default 档因此不再按集合名逐个扇出再合并，召回一次覆盖整个范围（删去 `_resolve_ask_collections`）。
+  测试：`tests/backend/test_retrieval_orchestrator.py`、`test_vector_store.py`、`test_api.py`、`test_agent_evidence.py`。
+
 - **Windows 上后端「活着但连不上」**：客户端在连接握手中途断开时（`WinError 64`），asyncio 的 Proactor 循环会关掉监听
   socket 且不再恢复；进程不退出，壳不报崩溃，界面停在 Loading / 「Log endpoint is unavailable」，偏好里的「重启服务」
   走 HTTP 也发不出去，只能退出应用重开。现在后端每秒检查监听 socket，被关就在原端口重新监听

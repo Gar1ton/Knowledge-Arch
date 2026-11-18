@@ -19,8 +19,8 @@ Choose the least expensive mode that matches the question:
 - `default`: one exact lookup or a narrow factual question; one query, one round.
 - `enhanced`: explanation, comparison, or synthesis across a few dimensions; plan 2-4 focused
   subqueries and use at most one corrective round.
-- `deep_thinking`: broad, contested, multi-hop, or counterevidence-sensitive research; first lock a
-  concrete collection, then work within the endpoint's returned query and round limits.
+- `deep_thinking`: broad, contested, multi-hop, or counterevidence-sensitive research; work within the
+  endpoint's returned query and round limits.
 
 Preserve names, DOI fragments, and technical terms. Prefer English subqueries for English papers.
 
@@ -29,7 +29,7 @@ KA ask-evidence --question "original user question" --query "focused retrieval q
 ```
 
 For enhanced or deep work, repeat `--query` within the returned per-round limit. Prefer
-`--collection NAME` over `--all` whenever scope is known; `deep_thinking` requires it.
+`--collection NAME` over `--all` whenever scope is known; every mode also works globally.
 
 The endpoint performs deterministic retrieval, fusion, reranking, cutoff, and metadata enrichment. It
 returns evidence only with `plugin_llm_used=false` and `full_text_used=false`. Codex performs all

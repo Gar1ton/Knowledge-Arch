@@ -690,8 +690,6 @@ def ask_evidence(
         raise UsageError(f"Unsupported evidence mode: {mode}")
     if round_number < 1:
         raise UsageError("--round must be one or greater")
-    if mode == "deep_thinking" and not collection:
-        raise UsageError("deep_thinking requires --collection")
     payload = client.request_json(
         "/api/ask/evidence",
         method="POST",

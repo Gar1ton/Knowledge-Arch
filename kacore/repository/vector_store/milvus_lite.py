@@ -445,20 +445,23 @@ class MilvusLiteVectorStore(VectorStore):
     ) -> list[tuple[str, float]]:
         await self._ensure_client()
 
-        filter_expr = f"collection_tag == '{_quote_filter_value(collection)}'"
+        clauses: list[str] = []
+        if collection:  # 空串 = 不按集合过滤（见 base 契约）
+            clauses.append(f"collection_tag == '{_quote_filter_value(collection)}'")
         if filter_metadata:
             for k, v in filter_metadata.items():
                 if not _FILTER_KEY_RE.fullmatch(k):
                     raise ValueError(f"Invalid metadata filter key: {k!r}")
-                filter_expr += f" and {k} == '{_quote_filter_value(v)}'"
+                clauses.append(f"{k} == '{_quote_filter_value(v)}'")
         if allowed_doc_ids is not None:
             docs = ", ".join(f"'{_quote_filter_value(d)}'" for d in sorted(allowed_doc_ids))
-            filter_expr += f" and doc_id in [{docs}]"
+            clauses.append(f"doc_id in [{docs}]")
         if exclude_chunk_ids:
             # 用 Milvus 原生 `not in` 表达式在候选截断前下推排除，不做事后过滤
             # （W0 隔离探针已验证 pymilvus 2.6.x + milvus-lite 3.x 对动态字段同样生效）。
             excluded = ", ".join(f"'{_quote_filter_value(cid)}'" for cid in exclude_chunk_ids)
-            filter_expr += f" and id not in [{excluded}]"
+            clauses.append(f"id not in [{excluded}]")
+        filter_expr = " and ".join(clauses)
 
         search_kwargs: dict[str, Any] = {}
         search_params = self._index.search_params(self._active_index_type)

@@ -616,3 +616,15 @@
     托盘菜单加「Restart service」（进程级重启，`desktop/src-tauri/src/lib.rs` 的 `restart_sidecar` 与崩溃页共用）。
     验证：pytest 1575 passed（`test_ka_server.py` 新增 2 项：模拟 Proactor 关掉监听后原端口恢复、正常监听不重建）；
     ruff / mypy；前端 lint / tsc / build。未验证（本机无 Rust）：`cargo check` / `clippy` / `fmt`。
+  - [x] ③ 深度思考不选集合也能用（Global or scoped）。现状：`api.ask` 已放行空集合，但界面把深度思考按钮置灰并自动退回
+    default，`retrieve_agent_evidence` 与 skill 客户端要求 collection。另外召回编排器在集合为空时跳过向量召回（注释称 Milvus
+    「按 workspace 分库」，实际是单表 `kb_chunks` + `collection_tag` 过滤），全局深度思考 / 增强只剩词法召回；选父集合时向量召回
+    只按父集合自己的 tag 过滤，子集合文档召不到。
+    - [x] 召回：有 scope 时向量检索不按 tag 过滤（由 doc_id 白名单约束），全局时不过滤并排除非 active 文档；
+      `VectorStore.search` 契约写明空 collection = 不按集合过滤（`RetrievalOrchestrator._search_dense` / `_keep_active_chunks`）。
+    - [x] default 路径删掉按集合名扇出再合并（`_resolve_ask_collections`）：召回一次即覆盖子树 / 全局，扇出只剩重复检索。
+    - [x] 接口与界面：agent evidence 去掉 deep_thinking 必须带集合；删掉无人使用的 `STRICT_COLLECTION_MODES` /
+      `STRICT_DOCUMENT_MODES`；`ChatPanel` 不再置灰 / 自动退回；skill 客户端与 `references/research.md`、README 中英同步。
+    - 验证：pytest 1579 passed（`test_retrieval_orchestrator.py` 新增全局向量召回剔除 detached、父集合召回子集合文档 2 项；
+      `test_vector_store.py` 新增内存 / 真实 Milvus Lite 空 collection 跨集合 2 项；`test_api.py` 扇出测试改为单次召回，
+      `test_agent_evidence.py` 改为允许全局）；ruff；mypy；前端 lint / tsc / build。

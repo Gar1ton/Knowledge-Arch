@@ -1039,10 +1039,8 @@ export function ChatPanel({ width }: { width?: number }) {
     if (loading) return; // 进行中的那一轮已锁定范围与模式
     const graphMode = retrievalMode === "graph_mixed" || retrievalMode === "graph_only";
     if (!fulltextDocId && retrievalMode === "fulltext") setRetrievalMode(DEFAULT_MODE);
-    if (!chatCollection && !pinnedDoc && (retrievalMode === "deep_thinking" || graphMode)) {
-      setRetrievalMode(DEFAULT_MODE);
-    }
-    if ((graphKnownNotReady || pinnedDoc) && graphMode) setRetrievalMode(DEFAULT_MODE);
+    // 图谱档位必须绑定集合且不能限定单篇；其余档位全局或限定范围都可用。
+    if ((!chatCollection || graphKnownNotReady || pinnedDoc) && graphMode) setRetrievalMode(DEFAULT_MODE);
   }, [fulltextDocId, pinnedDoc, chatCollection, retrievalMode, loading, graphKnownNotReady]);
 
   // 范围选择器打开时现取集合列表（改名 / 新建后不必刷新页面）。
@@ -1719,7 +1717,7 @@ export function ChatPanel({ width }: { width?: number }) {
                           { value: "enhanced" as RetrievalMode,       label: t("chat_retrieval_enhanced"), desc: t("chat_retrieval_enhanced_desc"), disabled: false },
                           { value: "graph_only" as RetrievalMode,     label: t("chat_retrieval_graph"),    desc: t("chat_retrieval_graph_desc"),    disabled: !graphReady, hint: graphHint },
                           { value: "graph_mixed" as RetrievalMode, label: t("chat_retrieval_graph_mixed"), desc: t("chat_retrieval_graph_mixed_desc"), disabled: !graphReady, hint: graphHint },
-                          { value: "deep_thinking" as RetrievalMode,  label: t("chat_retrieval_deep"),     desc: t("chat_retrieval_deep_desc"),     disabled: !chatCollection && !pinnedDoc },
+                          { value: "deep_thinking" as RetrievalMode,  label: t("chat_retrieval_deep"),     desc: t("chat_retrieval_deep_desc"),     disabled: false },
                           { value: "fulltext" as RetrievalMode,       label: t("chat_retrieval_fulltext"), desc: t("chat_retrieval_fulltext_desc"), disabled: !fulltextDocId },
                         ] as { value: RetrievalMode; label: string; desc: string; disabled: boolean; hint?: string }[]
                       ).map(({ value, label, desc, disabled, hint }) => {
