@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [v2.1.3] — 2026-11-18
+
 ### 变更 (Changed)
 
 - **向量索引改为 HNSW，大库检索不再吃内存（P30）**：Milvus 集合原用 `FLAT`，Milvus Lite 每次检索都把有效向量整段复制一份再算距离，
