@@ -628,3 +628,22 @@
     - 验证：pytest 1579 passed（`test_retrieval_orchestrator.py` 新增全局向量召回剔除 detached、父集合召回子集合文档 2 项；
       `test_vector_store.py` 新增内存 / 真实 Milvus Lite 空 collection 跨集合 2 项；`test_api.py` 扇出测试改为单次召回，
       `test_agent_evidence.py` 改为允许全局）；ruff；mypy；前端 lint / tsc / build。
+  - [ ] ④ 无 embedding / rerank 时的检索（🚧）。没有向量库时只剩锚点 + 关键词两路，关键词通道（`LIKE` OR + 词频）排序差、
+    会把常用词命中的整片分块拉进 Python；`.md` / `.txt` 上传被当成 PDF 抽取（原件统一存为 `original.pdf`，按后缀判断）。
+    口径（用户 11-18）：不触发已有库的重新抽取 / 重新分块 / 重新嵌入——不改 `PROCESSING_VERSION`，旧的误抽文档不自动恢复
+    （偏离原计划 Phase 1 的「启动时自动恢复」，理由：已有用户库不应因本次修复被整库重处理；需要时手动重处理）。
+    - [x] 导入：按原件内容（前 1024 字节内有 `%PDF-`）判断 PDF（`ingest_manager._is_pdf_file`，与 `_prefers_reextract`、
+      `source_pdf_path` 共用）；`_extract_artifact` 去掉不再使用的 `content_type` 参数，`reextract_document` 的文本恢复分支
+      并入 `_extract_artifact`。旧的误抽文本文档可经手动重处理（`/api/documents/{id}/reextract`）恢复。
+      验证：`test_ingest_manager.py` 新增 4 项（旧代码下 3 项失败：误抽的标志是 converter=pymupdf4llm；短中文样本旧代码
+      并未丢正文，所以断言落在 converter 上）。
+    - [x] 关键词通道换 SQLite FTS5（BM25，`porter unicode61`，中日汉字预拆二元组，查询去停用词）；迁移 028 只新增表与触发器。
+      打包解释器（python-build-standalone 3.12.13）自带 SQLite 3.53.1，FTS5 / porter / contentless_delete 均可用。
+      决定：① FTS 不挂 chunks 的隐式 rowid（TEXT 主键，VACUUM 可能重编号），经 `chunk_search_rows` 的 INTEGER 主键映射；
+      ② 写入在两处写入点显式维护（`search_index.index_chunks`），删除 / 改文本用触发器（覆盖级联删除）；
+      ③ 派生文本只能用 Python 算，迁移里不回填，改为启动时 `backfill_search_index` 补齐（也补上旧库导入 / R2 恢复进来的分块）；
+      ④ `T55` 标题加权由锚点通道覆盖（`test_retrieval_orchestrator_prioritizes_thesis_heading_anchor` 未改仍过），不在新通道复刻。
+      现有测试断言均未修改。验证：`test_search_text.py` 6 项、`test_keyword_recall.py` 23 项新增；retrieval / scope / api /
+      agent_evidence / skill client 相关测试全过；ruff。未做（用户 11-18 要求先推送）：全量 pytest、mypy、5 万分块性能对比
+      （首轮合成数据词频失真，作废；Zipf 数据那轮未跑完）、端到端实测。
+    - [ ] skill：`references/research.md` 增「只有关键词召回」一节，`SKILL.md` 一句指针，`doctor` 显示有没有向量召回。

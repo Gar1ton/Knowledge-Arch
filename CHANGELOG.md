@@ -6,6 +6,19 @@
 
 ### 修复 (Fixed)
 
+- **.md / .txt 上传不再被当成 PDF 抽取**：上传的原件一律存成 `original.pdf`，抽取时按后缀判断，文本文件也进了 PDF
+  抽取器（英文被改写、中文正文可能丢失）。现在按原件内容判断（前 1024 字节内有 `%PDF-`），三处判断共用
+  `kacore/managers/ingest_manager.py` 的 `_is_pdf_file`。已导入的文档不自动重处理（不触发重新分块 / 重新嵌入），
+  需要时手动重处理即可恢复。测试：`tests/backend/test_ingest_manager.py`。
+- **没有向量库时的关键词召回改用 SQLite FTS5（BM25）**：以前按空格拆词后 `text LIKE` 全量扫描、按词频打分，
+  `the` / `of` 也加分，长句排序被拉偏，常用词会把整个范围的分块拉进 Python。现在分块写入时生成派生检索文本
+  （`kacore/utils/search_text.py`：中日汉字拆二元组，其余小写；porter 词干让 limitation / limitations 互相匹配），
+  查询去中英停用词后由 SQLite 按 BM25 排序截断（`kacore/pipelines/retrieval_orchestrator.py` 的 `_search_lexical_sqlite`）。
+  新迁移 `migrations/028_chunks_fts.sql` 只新增索引表与触发器，不改分块、不动向量；已有分块在启动时一次补索引
+  （`kacore/repository/source_store/search_index.py`，`kacore/app_initializer.py` 调用；写入点 `sqlite.py` 的
+  `replace_chunks` 与 `processing.py`）。响应字段与 engine 名 `sqlite_lexical` 不变。
+  测试：`tests/backend/test_search_text.py`、`tests/backend/test_keyword_recall.py`。
+
 - **深度思考不选集合也能用（全局或限定范围）**：以前没选集合时深度思考按钮是灰的，外部 agent 取证据接口和 skill 客户端也要求
   `--collection`。现在三档（default / enhanced / deep_thinking）都可全局或按集合 / 范围检索（`kacore/api.py` 的
   `retrieve_agent_evidence`、`web/frontend/components/panels/ChatPanel.tsx`、`.agents/skills/operate-knowledge-arch/`，README 中英）。

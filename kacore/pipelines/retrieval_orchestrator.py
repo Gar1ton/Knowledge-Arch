@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from kacore.domain.models import DocumentChunk, DocumentLifecycle
 from kacore.pipelines.evidence_cache import EmbeddingCacheKey, RetrievalCacheKey
 from kacore.pipelines.evidence_session import current_evidence_session
+from kacore.utils.search_text import fts_match_expression, query_terms
 
 if TYPE_CHECKING:
     from kacore.config import Config
@@ -414,7 +415,13 @@ class RetrievalOrchestrator:
         allowed_doc_ids: set[str] | None = None,
         exclude_chunk_ids: frozenset[str] = frozenset(),
     ) -> list[DocumentChunk]:
-        terms = self._lexical_terms(query)
+        """关键词通道：FTS5 全文索引按 BM25 取前 limit 条（迁移 028；派生文本见
+        `utils/search_text`）。
+
+        查询去停用词后各词 OR 起来；排序、截断都在 SQLite 里做，不把命中行全部拉进 Python。
+        候选文档口径同锚点通道（`_resolve_candidate_doc_ids`，detached 不进候选）。
+        """
+        terms = query_terms(query)
         if not terms:
             return []
 
@@ -422,64 +429,27 @@ class RetrievalOrchestrator:
         if db_conn is None:
             return []
 
-        # 候选文档集（单集合 / 子树 / 全局）统一解析；detached 文档不进候选（生命态约束）。
         doc_ids = await self._resolve_candidate_doc_ids(db_conn, collection, allowed_doc_ids)
         if not doc_ids:
             return []
 
-        doc_placeholders = ",".join("?" for _ in doc_ids)
-        like_parts = []
-        params = list(doc_ids)
-        for term in terms:
-            if len(term) >= 2:
-                like_parts.append("text LIKE ?")
-                params.append(f"%{term}%")
-        if not like_parts:
-            return []
-
-        sql = (
-            "SELECT chunk_id, doc_id, ordinal, text, content_hash, metadata FROM chunks "
-            f"WHERE doc_id IN ({doc_placeholders}) AND ({' OR '.join(like_parts)}) "
-            "ORDER BY ordinal ASC"
+        excluded = sorted(exclude_chunk_ids)
+        exclude_sql = (
+            f"AND c.chunk_id NOT IN ({','.join('?' for _ in excluded)}) " if excluded else ""
         )
-        matched: list[tuple[DocumentChunk, float]] = []
+        sql = (
+            "SELECT c.chunk_id, c.doc_id, c.ordinal, c.text, c.content_hash, c.metadata "
+            "FROM chunks_fts JOIN chunk_search_rows s ON s.row = chunks_fts.rowid "
+            "JOIN chunks c ON c.chunk_id = s.chunk_id "
+            f"WHERE chunks_fts MATCH ? AND c.doc_id IN ({','.join('?' for _ in doc_ids)}) "
+            f"{exclude_sql}ORDER BY bm25(chunks_fts), c.ordinal LIMIT ?"
+        )
+        params = [fts_match_expression(terms), *doc_ids, *excluded, limit]
         async with db_conn.execute(sql, params) as cursor:
-            async for row in cursor:
-                if row[0] in exclude_chunk_ids:
-                    continue
-                chunk = DocumentChunk(
-                    row[0], row[1], row[2], row[3], row[4], _loads_metadata(row[5])
-                )
-                matched.append((chunk, self._lexical_score(chunk.text, terms)))
-        matched.sort(key=lambda item: (-item[1], item[0].ordinal))
-        return [item[0] for item in matched[:limit]]
-
-    @staticmethod
-    def _lexical_terms(query: str) -> list[str]:
-        terms = [term.strip().lower() for term in re.split(r"\s+", query) if term.strip()]
-        # 中英混排查询（如“T55具体说了什么”）不会被空白拆开，需显式抽取 ASCII 锚点。
-        terms.extend(match.group(0).lower() for match in re.finditer(r"[A-Za-z]+\d*|\d+", query))
-        for cjk_run in re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff]+", query):
-            if len(cjk_run) > 2:
-                terms.extend(cjk_run[index : index + 2] for index in range(len(cjk_run) - 1))
-        return list(dict.fromkeys(term for term in terms if len(term) >= 2))[:32]
-
-    @staticmethod
-    def _lexical_score(text: str, terms: list[str]) -> float:
-        lower_text = text.lower()
-        score = 0.0
-        for term in terms:
-            count = lower_text.count(term)
-            if count <= 0:
-                continue
-            if re.fullmatch(r"t\d{1,3}[a-z]?", term):
-                heading_re = re.compile(rf"(?im)^[\s#*_`>]*{re.escape(term)}[\s*_`#>]*$")
-                score += 100.0 if heading_re.search(text) else 10.0 * count
-            elif term.isdigit() or len(term) <= 2:
-                score += 0.25 * count
-            else:
-                score += float(count)
-        return score
+            return [
+                DocumentChunk(row[0], row[1], row[2], row[3], row[4], _loads_metadata(row[5]))
+                async for row in cursor
+            ]
 
     @staticmethod
     def _structural_anchors(query: str) -> dict[str, set[str]]:

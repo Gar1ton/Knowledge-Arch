@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from .search_index import index_chunks
+
 if TYPE_CHECKING:
     import aiosqlite
 
@@ -33,6 +35,7 @@ async def commit_processing(
         [(c.chunk_id, document.doc_id, c.ordinal, c.text, c.content_hash,
           json.dumps(c.metadata)) for c in chunks],
     )
+    await index_chunks(db, ((c.chunk_id, c.text) for c in chunks))
     await db.execute("DELETE FROM page_chunks WHERE document_id = ?", (document.doc_id,))
     await db.executemany(
         "INSERT INTO page_chunks (document_id, page, markdown_start_char, markdown_end_char) "
