@@ -83,6 +83,8 @@ class AppInitializer:
         self._zotero_sync_task: asyncio.Task[Any] | None = None
         self._notion_sync_task: asyncio.Task[Any] | None = None
         self._auto_reindex_task: asyncio.Task[Any] | None = None
+        # 已有 Milvus 集合换索引（如 FLAT → HNSW）的一次性后台任务；见 MilvusLiteVectorStore。
+        self._vector_index_task: asyncio.Task[Any] | None = None
         self.auto_reindex_scheduler: Any | None = None
         # 超时后仍在后台跑的维度探针（模型下载不可中断，只能让它跑完再补记结果）。
         self._pending_probe_task: asyncio.Task[Any] | None = None
@@ -344,6 +346,7 @@ class AppInitializer:
             and milvus_runtime["ready"]
         ):
             from kacore.repository.vector_store.milvus_lite import (
+                MilvusIndexSpec,
                 MilvusLiteVectorStore,
                 MilvusSchemaMismatchError,
             )
@@ -356,6 +359,13 @@ class AppInitializer:
                 milvus = MilvusLiteVectorStore(
                     db_path=str(milvus_path),
                     dim=self.embedding_dimension,
+                    index=MilvusIndexSpec(
+                        index_type=vdb_cfg.index_type,
+                        hnsw_m=vdb_cfg.hnsw_m,
+                        hnsw_ef_construction=vdb_cfg.hnsw_ef_construction,
+                        hnsw_ef_search=vdb_cfg.hnsw_ef_search,
+                    ),
+                    search_concurrency=vdb_cfg.search_concurrency,
                 )
                 milvus.validate_schema()
                 self.vector_store = milvus
@@ -634,6 +644,12 @@ class AppInitializer:
         if self.source_store is not None:
             self._notion_sync_task = asyncio.create_task(self._periodic_notion_sync())
 
+        # 6.2) 已有 Milvus 集合的索引与配置不符（如旧版 FLAT）：后台一次性更换，期间检索排队等待。
+        if self.vector_store is not None and getattr(
+            self.vector_store, "index_migration_pending", False
+        ):
+            self._vector_index_task = asyncio.create_task(self._migrate_vector_index())
+
         # 6.3) Milvus 索引自动重建：常驻调度器（开关每轮重读，故不在这里按配置决定是否创建）。
         # 启动即打一次信号做「补跑」——此时 4.6 段的 _mark_all_documents_needs_reindex() 已跑完，
         # 待重建队列是终态，调度器自己查队列决定跑不跑。
@@ -893,6 +909,13 @@ class AppInitializer:
             await asyncio.gather(self.api._notion_sync_task, return_exceptions=True)
             self.api._notion_sync_task = None
 
+        # 换索引是单个同步调用：取消只会等它跑完（见 milvus_lite._wait_for_completion），
+        # 必须在关库之前收走，否则关库会与它争 _init_lock。
+        if self._vector_index_task is not None:
+            self._vector_index_task.cancel()
+            await asyncio.gather(self._vector_index_task, return_exceptions=True)
+            self._vector_index_task = None
+
         if self._auto_reindex_task is not None:
             self._auto_reindex_task.cancel()
             try:
@@ -934,6 +957,19 @@ class AppInitializer:
         logger.info(
             "AppInitializer.teardown() finished in %.1fs", time.monotonic() - teardown_started
         )
+
+    async def _migrate_vector_index(self) -> None:
+        """后台换 Milvus 索引；失败只记日志（索引仍可用，下次启动再试）。"""
+        store = self.vector_store
+        if store is None:
+            return
+        logger.info("Switching the Milvus vector index in the background...")
+        try:
+            await store.migrate_index()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Milvus index switch failed; will retry on next start: {e}")
 
     async def initialize_or_rollback(self, *, raise_after_recovery: bool = True) -> None:
         """initialize()；失败时撤回本轮换入的 R2 恢复 / 旧版数据导入，再按原数据重试一次。

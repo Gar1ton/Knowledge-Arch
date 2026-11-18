@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### 变更 (Changed)
+
+- **向量索引改为 HNSW，大库检索不再吃内存（P30）**：Milvus 集合原用 `FLAT`，Milvus Lite 每次检索都把有效向量整段复制一份再算距离，
+  494 篇 / 52,477 片段的库单次检索 +0.6G，几个检索同时跑就能把进程内存撑爆。现在新集合建 HNSW（M=16、efConstruction=200、ef=64）；
+  真实库副本上检索不再有内存尖峰，单次约 1.1 s → 0.4 s，前 10 条与 FLAT 重合 99.5%。
+  - **已有的库自动换索引**：启动后在后台把 FLAT 换成 HNSW（不重新嵌入，5 万片段约 1 分钟，只做一次），期间检索与写入排队等待；
+    换索引中途被打断，下次开库自动补建（`kacore/repository/vector_store/milvus_lite.py` 的 `MilvusIndexSpec`、`migrate_index`；
+    `base.py` 增加默认空操作的 `migrate_index`；组合根 `kacore/app_initializer.py` 的后台任务与 teardown 顺序）。
+  - 同时在跑的向量检索有上限（默认 4）；索引类型与 HNSW 参数是内部配置项 `vector_db.index_type` / `hnsw_*` / `search_concurrency`
+    （`kacore/config.py`，不进设置界面）。测试：`tests/backend/test_milvus_index.py`。
+
 ## [v2.1.2] — 2026-11-18
 
 ### 变更 (Changed)

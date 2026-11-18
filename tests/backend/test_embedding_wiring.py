@@ -176,7 +176,7 @@ class _Milvus:
     dims: list[int] = []
     created_collection = True
 
-    def __init__(self, *, db_path: str, dim: int) -> None:
+    def __init__(self, *, db_path: str, dim: int, **_kwargs: Any) -> None:
         type(self).dims.append(dim)
 
     def validate_schema(self) -> None:

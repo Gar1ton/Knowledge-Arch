@@ -54,7 +54,7 @@ async def test_existing_source_and_index_survive_external_provider_upgrade(
     class ExistingMilvus:
         created_collection = False
 
-        def __init__(self, *, db_path, dim):
+        def __init__(self, *, db_path, dim, **_kwargs):
             constructed.append(dim)
             self.dim = dim
 

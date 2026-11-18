@@ -580,3 +580,22 @@
     返回后树可见且列表停在刚读的论文、「[25.1]」有问题 1 篇且筛出 Mediascapes、全部文档 148 篇、↓↓ Enter 打开第 2 篇；
     后端 110/148 篇带作者或年份（以前 6 篇）。
     未验证：桌面壳里实测；中文界面截图（测试机缺中文字体）；有真实 PDF 时的阅读器（副本没带 library 原件，PDF 为 404）。
+- [ ] P30 · 向量检索内存（🚧）。起因：KA_Benchmark s01 全库评测（494 篇 / 52,477 片段）中 KA 进程被 10G 上限多次杀掉。
+  根因：集合用 `index_type="FLAT"`，Milvus Lite 3.1.1 的暴力检索每搜一个分段都复制一份有效向量再算距离
+  （`milvus_lite/index/brute_force.py:117`），全库一次 +0.59G，同时 4 个检索在纯向量库下就超 4G。
+  实测（真实库副本）：HNSW（M=16、efConstruction=200、ef=64）检索无内存尖峰、单次 1073 → 约 400 ms，
+  top-10 与 FLAT 重合 99.5%；已有库换索引 52 s（不重新嵌入），索引落盘、重新打开 4.2 s。
+  决策（已批准，11-18）：先做 P1–P3；已有库升级时自动换索引。
+  - [x] ① 配置：`VectorDbConfig` 增加 `index_type`（HNSW | FLAT，默认 HNSW）、`hnsw_m`、`hnsw_ef_construction`、
+    `hnsw_ef_search`、`search_concurrency`（内部项，不进设置界面）。
+  - [x] ② `MilvusLiteVectorStore`：新集合按配置建索引；已有集合索引不符时只标记待迁移、照常检索；
+    `migrate_index()` 在后台把索引换成配置值（持 `_init_lock`，等在途操作结束；期间新操作排队），
+    无索引（迁移中途崩溃）时开库即补建；HNSW 检索传 `ef`；检索并发上限 `search_concurrency`。
+    `VectorStore.migrate_index()` 默认空操作（base 契约）。
+  - [x] ③ 组合根：开库后有待迁移时起后台任务；teardown 先收走该任务再关库。
+  - [x] ④ 测试：配置解析、索引参数、迁移状态与排队、teardown 顺序；真实 Milvus Lite 小库迁移回归。
+  - [ ] ⑤ 长跑内存（P2）：换索引后用 KA_Benchmark 内存探针连续提问，确认是否仍只涨不落；再决定是否需要剖析。
+  - 验证（①–④）：pytest 1566 passed / 4 skipped（新增 `tests/backend/test_milvus_index.py` 10 项，含真实 Milvus Lite 小库
+    FLAT → HNSW 迁移；4 个文件里替身 Milvus 构造器补 `**kwargs`）；ruff；mypy。真实库副本（52,477 片段）实测见上。
+  - 说明：上游断连时 deep / enhanced 降级到 default，界面已有「已降级」标识（`ChatPanel.tsx`）；重试再拉长也扛不住
+    十几分钟的断网，故 KA 侧不改（P3 归入评测侧：把断网期间的降级答案判为基础设施错误并重答）。
