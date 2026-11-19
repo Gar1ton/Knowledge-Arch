@@ -119,7 +119,10 @@ _SYNTH_SYSTEM_ENHANCED: dict[PromptLang, str] = {
 
 # Deep Thinking 专用：在严格 grounded 的前提下要求机制级、分维度、带跨实体对比的**完整**回答。
 # 去压缩关键：① 按信息点/维度分节展开，每节充分展开、勿人为缩短（修复「单次合成短而拘谨」）；
-# ② 允许「有据推断」——证据部分相关但未逐字命中问题措辞时给出带 hedge 的推断，而非一律判
+# ② 先核对问题前提（P32 P5c）：证据与前提矛盾时先指出；问题假定的来源 / 事件 / 实体在证据里没有时
+#   直说没有，不拿别的材料拼出来。s01 假前提题 deep 多顺着前提作答——下面的「不要以没有证据拒答」
+#   原本不分前提真假一律适用。
+# ③ 前提成立时才允许「有据推断」——证据部分相关但未逐字命中问题措辞时给出带 hedge 的推断，而非一律判
 #   「无证据」全盘否定（修复「部分可支持→完全无证据」误判）。硬约束（禁臆造/禁跨源）保留。
 _DEEP_INTRO: dict[PromptLang, str] = {
     "en": (
@@ -134,9 +137,16 @@ _DEEP_INTRO: dict[PromptLang, str] = {
         "Be thorough: when the evidence supports a point, expand it as far as the evidence allows "
         "and do NOT artificially shorten or compress; draw on every relevant retrieved source, "
         "not only the first few. "
-        "When the question's framing (a claimed trend, shift, relationship or synthesis) is not "
-        "stated verbatim in any single source but the evidence partially bears on it, do NOT "
-        "refuse with 'no evidence'; instead synthesize a clearly hedged, evidence-grounded "
+        "Before answering, check the question's premises against the evidence. If the evidence "
+        "contradicts a premise (for example a finding, attribution, setting or comparison that "
+        "the sources state differently), say so at the start and answer from what the sources "
+        "actually report. If the question presupposes a specific source, report, event or entity "
+        "that the evidence does not contain, state plainly that the context does not contain it "
+        "instead of reconstructing it from other material. "
+        "Only when the premises hold: if the question's framing (a claimed trend, shift, "
+        "relationship or synthesis) is not stated verbatim in any single source but the evidence "
+        "partially bears on it, do NOT refuse with 'no evidence'; instead synthesize a clearly "
+        "hedged, evidence-grounded "
         "inference (e.g. 'the evidence partially supports …' / 'from [n] it can be inferred "
         "that …') and cite the partial evidence. Reserve an explicit 'no evidence' statement "
         "only for points the context genuinely does not touch at all. Never invent facts or "
@@ -152,7 +162,11 @@ _DEEP_INTRO: dict[PromptLang, str] = {
         "以及收尾综合）。每节都要充分展开，点名资料中出现的具体机制、技术、数据集、模型和术语，"
         "而不是泛泛而谈。要详尽：证据支持某一点时，在证据允许的范围内尽量展开，不要人为缩短或"
         "压缩；用上所有相关的检索来源，而不只是前几条。"
-        "当问题的设定（某种趋势、转变、关系或综合判断）在任何单一来源中都没有逐字出现，但证据"
+        "作答前先拿证据核对问题的前提。证据与某个前提矛盾时（例如来源对某个发现、归属、场景或"
+        "比较的说法不同），开头就指出，并按来源实际的说法作答。问题假定存在某个具体的来源、报道、"
+        "事件或实体，而证据里没有时，直接说明资料中没有，不要用别的材料把它拼凑出来。"
+        "只有前提成立时，才适用下面这条：当问题的设定（某种趋势、转变、关系或综合判断）在任何单一"
+        "来源中都没有逐字出现，但证据"
         "部分涉及时，不要以「没有证据」拒答；而是给出措辞明确留有余地、以证据为依据的推断（例如"
         "「证据部分支持……」/「可据 [n] 推断……」），并引用这些部分证据。只有资料完全没有涉及的点，"
         "才明确说明「没有证据」。绝不编造事实，也不要张冠李戴来源。"

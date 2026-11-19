@@ -868,6 +868,19 @@ async def test_synthesize_answer_deep_style_selects_deep_system():
     assert "mechanism" not in llm2.system_prompts[0].lower()
 
 
+def test_deep_system_checks_premises_before_hedged_inference():
+    """P32 P5c：先核对前提（矛盾先指出、假定的来源不存在就直说）；有据推断只在前提成立时适用。
+    """
+    from kacore.pipelines.answer_synthesis import _SYNTH_SYSTEM_DEEP
+
+    en, zh = _SYNTH_SYSTEM_DEEP["en"], _SYNTH_SYSTEM_DEEP["zh"]
+    assert en.index("check the question's premises") < en.index("do NOT refuse with 'no evidence'")
+    assert "Only when the premises hold" in en
+    assert "state plainly that the context does not contain it" in en
+    assert zh.index("核对问题的前提") < zh.index("不要以「没有证据」拒答")
+    assert "只有前提成立时" in zh and "直接说明资料中没有" in zh
+
+
 @pytest.mark.asyncio
 async def test_call_budget_counts_plan_and_sea_not_only_sea():
     outcome = _outcome([_chunk("c1"), _chunk("c2")])
