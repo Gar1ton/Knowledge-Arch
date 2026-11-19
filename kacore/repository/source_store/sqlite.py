@@ -43,6 +43,7 @@ from kacore.repository.source_store.base import (
     _normalize_exact_terms,
 )
 from kacore.repository.source_store.figures_sqlite import SQLiteFigureMixin
+from kacore.repository.source_store.search_index import index_chunks
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -705,7 +706,8 @@ class SQLiteSourceDocumentStore(SQLiteFigureMixin, SourceDocumentStore):
 
     @_locked_write
     async def replace_chunks(self, doc_id: str, chunks: list[DocumentChunk]) -> None:
-        # 整体替换语义：先删该 doc 旧 chunks -> 再插入新 chunks。包裹在同一个事务内。
+        # 整体替换语义：先删该 doc 旧 chunks（触发器同步删关键词索引）-> 再插入新 chunks 与索引。
+        # 包裹在同一个事务内。
         try:
             await self._db.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
 
@@ -724,6 +726,7 @@ class SQLiteSourceDocumentStore(SQLiteFigureMixin, SourceDocumentStore):
                         json.dumps(chunk.metadata),
                     ),
                 )
+            await index_chunks(self._db, ((c.chunk_id, c.text) for c in chunks))
             await self._db.commit()
         except Exception:
             await self._db.rollback()

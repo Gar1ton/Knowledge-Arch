@@ -107,3 +107,63 @@ async def test_expansion_is_same_revision_bounded_and_not_causal():
     assert [s["chunk_id"] for s in final[0].metadata["evidence_view"]["sources"]] == ["0", "1", "2"]
     assert [e["depth"] for e in session.edges] == [1, 2]
     assert all(e["kind"] == "adjacent_after" for e in session.edges)
+
+
+class _CountingReranker:
+    """记录每次 rerank 的 (query, 候选 id) 与同时在途的调用数。"""
+
+    is_passthrough = False
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, list[str]]] = []
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    async def rerank(self, query, candidates):
+        from kacore.repository.reranker.base import ScoredChunk
+
+        self.calls.append((query, [c.chunk_id for c in candidates]))
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        await asyncio.sleep(0.01)
+        self.in_flight -= 1
+        return [ScoredChunk(chunk=c, score=1.0) for c in candidates]
+
+
+def _outcome(*chunks):
+    signals = {c.chunk_id: ChunkSignal(1, False) for c in chunks}
+    return RetrievalOutcome(list(chunks), per_chunk_signals=signals)
+
+
+@pytest.mark.asyncio
+async def test_query_pools_are_reranked_concurrently():
+    session = EvidenceSession()
+    session.absorb([(f"q{i}", _outcome(chunk(f"c{i}", "d"))) for i in range(4)])
+    reranker = _CountingReranker()
+    await session.select(reranker, limit=4, weight=0.5)
+    assert len(reranker.calls) == 4 and reranker.max_in_flight == 4
+
+
+@pytest.mark.asyncio
+async def test_padding_is_fixed_at_first_use_and_scores_are_not_recomputed():
+    session = EvidenceSession()
+    session.absorb([("attention limitation", _outcome(chunk("a", "d", text="attention head")))])
+    reranker = _CountingReranker()
+    await session.select(reranker, limit=4, weight=0.5)
+    first = list(reranker.calls)
+    # 下一轮进来一个也含查询词的新块：旧 query 的池不再补它，旧候选也不重打分。
+    session.absorb([("other topic", _outcome(chunk("b", "d", text="the limitation of attention")))])
+    await session.select(reranker, limit=4, weight=0.5)
+    later = reranker.calls[len(first):]
+    assert all(query != "attention limitation" for query, _ in later)
+    assert session.padding["attention limitation"] == []
+
+
+@pytest.mark.asyncio
+async def test_padding_ignores_stopwords():
+    session = EvidenceSession()
+    session.absorb([("seen", _outcome(chunk("x", "d", text="the of and what is this")))])
+    session.absorb([("what is the limitation", _outcome(chunk("y", "d", text="limitation found")))])
+    await session.select(NoopReranker(), limit=4, weight=0)
+    assert session.padding["what is the limitation"] == []          # "the/what/is" 不再命中 x
+    assert session.padding["seen"] == []

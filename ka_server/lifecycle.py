@@ -5,6 +5,9 @@
 - wait_for_shutdown：等到「收到退出请求 / 收到 SIGTERM·SIGINT / 父进程消失」之一。
   父进程（桌面壳）崩溃后若后端继续活着，会一直持有 Milvus 锁，下次启动必然失败。
 - announce_ready：向 stdout 打印 `KA_READY port=…`，桌面壳据此拿到系统分配的端口。
+- keep_listening：监听 socket 被事件循环关掉后在原端口重新监听。Windows 的 Proactor 循环在
+  accept 出错（如 WinError 64：客户端在握手中途断开）时会 `sock.close()` 且不再恢复，
+  进程活着却不再接受连接。
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ import logging
 import os
 import signal
 import sys
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from types import TracebackType
 from typing import IO, Any
@@ -24,6 +28,7 @@ logger = logging.getLogger("ka_server")
 READY_PREFIX = "KA_READY"
 # 父进程存活轮询间隔：只是兜底信号，1 秒足够及时又几乎不耗资源。
 _PARENT_POLL_SECONDS = 1.0
+_LISTENER_POLL_SECONDS = 1.0
 
 
 class DataDirLockedError(RuntimeError):
@@ -174,3 +179,29 @@ __all__ = [
     "pid_alive",
     "wait_for_shutdown",
 ]
+
+
+def listener_closed(site: Any) -> bool:
+    """TCPSite 的监听 socket 是否都已关闭（关闭后 fileno 为 -1；server 关闭后 sockets 为空）。"""
+    server = site._server  # 同 bound_port：只读 sockets
+    return server is None or not server.sockets or all(s.fileno() == -1 for s in server.sockets)
+
+
+async def keep_listening(
+    site: Any, relisten: Callable[[], Awaitable[Any]], stop: asyncio.Event
+) -> None:
+    """每秒检查监听 socket；被关掉就调 relisten() 在原端口建新的 site，失败下一轮再试。
+
+    正常退出时先取消本任务再关 HTTP（serve 的 finally），不会把主动关闭误当成故障。
+    """
+    while not stop.is_set():
+        await asyncio.sleep(_LISTENER_POLL_SECONDS)
+        if stop.is_set() or not listener_closed(site):
+            continue
+        logger.warning("HTTP listener was closed by the event loop; listening again on port")
+        try:
+            site = await relisten()
+        except OSError as exc:
+            logger.error("Listening again failed, will retry: %s", exc)
+            continue
+        logger.info("HTTP listener restored.")

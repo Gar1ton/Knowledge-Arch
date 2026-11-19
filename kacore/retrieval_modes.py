@@ -25,14 +25,6 @@ VALID_RETRIEVAL_MODES = frozenset(
         MODE_FULLTEXT,
     }
 )
-STRICT_COLLECTION_MODES = frozenset(
-    {MODE_GRAPH_MIXED, MODE_GRAPH_ONLY, MODE_DEEP_THINKING}
-)
-# 与 STRICT_COLLECTION_MODES 对称：这些模式必须绑定**一篇具体文档**（doc_id），
-# 光有 collection 不足以执行。没有 doc_id 概念的入口见到
-# 这些模式必须降级，而不是把请求透传下去撞 ValueError。
-STRICT_DOCUMENT_MODES = frozenset({MODE_FULLTEXT})
-
 # 全文检索的**确认阈值，不是上限**——超过它只要求调用方显式确认一次，确认后照常读完整篇。
 # 全项目唯一真相源：HTTP 层与前端/skill 一律从响应里学这个数字，不得各自复制字面量。
 FULLTEXT_CONFIRM_THRESHOLD_CHARS = 60_000
@@ -55,8 +47,6 @@ __all__ = [
     "MODE_FULLTEXT",
     "MODE_GRAPH_MIXED",
     "MODE_GRAPH_ONLY",
-    "STRICT_COLLECTION_MODES",
-    "STRICT_DOCUMENT_MODES",
     "VALID_RETRIEVAL_MODES",
     "normalize_retrieval_mode",
 ]

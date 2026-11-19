@@ -704,3 +704,85 @@ def test_milvus_lite_leaves_current_directory_store_untouched(temp_dir):
     missing = pathlib.Path(temp_dir) / "brand_new.db"
     MilvusLiteVectorStore(db_path=str(missing), dim=4)._relocate_legacy_store()
     assert not missing.exists()
+
+
+class RecordingVectorStore:
+    """记录向量检索收到的 collection / allowed_doc_ids，按固定结果返回。"""
+
+    def __init__(self, results: list[tuple[str, float]]) -> None:
+        self.results = results
+        self.calls: list[dict] = []
+
+    async def search(self, collection, query_vector, top_k, filter_metadata=None, **kwargs):
+        self.calls.append({"collection": collection, **kwargs})
+        allowed = kwargs.get("allowed_doc_ids")
+        hits = [r for r in self.results if allowed is None or r[0].split(":")[0] in allowed]
+        return hits[:top_k]
+
+
+def _dense_orchestrator(store, vectors: RecordingVectorStore) -> RetrievalOrchestrator:
+    return RetrievalOrchestrator(
+        source_store=store,
+        config=Config({"vector_db": {"backend": "milvus"}}),
+        vector_store=vectors,  # type: ignore[arg-type]
+        embedding_provider=FakeEmbeddingProvider(),  # type: ignore[arg-type]
+        index_compatibility=CompatibleIndex(),  # type: ignore[arg-type]
+        embedding_fingerprint="fp",
+    )
+
+
+@pytest.mark.asyncio
+async def test_dense_global_searches_all_collections_and_skips_detached(sqlite_store):
+    """collection 为空 = 全局：向量检索不按集合过滤，命中里剔除 detached 文档。"""
+    from kacore.domain.models import DocumentLifecycle
+
+    for doc_id, col, state in [
+        ("doc-a", "papers", DocumentLifecycle.ACTIVE),
+        ("doc-b", "default", DocumentLifecycle.ACTIVE),
+        ("doc-x", "papers", DocumentLifecycle.DETACHED),
+    ]:
+        doc = SourceDocument(doc_id, doc_id, f"{doc_id}.pdf", "application/pdf", 1, doc_id, col)
+        doc.lifecycle_state = state
+        await sqlite_store.add_document(doc)
+        await sqlite_store.replace_chunks(
+            doc_id, [DocumentChunk(f"{doc_id}:0", doc_id, 0, "no lexical token", f"h-{doc_id}")]
+        )
+    vectors = RecordingVectorStore([("doc-x:0", 0.9), ("doc-a:0", 0.8), ("doc-b:0", 0.7)])
+
+    result = await _dense_orchestrator(sqlite_store, vectors).retrieve_with_outcome(
+        "", "semantic only", top_k=3
+    )
+
+    assert vectors.calls[0]["collection"] == ""
+    assert "allowed_doc_ids" not in vectors.calls[0]
+    assert [c.chunk_id for c in result.chunks] == ["doc-a:0", "doc-b:0"]
+    assert "milvus" in result.engines
+
+
+@pytest.mark.asyncio
+async def test_dense_subtree_scope_reaches_child_collection_documents(sqlite_store):
+    """选父集合：向量检索按子树 doc 白名单约束、不按父集合 tag 过滤，子集合文档能召回。"""
+    from kacore.pipelines.retrieval_orchestrator import SCOPE_COLLECTION, RetrievalScope
+
+    root = Collection(name="ROOT_DENSE")
+    await sqlite_store.upsert_collection(root)
+    child = Collection(name="CHILD_DENSE", parent_key=root.coll_key)
+    await sqlite_store.upsert_collection(child)
+    doc = SourceDocument("doc-c", "child", "c.pdf", "application/pdf", 1, "hc", "CHILD_DENSE")
+    doc.collection_keys = [child.coll_key]
+    await sqlite_store.add_document(doc)
+    await sqlite_store.replace_chunks(
+        "doc-c", [DocumentChunk("doc-c:0", "doc-c", 0, "no lexical token", "hc0")]
+    )
+    vectors = RecordingVectorStore([("doc-c:0", 0.9)])
+    scope = RetrievalScope(
+        scope_type=SCOPE_COLLECTION, scope_key=root.coll_key, library_id=root.library_id
+    )
+
+    result = await _dense_orchestrator(sqlite_store, vectors).retrieve_with_outcome(
+        "ROOT_DENSE", "semantic only", top_k=3, scope=scope
+    )
+
+    assert vectors.calls[0]["collection"] == ""
+    assert vectors.calls[0]["allowed_doc_ids"] == frozenset({"doc-c"})
+    assert [c.chunk_id for c in result.chunks] == ["doc-c:0"]

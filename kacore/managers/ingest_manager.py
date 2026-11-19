@@ -92,6 +92,21 @@ META_SCANNED_PAGES = "scanned_pages"
 META_FIGURE_COUNT = "figure_count"
 
 
+# PDF 文件头可能前置少量垃圾字节（PDF 规范允许阅读器在前 1024 字节内找 `%PDF-`）。
+_PDF_MAGIC = b"%PDF-"
+_PDF_MAGIC_WINDOW = 1024
+
+
+def _is_pdf_file(path: Path) -> bool:
+    """按内容判断原件是不是 PDF：上传的原件一律存为 `original.pdf`，后缀不可信，
+    文本上传（.md / .txt）的副本也叫这个名字。读不了的文件按非 PDF 处理。"""
+    try:
+        with path.open("rb") as fh:
+            return _PDF_MAGIC in fh.read(_PDF_MAGIC_WINDOW)
+    except OSError:
+        return False
+
+
 def _artifact_meta(artifact: MarkdownArtifact) -> dict[str, Any]:
     """随文档处理写进 local_meta 的找图摘要（界面提示「N 页没有文字层」用）。"""
     return {
@@ -272,7 +287,7 @@ class IngestManager(BaseIngestManager):
 
             # 1) 抽取干净 Markdown + 页面字符偏移
             artifact = await asyncio.to_thread(
-                self._extract_artifact, source_pdf, content_type, document_id
+                self._extract_artifact, source_pdf, document_id
             )
 
             # 2) 落盘 clean.md / pages.json / meta.json
@@ -468,15 +483,8 @@ class IngestManager(BaseIngestManager):
         doc.local_meta = {**doc.local_meta, "processing_pending": True}
         await self._source_store.update_document(doc)
 
-        # 重新提取（使用当前已修复的 ignore_alpha=True 代码）。
-        if recover_text:
-            # 旧纯文本重切中断也从原件恢复，不把名为 original.pdf 的文本副本送进 PDF 解析器。
-            text = await asyncio.to_thread(source_pdf.read_text, encoding="utf-8", errors="replace")
-            artifact = build_single_page_artifact(text)
-        else:
-            artifact = await asyncio.to_thread(
-                self._extract_artifact, source_pdf, doc.content_type or "application/pdf", doc_id
-            )
+        # 重新提取：原件按内容分流（真 PDF 走 PDF 抽取，名为 original.pdf 的文本副本按文本）。
+        artifact = await asyncio.to_thread(self._extract_artifact, source_pdf, doc_id)
 
         # 覆写制品包中的派生文件。
         bundle_dir = self._library_dir / doc_id
@@ -549,13 +557,7 @@ class IngestManager(BaseIngestManager):
     def source_pdf_path(self, doc: SourceDocument) -> Path | None:
         """识图现渲染用的原 PDF（不是 PDF 的文档返回 None）。"""
         source = self._source_pdf(doc)
-        if source is None:
-            return None
-        try:
-            with source.open("rb") as fh:
-                return source if fh.read(5) == b"%PDF-" else None
-        except OSError:
-            return None
+        return source if source is not None and _is_pdf_file(source) else None
 
     def _source_pdf(self, doc: SourceDocument) -> Path | None:
         """原件 PDF：制品包内 original.pdf 优先，其次 Zotero linked 模式的外部路径。"""
@@ -574,13 +576,8 @@ class IngestManager(BaseIngestManager):
             not doc.content_type and doc.file_path.lower().endswith(".pdf")
         )
         source = self._source_pdf(doc) if declared_pdf else None
-        if source is None:
-            return False
-        try:  # 文本上传的副本也叫 original.pdf：只认真正的 PDF
-            with source.open("rb") as fh:
-                return fh.read(5) == b"%PDF-"
-        except OSError:
-            return False
+        # 文本上传的副本也叫 original.pdf：只认真正的 PDF
+        return source is not None and _is_pdf_file(source)
 
     def _resolve_artifact_path(self, doc: SourceDocument, rel_path: str) -> Path | None:
         candidates = [
@@ -692,19 +689,19 @@ class IngestManager(BaseIngestManager):
         content_bytes = path.read_bytes()
         return content_bytes, hashlib.sha256(content_bytes).hexdigest()
 
-    def _extract_artifact(
-        self, path: Path, content_type: str, doc_id: str = ""
-    ) -> MarkdownArtifact:
-        """PDF → PyMuPDF4LLM 清洗 + 本地找图；txt/md → 单页纯文本制品。"""
+    def _extract_artifact(self, path: Path, doc_id: str = "") -> MarkdownArtifact:
+        """PDF → PyMuPDF4LLM 清洗 + 本地找图；其余按 UTF-8 文本 → 单页纯文本制品。
+
+        是不是 PDF 只看原件内容（`_is_pdf_file`）：原件统一存为 `original.pdf`，
+        按后缀或声明的 content_type 判断会把 .md / .txt 送进 PDF 抽取器（中文正文全丢）。
+        """
         if self._config.ocr_enabled:
             warnings.warn(
                 "OCR/LLM extraction is enabled which may incur substantial computation/API costs.",
                 UserWarning,
                 stacklevel=2,
             )
-        suffix = path.suffix.lower()
-        is_pdf = content_type == "application/pdf" or suffix == ".pdf"
-        if is_pdf:
+        if _is_pdf_file(path):
             # 先找图：图内文字的位置要在抽正文前遮掉（L2），找图失败则照旧抽正文、没有空位。
             scan: FigureScan | None = None
             try:
@@ -723,9 +720,6 @@ class IngestManager(BaseIngestManager):
                 artifact.figures = scan.figures
                 artifact.scanned_pages = scan.scanned_pages
             return artifact
-        if suffix in (".txt", ".md", ".markdown"):
-            return build_single_page_artifact(path.read_text(encoding="utf-8", errors="replace"))
-        # 其它类型暂按纯文本兜底（避免摄入直接失败）。
         return build_single_page_artifact(path.read_text(encoding="utf-8", errors="replace"))
 
     # ── clean.md 字符区间分块 ─────────────────────────────────────

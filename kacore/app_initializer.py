@@ -31,6 +31,7 @@ from kacore.managers.ingest_manager import IngestManager
 from kacore.managers.quota_manager import QuotaManager
 from kacore.migration_runner import run_migrations
 from kacore.pipelines.sync_pipeline import SyncPipeline
+from kacore.repository.source_store.search_index import backfill_search_index
 from kacore.repository.source_store.sqlite import SQLiteSourceDocumentStore
 from kacore.repository.sync_targets.r2 import R2SyncTarget
 
@@ -177,6 +178,11 @@ class AppInitializer:
         db = await self._exit_stack.enter_async_context(aiosqlite.connect(str(db_path)))
         await db.execute("PRAGMA foreign_keys = ON")
         await run_migrations(db)
+        # 关键词索引（迁移 028）只能在 Python 里算派生文本：补齐还没有索引的分块（升级后首次启动
+        # 补全部，之后通常为 0；不动分块与向量）。
+        indexed = await backfill_search_index(db)
+        if indexed:
+            logger.info("Keyword index: added %d chunk(s)", indexed)
 
         self.source_store = SQLiteSourceDocumentStore(db)
         interrupted = await self.source_store.mark_interrupted_build_jobs()

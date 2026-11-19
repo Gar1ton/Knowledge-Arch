@@ -143,14 +143,17 @@ async def test_api_serializes_compact_evidence_and_never_claims_full_text() -> N
     assert result["evidence"][0]["text"] == "evidence for alpha mechanism"
 
 
-async def test_deep_thinking_evidence_requires_a_collection() -> None:
+async def test_deep_thinking_evidence_allows_global_scope() -> None:
+    """deep_thinking 与 default / enhanced 一致：不带 collection 时全局取证据。"""
+    retrieval = RecordingRetrieval()
     api = KnowledgeRepositoryApi(
         source_store=InMemorySourceDocumentStore(),
-        agent_evidence_orchestrator=_orchestrator(RecordingRetrieval()),
+        agent_evidence_orchestrator=_orchestrator(retrieval),
     )
-    with pytest.raises(ValueError, match="requires a collection"):
-        await api.retrieve_agent_evidence(
-            question="Synthesize everything",
-            queries=["broad question"],
-            retrieval_mode="deep_thinking",
-        )
+    result = await api.retrieve_agent_evidence(
+        question="Synthesize everything",
+        queries=["broad question"],
+        retrieval_mode="deep_thinking",
+    )
+    assert result["collection"] == ""
+    assert retrieval.calls and all(call["collection"] == "" for call in retrieval.calls)

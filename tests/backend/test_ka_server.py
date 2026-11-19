@@ -19,6 +19,9 @@ from ka_server.lifecycle import (
     DataDirLock,
     DataDirLockedError,
     announce_ready,
+    bound_port,
+    keep_listening,
+    listener_closed,
     pid_alive,
     wait_for_shutdown,
 )
@@ -97,6 +100,74 @@ async def test_wait_for_shutdown_returns_when_parent_exits(monkeypatch) -> None:
     proc = subprocess.Popen([sys.executable, "-c", "pass"])
     proc.wait()
     assert await wait_for_shutdown(asyncio.Event(), parent_pid=proc.pid) == "parent_exited"
+
+
+async def test_listener_closed_by_event_loop_is_restored_on_same_port(monkeypatch) -> None:
+    """模拟 Windows Proactor 在 accept 出错后关掉监听 socket：守护任务在原端口重新监听。"""
+    from aiohttp import ClientSession, web
+
+    monkeypatch.setattr("ka_server.lifecycle._LISTENER_POLL_SECONDS", 0.05)
+    app = web.Application()
+    app.router.add_get("/ping", lambda _request: web.Response(text="pong"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = bound_port(site)
+
+    async def relisten() -> web.TCPSite:
+        new_site = web.TCPSite(runner, "127.0.0.1", port)
+        await new_site.start()
+        return new_site
+
+    stop = asyncio.Event()
+    guard = asyncio.create_task(keep_listening(site, relisten, stop))
+    try:
+        # 与 proactor_events._start_serving 出错时一样：不再 accept，并关闭监听 socket。
+        raw = site._server._sockets[0]
+        asyncio.get_running_loop()._stop_serving(raw)
+        raw.close()
+        assert listener_closed(site)
+        async with ClientSession() as http:
+            for _ in range(100):
+                try:
+                    async with http.get(f"http://127.0.0.1:{port}/ping") as resp:
+                        assert await resp.text() == "pong"
+                        break
+                except OSError:
+                    await asyncio.sleep(0.02)
+            else:
+                pytest.fail("listener was not restored")
+    finally:
+        stop.set()
+        guard.cancel()
+        # Selector 循环不能对已关闭的 socket 再 _stop_serving（Proactor 能）：收尾前摘掉。
+        site._server._sockets = []
+        await runner.cleanup()
+
+
+async def test_keep_listening_leaves_an_open_listener_alone(monkeypatch) -> None:
+    monkeypatch.setattr("ka_server.lifecycle._LISTENER_POLL_SECONDS", 0.01)
+    from aiohttp import web
+
+    runner = web.AppRunner(web.Application())
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    calls = 0
+
+    async def relisten() -> web.TCPSite:
+        nonlocal calls
+        calls += 1
+        return site
+
+    stop = asyncio.Event()
+    guard = asyncio.create_task(keep_listening(site, relisten, stop))
+    await asyncio.sleep(0.1)
+    stop.set()
+    await asyncio.wait_for(guard, timeout=1)
+    await runner.cleanup()
+    assert calls == 0
 
 
 def test_ready_line_carries_only_the_port() -> None:

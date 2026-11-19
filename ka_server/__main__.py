@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import logging.handlers
@@ -27,6 +28,7 @@ from ka_server.lifecycle import (
     announce_ready,
     bound_port,
     install_signal_handlers,
+    keep_listening,
     wait_for_shutdown,
 )
 from ka_server.paths import AppPaths
@@ -190,6 +192,7 @@ async def serve(args: argparse.Namespace, token: str) -> int:
     app_init = AppInitializer(settings, paths.data, extras=extras)
     agent = AgentAccess(connection_file_for(args.data_dir, paths.data))
     runner: web.AppRunner | None = None
+    listener_guard: asyncio.Task[None] | None = None
     try:
         await app_init.initialize_or_rollback(raise_after_recovery=False)
         app = build_app(
@@ -207,6 +210,14 @@ async def serve(args: argparse.Namespace, token: str) -> int:
         site = web.TCPSite(runner, LISTEN_HOST, args.port)
         await site.start()
         port = bound_port(site)
+
+        async def relisten() -> web.TCPSite:
+            assert runner is not None
+            new_site = web.TCPSite(runner, LISTEN_HOST, port)
+            await new_site.start()
+            return new_site
+
+        listener_guard = asyncio.create_task(keep_listening(site, relisten, stop))
         agent.start(port, bool(settings.get("prefs.general.agent_access")))
         refresh_agent_skill(agent.connection_file)
         announce_ready(port)
@@ -214,6 +225,10 @@ async def serve(args: argparse.Namespace, token: str) -> int:
         logger.info("shutdown: %s", reason)
     finally:
         agent.remove()
+        if listener_guard is not None:
+            listener_guard.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await listener_guard
         if runner is not None:
             await runner.cleanup()
         await app_init.teardown()

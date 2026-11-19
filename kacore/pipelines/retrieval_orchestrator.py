@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from kacore.domain.models import DocumentChunk, DocumentLifecycle
 from kacore.pipelines.evidence_cache import EmbeddingCacheKey, RetrievalCacheKey
 from kacore.pipelines.evidence_session import current_evidence_session
+from kacore.utils.search_text import fts_match_expression, query_terms
 
 if TYPE_CHECKING:
     from kacore.config import Config
@@ -234,57 +235,10 @@ class RetrievalOrchestrator:
         if allowed_doc_ids is not None and not allowed_doc_ids:
             return RetrievalOutcome([])  # 作用域内无文档，直接空。
 
-        dense_chunks: list[DocumentChunk] = []
         engines: list[str] = []
-        fallback_reason: str | None = None
-        vdb = self._config.get_vector_db_config()
-
-        milvus_compatible = bool(
-            self._index_compatibility
-            and self._embedding_fingerprint
-            and self._index_compatibility.is_milvus_compatible(self._embedding_fingerprint)
+        dense_chunks, fallback_reason = await self._search_dense(
+            collection, query, pool_k, allowed_doc_ids, exclude_chunk_ids, engines
         )
-        # collection 为空 = 全局深挖（deep_thinking 无 collection）：milvus 按 workspace 分库，
-        # 无法跨全部 workspace dense 检索，故跳过 dense，靠下方 SQLite 词法/锚点全局召回。
-        if vdb.backend == "milvus" and collection:
-            if not self._vector_store or not self._embedding_provider:
-                fallback_reason = "milvus_unavailable"
-            elif not milvus_compatible:
-                fallback_reason = "milvus_index_incompatible"
-            else:
-                engines.append("milvus")
-                try:
-                    session = current_evidence_session.get()
-                    if session is None:
-                        query_vector = await self._embedding_provider.embed_query(query)
-                    else:
-                        query_vector = await session.cache.embedding.get_or_compute(
-                            EmbeddingCacheKey(query, self._embedding_fingerprint or ""),
-                            lambda: self._embedding_provider.embed_query(query),
-                        )
-                    vec_results = await self._vector_store.search(
-                        collection=collection,
-                        query_vector=query_vector,
-                        top_k=pool_k,
-                        **({"exclude_chunk_ids": exclude_chunk_ids} if exclude_chunk_ids else {}),
-                        **(
-                            {"allowed_doc_ids": frozenset(allowed_doc_ids)}
-                            if allowed_doc_ids is not None
-                            else {}
-                        ),
-                    )
-                    dense_chunks = await self._find_local_chunks(
-                        [chunk_id for chunk_id, _ in vec_results]
-                    )
-                except Exception as exc:
-                    fallback_reason = f"milvus_error: {exc}"
-                    logger.error("Milvus dense search failed: %s", exc)
-        else:
-            fallback_reason = None
-
-        if not dense_chunks and collection:
-            if vdb.backend == "milvus" and fallback_reason is None:
-                fallback_reason = "milvus_no_hits"
 
         anchor_chunks: list[DocumentChunk] = []
         lexical_chunks: list[DocumentChunk] = []
@@ -401,7 +355,7 @@ class RetrievalOrchestrator:
 
         - allowed_doc_ids 非空（scope 已解析子树/item/tag/library）→ 直接用该集合（含后代）。
         - 否则有 collection → 按 primary collection 名取 active 文档（既有 default 行为）。
-        - 否则（collection 为空 = 全局深挖）→ 取全部 active 文档。
+        - 否则（collection 为空 = 全局）→ 取全部 active 文档。
         """
         if allowed_doc_ids is not None:
             return list(allowed_doc_ids)
@@ -461,7 +415,13 @@ class RetrievalOrchestrator:
         allowed_doc_ids: set[str] | None = None,
         exclude_chunk_ids: frozenset[str] = frozenset(),
     ) -> list[DocumentChunk]:
-        terms = self._lexical_terms(query)
+        """关键词通道：FTS5 全文索引按 BM25 取前 limit 条（迁移 028；派生文本见
+        `utils/search_text`）。
+
+        查询去停用词后各词 OR 起来；排序、截断都在 SQLite 里做，不把命中行全部拉进 Python。
+        候选文档口径同锚点通道（`_resolve_candidate_doc_ids`，detached 不进候选）。
+        """
+        terms = query_terms(query)
         if not terms:
             return []
 
@@ -469,64 +429,27 @@ class RetrievalOrchestrator:
         if db_conn is None:
             return []
 
-        # 候选文档集（单集合 / 子树 / 全局）统一解析；detached 文档不进候选（生命态约束）。
         doc_ids = await self._resolve_candidate_doc_ids(db_conn, collection, allowed_doc_ids)
         if not doc_ids:
             return []
 
-        doc_placeholders = ",".join("?" for _ in doc_ids)
-        like_parts = []
-        params = list(doc_ids)
-        for term in terms:
-            if len(term) >= 2:
-                like_parts.append("text LIKE ?")
-                params.append(f"%{term}%")
-        if not like_parts:
-            return []
-
-        sql = (
-            "SELECT chunk_id, doc_id, ordinal, text, content_hash, metadata FROM chunks "
-            f"WHERE doc_id IN ({doc_placeholders}) AND ({' OR '.join(like_parts)}) "
-            "ORDER BY ordinal ASC"
+        excluded = sorted(exclude_chunk_ids)
+        exclude_sql = (
+            f"AND c.chunk_id NOT IN ({','.join('?' for _ in excluded)}) " if excluded else ""
         )
-        matched: list[tuple[DocumentChunk, float]] = []
+        sql = (
+            "SELECT c.chunk_id, c.doc_id, c.ordinal, c.text, c.content_hash, c.metadata "
+            "FROM chunks_fts JOIN chunk_search_rows s ON s.row = chunks_fts.rowid "
+            "JOIN chunks c ON c.chunk_id = s.chunk_id "
+            f"WHERE chunks_fts MATCH ? AND c.doc_id IN ({','.join('?' for _ in doc_ids)}) "
+            f"{exclude_sql}ORDER BY bm25(chunks_fts), c.ordinal LIMIT ?"
+        )
+        params = [fts_match_expression(terms), *doc_ids, *excluded, limit]
         async with db_conn.execute(sql, params) as cursor:
-            async for row in cursor:
-                if row[0] in exclude_chunk_ids:
-                    continue
-                chunk = DocumentChunk(
-                    row[0], row[1], row[2], row[3], row[4], _loads_metadata(row[5])
-                )
-                matched.append((chunk, self._lexical_score(chunk.text, terms)))
-        matched.sort(key=lambda item: (-item[1], item[0].ordinal))
-        return [item[0] for item in matched[:limit]]
-
-    @staticmethod
-    def _lexical_terms(query: str) -> list[str]:
-        terms = [term.strip().lower() for term in re.split(r"\s+", query) if term.strip()]
-        # 中英混排查询（如“T55具体说了什么”）不会被空白拆开，需显式抽取 ASCII 锚点。
-        terms.extend(match.group(0).lower() for match in re.finditer(r"[A-Za-z]+\d*|\d+", query))
-        for cjk_run in re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff]+", query):
-            if len(cjk_run) > 2:
-                terms.extend(cjk_run[index : index + 2] for index in range(len(cjk_run) - 1))
-        return list(dict.fromkeys(term for term in terms if len(term) >= 2))[:32]
-
-    @staticmethod
-    def _lexical_score(text: str, terms: list[str]) -> float:
-        lower_text = text.lower()
-        score = 0.0
-        for term in terms:
-            count = lower_text.count(term)
-            if count <= 0:
-                continue
-            if re.fullmatch(r"t\d{1,3}[a-z]?", term):
-                heading_re = re.compile(rf"(?im)^[\s#*_`>]*{re.escape(term)}[\s*_`#>]*$")
-                score += 100.0 if heading_re.search(text) else 10.0 * count
-            elif term.isdigit() or len(term) <= 2:
-                score += 0.25 * count
-            else:
-                score += float(count)
-        return score
+            return [
+                DocumentChunk(row[0], row[1], row[2], row[3], row[4], _loads_metadata(row[5]))
+                async for row in cursor
+            ]
 
     @staticmethod
     def _structural_anchors(query: str) -> dict[str, set[str]]:
@@ -631,6 +554,77 @@ class RetrievalOrchestrator:
             if normalized_paths & {_normalize_anchor(value) for value in anchors["section_path"]}:
                 return True
         return False
+
+    async def _search_dense(
+        self,
+        collection: str,
+        query: str,
+        pool_k: int,
+        allowed_doc_ids: set[str] | None,
+        exclude_chunk_ids: frozenset[str],
+        engines: list[str],
+    ) -> tuple[list[DocumentChunk], str | None]:
+        """向量通道：返回 ``(chunks, fallback_reason)``；查了 Milvus 时往 engines 追加 ``milvus``。
+
+        向量库是单表 ``kb_chunks``，按 ``collection_tag``（文档主归属集合）区分集合。
+        - 有 scope（allowed_doc_ids 非 None）：doc_id 白名单已精确到子树 / 条目 / 标签 / 文档，
+          不再按 tag 过滤——否则主归属不是选中集合的文档（子集合、多归属）召不到。
+        - 无 scope：按 collection 的 tag 过滤；collection 为空 = 全局，不按集合过滤。
+          两者都没有 doc 白名单，命中后剔除非 ACTIVE 文档（与词法通道同口径）。
+        """
+        if self._config.get_vector_db_config().backend != "milvus":
+            return [], None
+        if not self._vector_store or not self._embedding_provider:
+            return [], "milvus_unavailable"
+        if not (
+            self._index_compatibility
+            and self._embedding_fingerprint
+            and self._index_compatibility.is_milvus_compatible(self._embedding_fingerprint)
+        ):
+            return [], "milvus_index_incompatible"
+        engines.append("milvus")
+        try:
+            session = current_evidence_session.get()
+            if session is None:
+                query_vector = await self._embedding_provider.embed_query(query)
+            else:
+                query_vector = await session.cache.embedding.get_or_compute(
+                    EmbeddingCacheKey(query, self._embedding_fingerprint or ""),
+                    lambda: self._embedding_provider.embed_query(query),
+                )
+            vec_results = await self._vector_store.search(
+                collection="" if allowed_doc_ids is not None else collection,
+                query_vector=query_vector,
+                top_k=pool_k,
+                **({"exclude_chunk_ids": exclude_chunk_ids} if exclude_chunk_ids else {}),
+                **(
+                    {"allowed_doc_ids": frozenset(allowed_doc_ids)}
+                    if allowed_doc_ids is not None
+                    else {}
+                ),
+            )
+            chunks = await self._find_local_chunks([chunk_id for chunk_id, _ in vec_results])
+            if allowed_doc_ids is None:
+                chunks = await self._keep_active_chunks(chunks)
+        except Exception as exc:
+            logger.error("Milvus dense search failed: %s", exc)
+            return [], f"milvus_error: {exc}"
+        return chunks, None if chunks else "milvus_no_hits"
+
+    async def _keep_active_chunks(self, chunks: list[DocumentChunk]) -> list[DocumentChunk]:
+        """只保留所属文档为 ACTIVE 的分块（detached 文档的向量仍在库里，检索时排除）。"""
+        db_conn = getattr(self._source_store, "_db", None)
+        doc_ids = sorted({c.doc_id for c in chunks})
+        if db_conn is None or not doc_ids:
+            return chunks
+        placeholders = ",".join("?" for _ in doc_ids)
+        async with db_conn.execute(  # type: ignore[attr-defined]
+            f"SELECT doc_id FROM documents WHERE doc_id IN ({placeholders}) "
+            "AND lifecycle_state = 'active'",
+            tuple(doc_ids),
+        ) as cursor:
+            active = {row[0] async for row in cursor}
+        return [c for c in chunks if c.doc_id in active]
 
     async def _find_local_chunks(self, chunk_ids: list[str]) -> list[DocumentChunk]:
         db_conn = getattr(self._source_store, "_db", None)

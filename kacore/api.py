@@ -89,7 +89,7 @@ from kacore.pipelines.conversation_context import (
     recent_turns,
 )
 from kacore.pipelines.prompt_language import prompt_lang, uses_chinese
-from kacore.pipelines.retrieval_orchestrator import SCOPE_DOCUMENT, ChunkSignal, RetrievalScope
+from kacore.pipelines.retrieval_orchestrator import SCOPE_DOCUMENT, RetrievalScope
 from kacore.providers.base import ModelRef
 from kacore.providers.thinking import model_thinking as thinking_flag
 from kacore.retrieval_modes import (
@@ -2096,8 +2096,8 @@ class KnowledgeRepositoryApi(
     ) -> dict[str, Any]:
         """为 Codex/外部 agent 返回分档证据，不调用插件 LLM 或生成最终答案。
 
-        调用方负责问题拆解、充分性判断、纠偏轮次与最终合成。`deep_thinking` 与
-        Discord research 保持同一边界：必须先锁定具体 collection；`enhanced` 可全局。
+        调用方负责问题拆解、充分性判断、纠偏轮次与最终合成。三档都可全局（collection 为空，
+        跨全部 active 文档）或按 collection / scope_* 限定范围。
         """
         if self._agent_evidence_orchestrator is None:
             raise RuntimeError("AgentEvidenceOrchestrator is not configured")
@@ -2106,8 +2106,6 @@ class KnowledgeRepositoryApi(
             raise ValueError(
                 "agent evidence mode must be 'default', 'enhanced', or 'deep_thinking'"
             )
-        if mode == "deep_thinking" and not collection:
-            raise ValueError("deep_thinking agent evidence requires a collection")
         limits = self._agent_evidence_orchestrator.limits(mode)
         if round_number < 1 or round_number > limits["max_rounds"]:
             raise ValueError(
@@ -2868,7 +2866,7 @@ class KnowledgeRepositoryApi(
                     library_id=_sel.library_id,
                 )
         # graph_mixed / graph_only 走图谱 workspace，必须有具体 collection；
-        # deep_thinking / enhanced 允许 collection 为空（全局证据链，跨所有 active 集合）。
+        # 其余档位允许 collection 为空（全局，跨全部 active 文档）。
         if retrieval_mode in {MODE_GRAPH_MIXED, MODE_GRAPH_ONLY} and not collection:
             raise ValueError(f"{retrieval_mode} retrieval requires a collection")
         if answer_language not in {"auto", "zh", "en"}:
@@ -3128,50 +3126,26 @@ class KnowledgeRepositoryApi(
                 engines.append("enhanced_recall")
             else:
                 _progress("vector_search", 20)
-                seen_ids: set[str] = set()
-                # 跨集合聚合候选：先搜完所有目标集合，再按 RRF 分全局排序取 top_k。
-                # 不再「凑满 top_k 就 break」——否则早期弱相关塞满后，后面装着精确命中的
-                # 集合永远搜不到（假阴性根因之一）。
-                target_collections = await self._resolve_ask_collections(collection, scope)
-                multi_scope = len(target_collections) > 1
-                scored_candidates: list[tuple[float, int, DocumentChunk]] = []
-                order = 0
-                for col in target_collections:
-                    signals: dict[str, ChunkSignal] = {}
+                # 一次召回覆盖整个范围：有 scope 时按 doc 白名单（子树 / 条目 / 文档），
+                # 无集合时全局；编排器内部的向量与词法通道都按同一范围取候选。
+                if self._retrieval_orchestrator is None:
+                    fallback_reason = fallback_reason or milvus_fallback_reason
+                else:
                     try:
-                        if self._retrieval_orchestrator is not None:
-                            outcome = await self._retrieval_orchestrator.retrieve_with_outcome(
-                                col,
-                                retrieval_question,
-                                top_k,
-                                scope,
-                                candidate_k=candidate_k,
-                                reranker=self._reranker if use_reranker else None,
-                            )
-                            current_chunks = outcome.chunks
-                            signals = outcome.per_chunk_signals
-                            engines.extend(outcome.engines)
-                            fallback_reason = fallback_reason or outcome.fallback_reason
-                        else:
-                            fallback_reason = fallback_reason or milvus_fallback_reason
-                            current_chunks = []
+                        outcome = await self._retrieval_orchestrator.retrieve_with_outcome(
+                            collection or "",
+                            retrieval_question,
+                            top_k,
+                            scope,
+                            candidate_k=candidate_k,
+                            reranker=self._reranker if use_reranker else None,
+                        )
+                        chunks = list(outcome.chunks)
+                        engines.extend(outcome.engines)
+                        fallback_reason = fallback_reason or outcome.fallback_reason
                     except Exception as exc:
-                        logger.warning("Ask retrieval failed for collection %s: %s", col, exc)
-                        fallback_reason = fallback_reason or f"collection_error:{col}"
-                        continue
-                    for chunk in current_chunks:
-                        if chunk.chunk_id in seen_ids:
-                            continue
-                        seen_ids.add(chunk.chunk_id)
-                        sig = signals.get(chunk.chunk_id)
-                        rrf = sig.rrf_score if sig is not None else 0.0
-                        scored_candidates.append((rrf, order, chunk))
-                        order += 1
-                # 单集合：保留 orchestrator 给出的次序（rerank/RRF 已排好），不再重排；
-                # 多集合：按 RRF 分降序、缺失分按原始顺序兜底。
-                if multi_scope:
-                    scored_candidates.sort(key=lambda item: (-item[0], item[1]))
-                chunks = [c for _, _, c in scored_candidates[:top_k]]
+                        logger.warning("Ask retrieval failed for %r: %s", collection or "*", exc)
+                        fallback_reason = fallback_reason or f"collection_error:{collection or '*'}"
 
 
             lightrag_context = ""
@@ -3496,33 +3470,6 @@ class KnowledgeRepositoryApi(
             return ""
         logger.info("Follow-up rewritten: %r -> %r", question[:80], rewritten[:120])
         return rewritten
-
-    async def _resolve_ask_collections(
-        self, collection: str | None, scope: RetrievalScope | None = None
-    ) -> list[str]:
-        # collection scope（含后代）：把检索集合扩展为「选中集合 + 全部后代」的 name 列表，
-        # 各引擎按 primary collection_tag 覆盖子树；scope 的 allowed_document_ids 再精确过滤。
-        if scope is not None and scope.scope_type == "collection" and scope.scope_key:
-            keys = await self._source_store.get_local_collection_descendants(scope.scope_key)
-            names: list[str] = []
-            for ck in keys:
-                col = await self._source_store.get_collection(ck)
-                if col:
-                    names.append(col.name)
-            names = list(dict.fromkeys(names))
-            if names:
-                return names
-        if collection:
-            return [collection]
-        # 全局：覆盖所有 active 集合（name 不以 '_' 开头的系统集合除外）；
-        # 不再截断到前 5 个，否则后面的集合永远搜不到（假阴性根因之一）。
-        collections = [
-            item.name for item in await self.list_collections()
-            if not item.name.startswith("_")
-        ]
-        if not collections:
-            collections = await self.list_kb_collections()
-        return collections
 
     async def get_lightrag_readiness(self, collection: str) -> dict[str, Any]:
         if not collection:

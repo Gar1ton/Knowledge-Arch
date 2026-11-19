@@ -35,6 +35,7 @@ use tauri_plugin_opener::OpenerExt;
 const MAIN_WINDOW: &str = "main";
 const MENU_PREFERENCES: &str = "preferences";
 const MENU_SHOW: &str = "show";
+const MENU_RESTART_BACKEND: &str = "restart_backend";
 const MENU_QUIT: &str = "quit";
 /// 前端订阅的事件：菜单 / 托盘里的「偏好设置…」。
 const MENU_PREFERENCES_EVENT: &str = "menu://preferences";
@@ -126,16 +127,19 @@ fn backend_state(state: tauri::State<'_, ShellState>) -> BackendState {
     state.sidecar.state()
 }
 
-#[tauri::command]
-async fn restart_backend(
-    app: AppHandle,
-    state: tauri::State<'_, ShellState>,
-) -> Result<BackendInfo, String> {
-    let spec = launch_spec(&app, &state.prefs.lock().unwrap());
+/// 按当前偏好重启后端进程（阻塞到就绪）；崩溃页与托盘的「重启服务」共用。
+fn restart_sidecar(app: &AppHandle) -> Result<BackendInfo, String> {
+    let state = app.state::<ShellState>();
+    let spec = launch_spec(app, &state.prefs.lock().unwrap());
     *state.launched_data_dir.lock().unwrap() = spec.data_dir.clone();
     let sidecar = state.sidecar.clone();
     sidecar.set_spec(spec);
-    tauri::async_runtime::spawn_blocking(move || sidecar.restart())
+    sidecar.restart()
+}
+
+#[tauri::command]
+async fn restart_backend(app: AppHandle) -> Result<BackendInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || restart_sidecar(&app))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -301,9 +305,13 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let show = MenuItemBuilder::with_id(MENU_SHOW, "Show window").build(app)?;
     let preferences = MenuItemBuilder::with_id(MENU_PREFERENCES, "Preferences…").build(app)?;
+    // 进程级重启：后端「活着但不响应」时界面里的按钮可能用不了，托盘总能用。
+    let restart = MenuItemBuilder::with_id(MENU_RESTART_BACKEND, "Restart service").build(app)?;
     let quit = MenuItemBuilder::with_id(MENU_QUIT, "Quit Knowledge Arch").build(app)?;
     let menu = MenuBuilder::new(app)
         .items(&[&show, &preferences])
+        .separator()
+        .item(&restart)
         .separator()
         .item(&quit)
         .build()?;
@@ -332,6 +340,14 @@ fn handle_menu_event(app: &AppHandle, id: &str) {
     match id {
         MENU_PREFERENCES => open_preferences(app),
         MENU_SHOW => show_main(app),
+        MENU_RESTART_BACKEND => {
+            // 重启要等后端就绪（最长约 65 秒），不能占住菜单事件线程。界面经 backend://ready 自动重连；
+            // 失败时 sidecar 进入崩溃状态并发 backend://exited，界面切到崩溃页，这里不用再处理。
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let _ = restart_sidecar(&app);
+            });
+        }
         MENU_QUIT => app.exit(0),
         _ => {}
     }

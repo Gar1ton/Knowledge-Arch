@@ -58,6 +58,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("DeepThinking")
 
+# 校验闭环里的一稿：
+# (answer, generation_status, qualified, hard_missing, soft_notes, final_evidence)。
+_Draft = tuple[str, str, bool, list[str], list[str], "list[DocumentChunk]"]
+
+
+def _worse_draft(new: _Draft, old: _Draft) -> bool:
+    """new 是否明显比 old 差：old 合格而 new 不合格，或合格性相同但 new 的硬缺失更多。
+
+    打平算不差（补检后的一稿用了更多证据）。
+    """
+    if old[2] != new[2]:
+        return old[2]
+    return len(new[3]) > len(old[3])
+
 T = TypeVar("T")
 
 # baseline 保底证据条数：LLM 全挂或迭代失败时至少回退到这批单轮高分证据。
@@ -241,12 +255,9 @@ class DeepThinkingOrchestrator:
             # 本轮 SEA 审计完成 → 增量推送该轮 trace，前端逐轮可见推演过程。
             _progress(f"deep_round_{rnd}", round_pct, live_detail("round", checklist, trace))
 
-            # 2g 收敛 / 预算安全阀。本轮有新发现则再追一轮深挖（即便 sufficient）。
-            converged = (
-                sufficient
-                and not round_discovered
-                and not self._has_unmet_critical(checklist)
-            )
+            # 2g 收敛 / 预算安全阀。关键项都满足且 SEA 判充分即收敛；新发现的方面不再强制追一轮
+            # （P32 P3：SEA 几乎每轮都有发现，以前因此多跑一轮）。发现项仍记入 checklist 与 trace。
+            converged = sufficient and not self._has_unmet_critical(checklist)
             if converged or rnd == self._cfg.max_rounds or self._over_budget(
                 calls_used, est_tokens
             ):
@@ -511,9 +522,18 @@ class DeepThinkingOrchestrator:
         session = current_evidence_session.get()
         if session is not None:
             session.absorb(query_outcomes)
+            # 结构锚点（题目点名的表 / 节）无条件保留：以前会话路径从不填 pinned_ids，锚点保护失效。
+            for _q, oc in query_outcomes:
+                for chunk in oc.chunks:
+                    sig = oc.per_chunk_signals.get(chunk.chunk_id)
+                    if sig and sig.anchor_hit:
+                        pinned_ids.add(chunk.chunk_id)
+                        evidence.setdefault(
+                            chunk.chunk_id, EvidenceItem(chunk, "structural_anchor")
+                        )
             selected = await session.select(
                 self._reranker, limit=self._cfg.deep_keep,
-                weight=self._cfg.rerank_weight,
+                weight=self._cfg.rerank_weight, pinned=pinned_ids,
             )
             store = getattr(self._retrieval, "_source_store", None)
             if store is not None:
@@ -588,6 +608,8 @@ class DeepThinkingOrchestrator:
         status = ""
         hard: list[str] = []
         soft: list[str] = []
+        # 已校验过的最好一稿。final 与答案的 [n] 编号绑定，必须与答案一起返回。
+        best: _Draft | None = None
         cache = labels_cache if labels_cache is not None else {}
         lang = prompt_lang(answer_language, answer_question)
         for vround in range(self._cfg.max_verify_rounds + 1):
@@ -602,11 +624,16 @@ class DeepThinkingOrchestrator:
                     style="deep",
                     source_labels=source_labels,
                 )
-            except Exception as exc:  # 合成 LLM 不可用 → 放弃 verify，让 api.ask 兜底合成。
+            except Exception as exc:  # 合成 LLM 不可用 → 有已校验的上一稿就用它，
+                # 否则让 api.ask 兜底合成。
                 logger.warning("deep_thinking synth-for-verify unavailable: %s", exc)
+                if best is not None:
+                    return (*best, est_tokens)
                 return None, "", False, hard, soft, final, est_tokens
             status = draft.status
             if not draft.text:
+                if best is not None:
+                    return (*best, est_tokens)
                 return None, status, False, hard, soft, final, est_tokens
             answer = draft.text
             est_tokens += _est_tokens(answer_question, answer, *(chunk.text for chunk in final))
@@ -627,16 +654,27 @@ class DeepThinkingOrchestrator:
                 est_tokens += vtokens
             except JsonContractError as exc:
                 est_tokens += exc.tokens
+                if best is not None:
+                    return (*best, est_tokens)
                 return answer, status, False, [], [], final, est_tokens
-            except Exception as exc:  # 校验 LLM 不可用 → 用 draft，标记未校验。
+            except Exception as exc:  # 校验 LLM 不可用 → 有已校验的上一稿就用它，
+                # 否则用 draft、标记未校验。
                 logger.warning("deep_thinking VERIFY llm unavailable: %s", exc)
+                if best is not None:
+                    return (*best, est_tokens)
                 return answer, status, False, [], [], final, est_tokens
             hard = verify_result.hard_missing
             soft = verify_result.soft_notes
             qualified = verify_result.supported and verify_result.complete and not hard
-            recheck_gaps = soft or hard
+            current: _Draft = (answer, status, qualified, hard, soft, final)
+            # 补检后的一稿只在不比上一稿差时替换它（P32 P4：以前第二稿总是替换第一稿）。
+            if best is None or not _worse_draft(current, best):
+                best = current
+            # 补检词只用校验给出的信息缺口与硬缺失（P32 P4）：partial_claims 是答案里
+            # 「部分有据」的断言句，不是检索词，以前也被拿去补检。
+            recheck_gaps = list(dict.fromkeys(verify_result.info_gaps + hard))
             if qualified or vround == self._cfg.max_verify_rounds or not recheck_gaps:
-                return answer, status, qualified, hard, soft, final, est_tokens
+                return (*best, est_tokens)
             # 不合格且有轮次 + 有补充方向：软/硬项当 gap 再检索补证据，重算 final。
             await self._gather_round(
                 collection,
@@ -651,6 +689,8 @@ class DeepThinkingOrchestrator:
             final = await self._select_final(
                 evidence, pinned_ids, conflicting_ids, self._cfg.max_final_evidence
             )
+        if best is not None:
+            return (*best, est_tokens)
         return answer, status, False, hard, soft, final, est_tokens
 
     async def _llm_json(

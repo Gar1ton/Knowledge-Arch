@@ -577,3 +577,76 @@ async def test_rebuild_from_artifact_writes_back_processing_version(tmp_path: Pa
     assert doc.local_meta["processing_version"] == PROCESSING_VERSION
     chunks = await store.list_chunks("doc1")
     assert IngestManager.chunk_needs_rebuild("doc1", chunks, doc.local_meta) is False
+
+
+# ── 原件按内容分流（P31 ④）：上传原件统一存为 original.pdf，不能按后缀判断 ─────────
+
+_ZH_MD = (
+    "# 工作记忆实验\n\n"
+    "本研究考察中央执行系统负荷对数字广度的影响。中央执行系统负荷越高，被试的数字广度成绩越低。\n"
+)
+_EN_MD = "# Attention\n\nMulti-head attention lets the model attend to several subspaces.\n"
+
+
+async def _ingest_text(tmp_path: Path, name: str, body: str) -> tuple[IngestManager, str]:
+    src = tmp_path / name
+    src.write_text(body, encoding="utf-8")
+    store = InMemorySourceDocumentStore()
+    manager = _manager(store, tmp_path / "data")
+    doc_id = await manager.ingest(
+        title=name, file_path=str(src), content_type="text/markdown",
+        size_bytes=src.stat().st_size, collection="papers",
+    )
+    return manager, doc_id
+
+
+async def test_markdown_upload_keeps_chinese_body(tmp_path: Path) -> None:
+    manager, doc_id = await _ingest_text(tmp_path, "zh.md", _ZH_MD)
+    store = manager._source_store
+    text = "\n".join(c.text for c in await store.list_chunks(doc_id))
+    assert "中央执行系统" in text
+    doc = await store.get_document(doc_id)
+    assert doc is not None and doc.converter != "pymupdf4llm"
+
+
+async def test_markdown_upload_keeps_english_hyphenation(tmp_path: Path) -> None:
+    manager, doc_id = await _ingest_text(tmp_path, "en.md", _EN_MD)
+    store = manager._source_store
+    text = "\n".join(c.text for c in await store.list_chunks(doc_id))
+    assert "Multi-head" in text
+    doc = await store.get_document(doc_id)
+    assert doc is not None and doc.converter != "pymupdf4llm"
+
+
+async def test_pdf_detection_reads_content_not_suffix(temp_pdf: Path, tmp_path: Path) -> None:
+    from kacore.managers.ingest_manager import _is_pdf_file
+
+    text_named_pdf = tmp_path / "original.pdf"
+    text_named_pdf.write_text("# Notes\n\nplain text", encoding="utf-8")
+    assert _is_pdf_file(text_named_pdf) is False
+    # PDF 规范允许文件头前有少量垃圾字节：前 1024 字节内的 %PDF- 仍算 PDF。
+    padded = tmp_path / "padded.bin"
+    padded.write_bytes(b"\x00" * 100 + temp_pdf.read_bytes())
+    assert _is_pdf_file(padded) is True
+    assert _is_pdf_file(tmp_path / "missing.pdf") is False
+
+
+async def test_manual_reextract_recovers_text_document_extracted_as_pdf(tmp_path: Path) -> None:
+    """旧版本把 .md 当 PDF 抽取的文档：手动重处理（reextract）按原件内容改走文本，正文恢复。"""
+    manager, doc_id = await _ingest_text(tmp_path, "zh.md", _ZH_MD)
+    store = manager._source_store
+    # 模拟旧版本误抽的结果：PDF 抽取器产出、只剩标题一个分块。
+    doc = await store.get_document(doc_id)
+    assert doc is not None
+    doc.converter = "pymupdf4llm"
+    await store.update_document(doc)
+    await store.replace_chunks(
+        doc_id, [DocumentChunk(f"{doc_id}-0", doc_id, 0, "工作记忆实验", "h")]
+    )
+
+    await manager.reextract_document(doc_id)
+
+    text = "\n".join(c.text for c in await store.list_chunks(doc_id))
+    assert "中央执行系统" in text
+    doc = await store.get_document(doc_id)
+    assert doc is not None and doc.converter != "pymupdf4llm"

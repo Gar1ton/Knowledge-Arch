@@ -97,7 +97,7 @@ The top bar switches between **Workspace** and **Data Flow**. The Data Flow page
 |------|----------|------|-------------------|
 | `default` | Fast fact lookup (keeps top 6 evidence chunks) | ★ | Global or scoped |
 | `enhanced` | Analytical, comparative, or mechanism questions: query decomposition + wide recall + corrective self-check | ★★ | Global or scoped |
-| `deep_thinking` | Literature review and synthesis: multi-round iterative reasoning + verification | ★★★★ | Requires a bound collection |
+| `deep_thinking` | Literature review and synthesis: multi-round iterative reasoning + verification | ★★★★ | Global or scoped |
 | `graph_mixed` | Semantic/lexical evidence combined with LightRAG knowledge graph context | ★★★ | Requires a bound collection |
 | `graph_only` | Pure knowledge graph retrieval using entity-relationship context | ★★ | Requires a bound collection |
 | `fulltext` | Single-paper close reading: sends the full cleaned document text to the LLM without truncation | Varies by length | Requires selecting 1 document |

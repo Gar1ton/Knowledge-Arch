@@ -61,6 +61,8 @@ class VectorStore(ABC):
     ) -> list[tuple[str, float]]:
         """在指定集合中检索最相似的向量。
 
+        collection 按向量的主归属集合标签过滤；空串表示不按集合过滤（全局，或调用方已用
+        allowed_doc_ids 精确限定文档）。
         返回 (chunk_id, distance_score) 列表，按相似度降序（如余弦相似度）或升序（L2 距离）。
         若集合内无数据返回空列表。
 

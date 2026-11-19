@@ -629,6 +629,54 @@ async def test_verify_json_contract_error_marks_answer_unverified():
     assert result.verified is False
 
 
+VERIFY_PARTIAL_AND_GAP = (
+    '{"supported":false,"complete":false,"partial_claims":["答案里部分有据的断言句"],'
+    '"info_gaps":["缺失的术语"]}'
+)
+VERIFY_ONE_HARD = '{"supported":false,"complete":false,"unsupported_claims":["断言A无证据"]}'
+
+
+@pytest.mark.asyncio
+async def test_verify_recheck_uses_info_gaps_not_partial_claims():
+    outcome = _outcome([_chunk("c1"), _chunk("c2")])
+    retrieval = MockRetrieval(outcome)
+    orch = DeepThinkingOrchestrator(
+        retrieval_orchestrator=retrieval,
+        reranker=NoopReranker(),
+        llm_adapter=ScriptedLLM(
+            [PLAN_1ITEM, SEA_SUFFICIENT, "草稿1 [1]", VERIFY_PARTIAL_AND_GAP,
+             "草稿2 [1]", VERIFY_OK]
+        ),
+        dt_config=DeepThinkingConfig(
+            max_rounds=1, max_sub_queries=2, wide_top_k=5, json_max_retries=1, verify_enabled=True
+        ),
+    )
+    await orch.run("papers", "综述", answer_language="zh")
+    assert "缺失的术语" in retrieval.queries
+    assert "答案里部分有据的断言句" not in retrieval.queries
+
+
+@pytest.mark.asyncio
+async def test_worse_second_draft_keeps_first_draft():
+    outcome = _outcome([_chunk("c1"), _chunk("c2")])
+    orch = _make_verify(
+        outcome, [PLAN_1ITEM, SEA_SUFFICIENT, "草稿1 [1]", VERIFY_BAD, "草稿2 [1]", VERIFY_ONE_HARD]
+    )
+    result = await orch.run("papers", "综述", answer_language="zh")
+    assert result.answer == "草稿1 [1]"            # 第二稿多了一条硬缺失 → 退回第一稿
+    assert result.verify_missing == []
+
+
+@pytest.mark.asyncio
+async def test_failed_second_synthesis_keeps_verified_first_draft():
+    outcome = _outcome([_chunk("c1"), _chunk("c2")])
+    orch = _make_verify(
+        outcome, [PLAN_1ITEM, SEA_SUFFICIENT, "草稿1 [1]", VERIFY_BAD, RuntimeError("synth down")]
+    )
+    result = await orch.run("papers", "综述", answer_language="zh")
+    assert result.answer == "草稿1 [1]"            # 以前这里返回 None，交给 api.ask 重新合成
+
+
 @pytest.mark.asyncio
 async def test_verify_claim_level_hard_to_warning_soft_to_notes():
     outcome = _outcome([_chunk("c1")])
@@ -751,6 +799,43 @@ async def test_per_aspect_ranking_surfaces_high_rrf_subquery_chunk():
     assert result.trace[0].kept_chunk_ids[:2] == ["c1", "c3"]
 
 
+@pytest.mark.asyncio
+async def test_structural_anchor_survives_tight_budget_in_session_path():
+    # 锚点块 rrf 最低；预算 2 时以前会被两个高分块挤掉（会话路径从不填 pinned_ids）。
+    base = _oc([(_chunk("c1"), 0.9), (_chunk("c2"), 0.8), (_chunk("tab"), 0.01)], {"tab"})
+    sub = _oc([(_chunk("c3"), 0.95)])
+    orch = DeepThinkingOrchestrator(
+        retrieval_orchestrator=SequenceRetrieval([base, sub]),
+        reranker=NoopReranker(),
+        llm_adapter=ScriptedLLM([PLAN_1ITEM, SEA_SUFFICIENT]),
+        dt_config=DeepThinkingConfig(
+            max_rounds=1, max_sub_queries=1, wide_top_k=5, deep_keep=2,
+            max_final_evidence=2, verify_enabled=False,
+        ),
+    )
+    result = await orch.run("papers", "what does Table 2 show")
+    assert "tab" in [c.chunk_id for c in result.evidence]
+
+
+@pytest.mark.asyncio
+async def test_sufficient_round_with_new_discovery_converges():
+    sea_sufficient_discover = SEA_DISCOVER.replace('"sufficient":false', '"sufficient":true')
+    retrieval = MockRetrieval(_outcome([_chunk("c1"), _chunk("c2")]))
+    llm = ScriptedLLM([PLAN_1ITEM, sea_sufficient_discover])   # 若追第二轮会因缺响应而 IndexError。
+    orch = DeepThinkingOrchestrator(
+        retrieval_orchestrator=retrieval,
+        reranker=NoopReranker(),
+        llm_adapter=llm,
+        dt_config=DeepThinkingConfig(
+            max_rounds=3, max_sub_queries=2, wide_top_k=5, verify_enabled=False
+        ),
+    )
+    result = await orch.run("papers", "综述问题")
+    assert len(result.trace) == 1
+    assert result.trace[0].discovered == ["新机制X"]             # 发现项仍可观测
+    assert any(i.origin == "discovered" for i in result.checklist.items)
+
+
 def test_reranker_is_passthrough_flags():
     from kacore.repository.reranker.bge_local import CrossEncoderReranker
 
@@ -781,6 +866,19 @@ async def test_synthesize_answer_deep_style_selects_deep_system():
     llm2 = ScriptedLLM(["ans"])
     await synthesize_answer(llm2, "q", [_chunk("c1")], "en")
     assert "mechanism" not in llm2.system_prompts[0].lower()
+
+
+def test_deep_system_checks_premises_before_hedged_inference():
+    """P32 P5c：先核对前提（矛盾先指出、假定的来源不存在就直说）；有据推断只在前提成立时适用。
+    """
+    from kacore.pipelines.answer_synthesis import _SYNTH_SYSTEM_DEEP
+
+    en, zh = _SYNTH_SYSTEM_DEEP["en"], _SYNTH_SYSTEM_DEEP["zh"]
+    assert en.index("check the question's premises") < en.index("do NOT refuse with 'no evidence'")
+    assert "Only when the premises hold" in en
+    assert "state plainly that the context does not contain it" in en
+    assert zh.index("核对问题的前提") < zh.index("不要以「没有证据」拒答")
+    assert "只有前提成立时" in zh and "直接说明资料中没有" in zh
 
 
 @pytest.mark.asyncio
