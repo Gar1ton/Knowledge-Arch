@@ -306,9 +306,10 @@ class DeepThinkingConfig:
     # 历史 bug：写死 320 而合成用全文，导致 VERIFY 对第 320 字后的断言系统性误判为「证据外」。
     sea_evidence_clip: int = 700
     verify_evidence_clip: int = 1500
-    # per-aspect 排序：以每个 sub_query 的 rrf_score 为主信号，rerank 仅作可调加成；
-    # 默认 0 = 纯 rrf（契合「未引入 rerank 模型」，无模型时不退化为候选插入顺序）。
-    rerank_weight: float = 0.2
+    # per-aspect 排序：rrf_score 与重排分线性混合；0 = 纯 rrf（无重排模型时自动退化为纯 rrf）。
+    # P32 P5a：0.2 → 0.5（与 enhanced 同）。s01 里 deep 答错多是找到了文献、
+    # 没拿到关键段落，排序过度依赖 rrf。
+    rerank_weight: float = 0.5
     deep_keep: int = 12  # 每轮 rerank+cutoff 保留上限（deep 专用，不动共享 RerankConfig.keep）。
     # 开放式发现护栏：每轮新增 aspect 上限与累计上限，防止 checklist 无限膨胀、循环不收敛。
     max_discovered_per_round: int = 3

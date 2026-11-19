@@ -265,7 +265,7 @@ def test_deep_thinking_and_rerank_defaults_without_st(monkeypatch: pytest.Monkey
     # v0.25.9 新增字段默认值。
     assert d.sea_evidence_clip == 700
     assert d.verify_evidence_clip == 1500
-    assert d.rerank_weight == 0.2
+    assert d.rerank_weight == 0.5
     assert d.deep_keep == 12
     assert d.max_discovered_per_round == 3
     assert d.max_discovered_total == 8
