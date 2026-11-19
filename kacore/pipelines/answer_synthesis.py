@@ -117,29 +117,23 @@ _SYNTH_SYSTEM_ENHANCED: dict[PromptLang, str] = {
     for lang in ("en", "zh")
 }
 
-# Deep Thinking 专用：在严格 grounded 的前提下要求机制级、带跨实体对比的深入回答。
-# ① 篇幅随问题收放（P32 P5b）：窄问题（事实 / 数值 / 名称 / 定义 / 是非或一致性判断）
-#   开头一句给出答案、再几段说明；宽问题、开放题、多部分问题才按维度分节并充分展开。
-#   以前不分题型一律写分节报告，与随后拼接的 _ACADEMIC_READABILITY_RULE
-#   （先直答、不硬套章节）互相矛盾；
+# Deep Thinking 专用：在严格 grounded 的前提下要求机制级、分维度、带跨实体对比的**完整**回答。
+# 去压缩关键：① 按信息点/维度分节展开，每节充分展开、勿人为缩短（修复「单次合成短而拘谨」）；
 # ② 允许「有据推断」——证据部分相关但未逐字命中问题措辞时给出带 hedge 的推断，而非一律判
 #   「无证据」全盘否定（修复「部分可支持→完全无证据」误判）。硬约束（禁臆造/禁跨源）保留。
 _DEEP_INTRO: dict[PromptLang, str] = {
     "en": (
-        "You are a rigorous research assistant writing an in-depth, evidence-grounded answer. "
-        "Answer based solely on the provided context; do not use outside knowledge; cite every "
-        "supported claim or coherent claim group with [n] notation. "
-        "Fit the form of the answer to the question. When the question asks for something "
-        "specific (a fact, figure, name or definition, or a yes/no or consistency judgment), "
-        "state that answer explicitly in the opening sentence, then support it with a few "
-        "focused paragraphs; do not expand it into a multi-section report. When the question is "
-        "broad, open-ended or has several parts, organize the answer into clearly-headed sections "
-        "covering its distinct dimensions (e.g. definition/background, mechanisms & methods, "
-        "comparison across entities, timeline/trends, limitations, and a closing synthesis) and "
-        "develop each section fully. In either form, name the specific mechanisms, techniques, "
-        "datasets, models and terms that appear in the context rather than generic abstractions, "
-        "and draw on every relevant retrieved source, not only the first few; expand a point as "
-        "far as the evidence allows, but do not add dimensions the question did not ask about. "
+        "You are a rigorous research assistant writing a COMPREHENSIVE, in-depth, report-style "
+        "evidence-grounded answer. Answer based solely on the provided context; do not use "
+        "outside knowledge; cite every supported claim or coherent claim group with [n] "
+        "notation. Organize the answer into clearly-headed sections covering the distinct "
+        "dimensions of the question (e.g. definition/background, mechanisms & methods, "
+        "comparison across entities, timeline/trends, limitations, and a closing synthesis). "
+        "Under each section develop the point fully, naming the specific mechanisms, techniques, "
+        "datasets, models and terms that appear in the context rather than generic abstractions. "
+        "Be thorough: when the evidence supports a point, expand it as far as the evidence allows "
+        "and do NOT artificially shorten or compress; draw on every relevant retrieved source, "
+        "not only the first few. "
         "When the question's framing (a claimed trend, shift, relationship or synthesis) is not "
         "stated verbatim in any single source but the evidence partially bears on it, do NOT "
         "refuse with 'no evidence'; instead synthesize a clearly hedged, evidence-grounded "
@@ -152,14 +146,12 @@ _DEEP_INTRO: dict[PromptLang, str] = {
         "a synthesis line on how they align. "
     ),
     "zh": (
-        "你是一名严谨的研究助手，要写一篇深入且以证据为依据的回答。只依据所给资料作答，不使用"
-        "外部知识；每个有证据支持的论断或连贯的论断组都用 [n] 标注引用。"
-        "回答的形式要贴合问题。问题问的是具体内容（某个事实、数值、名称或定义，或是非、是否一致"
-        "的判断）时，开头第一句就明确给出答案，再用几段聚焦的文字支撑；不要把它扩写成分节报告。"
-        "问题宽泛、开放或包含多个部分时，按问题的不同维度组织成带清晰小标题的章节（例如定义/背景、"
-        "机制与方法、实体间对比、时间线/趋势、局限，以及收尾综合），每节充分展开。无论哪种形式，"
-        "都要点名资料中出现的具体机制、技术、数据集、模型和术语，而不是泛泛而谈；用上所有相关的"
-        "检索来源，而不只是前几条；在证据允许的范围内展开，但不要添加问题没有问到的维度。"
+        "你是一名严谨的研究助手，要写一篇全面、深入、报告式且以证据为依据的回答。只依据所给资料"
+        "作答，不使用外部知识；每个有证据支持的论断或连贯的论断组都用 [n] 标注引用。按问题的不同"
+        "维度组织成带清晰小标题的章节（例如定义/背景、机制与方法、实体间对比、时间线/趋势、局限，"
+        "以及收尾综合）。每节都要充分展开，点名资料中出现的具体机制、技术、数据集、模型和术语，"
+        "而不是泛泛而谈。要详尽：证据支持某一点时，在证据允许的范围内尽量展开，不要人为缩短或"
+        "压缩；用上所有相关的检索来源，而不只是前几条。"
         "当问题的设定（某种趋势、转变、关系或综合判断）在任何单一来源中都没有逐字出现，但证据"
         "部分涉及时，不要以「没有证据」拒答；而是给出措辞明确留有余地、以证据为依据的推断（例如"
         "「证据部分支持……」/「可据 [n] 推断……」），并引用这些部分证据。只有资料完全没有涉及的点，"

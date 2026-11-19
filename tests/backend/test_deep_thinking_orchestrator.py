@@ -868,19 +868,6 @@ async def test_synthesize_answer_deep_style_selects_deep_system():
     assert "mechanism" not in llm2.system_prompts[0].lower()
 
 
-def test_deep_system_fits_answer_form_to_the_question():
-    """P32 P5b：窄问题先直答、不扩写成分节报告；只有宽问题才分节（两种语言一致）。"""
-    from kacore.pipelines.answer_synthesis import _SYNTH_SYSTEM_DEEP
-
-    en, zh = _SYNTH_SYSTEM_DEEP["en"], _SYNTH_SYSTEM_DEEP["zh"]
-    assert "COMPREHENSIVE" not in en and "report-style" not in en
-    assert "state that answer explicitly in the opening sentence" in en
-    assert "do not expand it into a multi-section report" in en
-    assert "broad, open-ended or has several parts" in en
-    assert "开头第一句就明确给出答案" in zh and "不要把它扩写成分节报告" in zh
-    assert "报告式" not in zh
-
-
 @pytest.mark.asyncio
 async def test_call_budget_counts_plan_and_sea_not_only_sea():
     outcome = _outcome([_chunk("c1"), _chunk("c2")])
