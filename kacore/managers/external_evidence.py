@@ -55,12 +55,16 @@ from kacore.managers.external_fulltext import FulltextCache, page_passages
 from kacore.managers.external_status import EngineMonitor
 from kacore.pipelines.deep_thinking_prompts import JsonContractError
 from kacore.pipelines.external_prompts import (
+    PLACE_SYSTEM,
     PLAN_SYSTEM,
     SELECT_SYSTEM,
     Candidate,
+    Placement,
     SearchPlan,
+    parse_placements,
     parse_plan,
     parse_selection,
+    render_placement_prompt,
     render_plan_prompt,
     render_select_prompt,
 )
@@ -200,6 +204,23 @@ class ExternalEvidence:
         step("external_read")
         bundle.passages = await self._read(bundle, question, cfg)
         return bundle
+
+    async def place(self, papers: Sequence[Candidate],
+                    outline: Sequence[tuple[str, Sequence[str]]]) -> list[Placement]:
+        """按用户自己的集合树归类（用户配置的 research 模型）；模型不可用返回空列表。"""
+        if self._llm is None or not papers or not outline:
+            return []
+        allowed = {p.source_id for p in papers}
+        paths = {path for path, _ in outline}
+        prompt = render_placement_prompt(outline, papers)
+        try:
+            items, _c, _t = await llm_json_call(
+                self._llm, prompt, PLACE_SYSTEM,
+                lambda raw: parse_placements(raw, allowed, paths), 1)
+        except (JsonContractError, RuntimeError) as exc:
+            logger.warning("External placement failed: %s", exc)
+            return []
+        return items
 
     def status(self) -> dict[str, dict[str, object]]:
         """各数据库最近的成功 / 错误与 OpenAlex 额度（数据流节点显示用）。"""

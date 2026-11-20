@@ -39,6 +39,11 @@ export interface CiteTarget {
 
 type HighlightedChunk = CiteTarget;
 
+export interface SourcePanelTarget {
+  captureId: string;
+  focus?: string;
+}
+
 interface ConsoleContextValue {
   selectedCollection: string | null;
   setSelectedCollection: (c: string | null) => void;
@@ -60,6 +65,10 @@ interface ConsoleContextValue {
   view: ConsoleView;
   setView: (v: ConsoleView) => void;
 
+  /** 3.0.0 来源栏：打开中的那次联网补充（focus = 先选中的外部文献）；null = 不显示。 */
+  sourcePanel: SourcePanelTarget | null;
+  setSourcePanel: (target: SourcePanelTarget | null) => void;
+
   /** 打开中的偏好设置分组；null = 窗口关闭。 */
   prefsGroup: PrefsGroup | null;
   openPrefs: (group?: PrefsGroup) => void;
@@ -80,6 +89,8 @@ const ConsoleContext = createContext<ConsoleContextValue>({
   setNoteDocId: () => {},
   view: "workspace",
   setView: () => {},
+  sourcePanel: null,
+  setSourcePanel: () => {},
   prefsGroup: null,
   openPrefs: () => {},
   closePrefs: () => {},
@@ -106,6 +117,7 @@ export function ConsoleProvider({ children }: { children: React.ReactNode }) {
   }, []);
   const [noteDocId, setNoteDocId] = useState<string | null>(null);
   const [view, setView] = useState<ConsoleView>("workspace");
+  const [sourcePanel, setSourcePanel] = useState<SourcePanelTarget | null>(null);
   const [prefsGroup, setPrefsGroup] = useState<PrefsGroup | null>(null);
   const openPrefs = useCallback((group: PrefsGroup = "general") => setPrefsGroup(group), []);
   const closePrefs = useCallback(() => setPrefsGroup(null), []);
@@ -212,6 +224,7 @@ export function ConsoleProvider({ children }: { children: React.ReactNode }) {
         readingMode, setReadingMode,
         noteDocId, setNoteDocId,
         view, setView,
+        sourcePanel, setSourcePanel,
         prefsGroup, openPrefs, closePrefs,
       }}
     >

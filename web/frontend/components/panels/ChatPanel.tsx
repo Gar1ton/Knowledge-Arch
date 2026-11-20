@@ -21,6 +21,7 @@ import {
   createDocumentNote, createCollectionNote,
   getAskProgress, getDocument, waitForLateAskAnswer, type LiveProgressDetail,
   getEffectiveConfig, getLightRAGReadiness, listCollections, pushNotionNote,
+  type ExternalSummary,
 } from "@/lib/api";
 
 // ─── Types ────────────────────────────────────────────────────
@@ -48,6 +49,8 @@ interface Message {
   pinned?: boolean;
   /** 这一轮实际检索的范围；之后切换选中不改变它（旧记录没有）。 */
   scope?: AnswerScope;
+  /** 3.0.0 联网补充摘要；只有打开开关时提问的回答才有。 */
+  external?: ExternalSummary;
 }
 
 interface GraphBuildDialogState {
@@ -485,6 +488,12 @@ function SourceMini({ s, onClick }: { s: AskSource; onClick: () => void }) {
               {s.pages?.[0] != null ? ` · p.${s.pages[0]}` : ""}
             </span>
           )}
+          {s.origin === "external" && (
+            // 3.0.0 外部文献：点它打开来源栏（没有库内原文可跳）。
+            <Badge tone={s.trust === "verified" ? "info" : "warn"}>
+              <Icon name="globe" size={9} /> {s.abstract_only ? "abstract" : s.pages?.[0] != null ? `p.${s.pages[0]}` : "ext"}
+            </Badge>
+          )}
           {s.rrf_score != null && (
             <span style={{ fontSize: 9.5, fontFamily: "var(--font-mono)", color: "var(--accent)" }}>
               RRF {s.rrf_score.toFixed(4)}
@@ -535,8 +544,10 @@ function MessageBubble({
   onPushNotion,
   notionEnabled,
   showRewrite,
+  onOpenSources,
 }: {
   msg: Message;
+  onOpenSources?: (captureId: string) => void;
   onCite: (n: number) => void;
   onPin: () => void;
   onSaveNote: () => void;
@@ -630,6 +641,23 @@ function MessageBubble({
         {showRewrite && msg.standaloneQuestion && (
           <div style={{ marginTop: 8, fontSize: 11, lineHeight: 1.5, color: "var(--fg-subtle)" }}>
             {t("chat_understood_as", { question: msg.standaloneQuestion })}
+          </div>
+        )}
+        {msg.external && msg.external.status === "ok" && msg.external.capture_id && (
+          <div className="chat-external-bar">
+            <Icon name="globe" size={12} />
+            <span>{t("chat_external_bar", {
+              used: msg.external.used ?? 0, cited: msg.external.cited ?? 0,
+              retrieved: msg.external.retrieved ?? 0,
+            })}</span>
+            <span style={{ flex: 1 }} />
+            <button type="button" className="src-link"
+              onClick={() => onOpenSources?.(msg.external!.capture_id!)}>{t("chat_external_view")}</button>
+          </div>
+        )}
+        {msg.external && msg.external.status !== "ok" && (
+          <div className="chat-external-bar" style={{ color: "var(--warn)" }}>
+            {t("chat_external_unavailable", { reason: msg.external.error || msg.external.status })}
           </div>
         )}
         {msg.sources && msg.sources.length > 0 && (
@@ -891,6 +919,7 @@ function chatMessagesToMessages(msgs: ChatMessage[]): Message[] {
     thinkingTrace: m.meta?.thinking_trace ?? undefined,
     standaloneQuestion: m.meta?.standalone_question || undefined,
     scope: m.meta?.scope ?? undefined,
+    external: m.meta?.external ?? undefined,
   }));
 }
 
@@ -938,6 +967,11 @@ export function ChatPanel({ width }: { width?: number }) {
   const [useContext, toggleUseContext] = useStoredToggle("ka-chat-use-context", true);
   const [showRewrite, toggleShowRewrite] = useStoredToggle("ka-chat-show-rewrite", true);
   const [modelThinking, toggleModelThinking] = useStoredToggle("ka-chat-model-thinking", true);
+  // 3.0.0 联网补充：只在打开时查外部文献；开关跟着对话走，新对话默认关（用户 11-20 选 C）。
+  // 尚无 conversation_id 时记为 "pending"，第一条回答到达后改记该对话。
+  const { setSourcePanel } = useConsole();
+  const [externalFor, setExternalFor] = useState<string | null>(null);
+  const externalOn = externalFor !== null && (externalFor === "pending" || externalFor === conversationId);
   const [answerLanguage, setAnswerLanguage] = useState<"auto" | "zh" | "en">("auto");
   const [showSettings, setShowSettings] = useState(false);
   const [graphBuildDialog, setGraphBuildDialog] = useState<GraphBuildDialogState | null>(null);
@@ -1074,6 +1108,11 @@ export function ChatPanel({ width }: { width?: number }) {
   function handleCite(msg: Message, n: number) {
     const src = msg.sources?.find((s) => s.n === n);
     if (!src) return;
+    if (src.origin === "external") {
+      // 外部文献没有库内原文可跳：打开这次联网补充的来源栏并选中它。
+      if (src.capture_id) setSourcePanel({ captureId: src.capture_id, focus: src.source_id });
+      return;
+    }
     const bbox = src.metadata?.figure_bbox;
     jumpToCitation({
       docId: src.doc_id,
@@ -1173,6 +1212,7 @@ export function ChatPanel({ width }: { width?: number }) {
     setLiveProgress(null);
     setLoading(false);
     setPendingScope(null);
+    setExternalFor(null);
     setMessages((prev) => prev.filter((m) => m.pinned));
     Promise.all([...cids].map((c) => clearChatHistory(c, true).catch(() => false))).then((r) => {
       if (interrupted || r.some(Boolean)) toast(t("chat_ask_cancelled"), "info");
@@ -1245,6 +1285,7 @@ export function ChatPanel({ width }: { width?: number }) {
         model_thinking: modelThinking,
         answer_language: answerLanguage,
         confirmed,
+        external: externalOn,
         signal: abort.signal,
       });
       if (abort.signal.aborted) return; // 清空聊天时答案恰好到达：已放弃，不再渲染
@@ -1262,8 +1303,10 @@ export function ChatPanel({ width }: { width?: number }) {
           answerNotice: result.answer_notice || undefined,
           standaloneQuestion: result.standalone_question || undefined,
           scope: result.scope ?? scope,
+          external: result.external ?? undefined,
         },
       ]);
+      if (externalFor === "pending") setExternalFor(result.conversation_id);
     } catch (err) {
       // 被清空聊天中断（本页中止，或后端已取消任务）：不是错误，不提示。
       if (abort.signal.aborted || (err instanceof ApiError && err.body?.status === "ask_cancelled")) {
@@ -1462,6 +1505,7 @@ export function ChatPanel({ width }: { width?: number }) {
               key={i}
               msg={msg}
               onCite={(n) => handleCite(msg, n)}
+              onOpenSources={(captureId) => setSourcePanel({ captureId })}
               onPin={() => handlePin(i)}
               onSaveNote={() => handleSaveNote(msg)}
               onPushNotion={() => handlePushNotion(msg, i)}
@@ -1845,6 +1889,17 @@ export function ChatPanel({ width }: { width?: number }) {
                   </div>
                 </Popover>
               </div>
+
+              <Tooltip label={externalOn ? t("chat_external_on_hint") : t("chat_external_off_hint")} side="top">
+                <button
+                  type="button"
+                  aria-pressed={externalOn}
+                  className={`chat-external-toggle ${externalOn ? "on" : ""}`}
+                  onClick={() => setExternalFor(externalOn ? null : (conversationId ?? "pending"))}
+                >
+                  <Icon name="globe" size={12} /> {t("chat_external_toggle")}
+                </button>
+              </Tooltip>
 
               <span style={{ flex: 1 }} />
 

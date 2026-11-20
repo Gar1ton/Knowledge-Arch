@@ -31,6 +31,14 @@
   各数据库最近是否成功与 OpenAlex 今日免费额度；OpenAlex 免费额度用完后当天自动跳过，不重试、不产生费用
   （`kacore/managers/external_status.py`、`kacore/capabilities.py`、`kacore/api_capabilities.py`、
   `web/frontend/components/flow/ExternalActions.tsx`、`model.ts`）。
+- **回答的「来源」栏与对话栏「联网补充」开关（P33 P3）。** 输入框旁的开关只对当前对话有效，新对话默认关；用了外部文献的
+  回答下方显示「来源 · 外部 N 篇」，点开占左侧文件区：列表（引用的 / 只查到的，带核验状态）、体系（按用户自己的集合树归类，
+  第一次打开时才调用 research 模型，结果存回账本）、图谱（边只来自参考文献列表）、出处详情（各数据库名次、排名变化、
+  引用段落与页码、字段来源）、导出 CSV / JSON（列兼容 ai-source-scraper 1.7.0）。`kacore/api_external.py`、
+  `kacore/domain/source_graph.py`、`kacore/pipelines/external_prompts.py`、`web/server.py`
+  （`/api/external/captures/{id}` 及 `placement`、`export`）、`web/frontend/components/panels/SourcesPanel.tsx`、
+  `ChatPanel.tsx`、`lib/externalApi.ts`、`ConsoleContext.tsx`、`app/(console)/layout.tsx`。
+  测试：`test_source_graph.py`、`test_ask_external.py`。
 
 ## [v2.2.0] — 2026-11-19
 

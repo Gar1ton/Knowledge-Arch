@@ -310,6 +310,26 @@ export interface AskSource {
   // 前端据它还原「点击引用 → 跳来源卡片」。
   harvard_in_text?: string;
   harvard_reference?: string;
+  // 3.0.0 联网补充：外部文献的来源条目带 origin="external"，doc_id 为 "ext:<source_id>"。
+  origin?: string;
+  trust?: "verified" | "single" | "conflict" | "retracted" | "unresolved";
+  source_id?: string;
+  capture_id?: string;
+  abstract_only?: boolean;
+}
+
+/** 一次联网补充的摘要（随回答返回、存进聊天记录 meta.external）。 */
+export interface ExternalSummary {
+  status: "ok" | "unavailable" | "error";
+  capture_id?: string;
+  queries?: string[];
+  gaps?: string[];
+  retrieved?: number;
+  used?: number;
+  cited?: number;
+  in_library?: number;
+  errors?: Record<string, string>;
+  error?: string;
 }
 
 export interface ThinkingChecklistItem {
@@ -349,6 +369,7 @@ export interface AskResult {
   // Harvard 参考文献表（已去重排序）。答案正文尾部已含同一份，此字段供非 Web 调用方使用。
   references?: string[];
   sources: AskSource[];
+  external?: ExternalSummary | null;
   requested_retrieval_mode:
     | "default"
     | "enhanced"
@@ -725,7 +746,12 @@ export interface ChatMessage {
   locked_at?: string | null;
   updated_at?: string | null;
   /** 回答时一并存下的思考过程、改写后的问题与所属范围（旧记录为空对象）。 */
-  meta?: { thinking_trace?: ThinkingTrace | null; standalone_question?: string; scope?: AnswerScope };
+  meta?: {
+    thinking_trace?: ThinkingTrace | null;
+    standalone_question?: string;
+    scope?: AnswerScope;
+    external?: ExternalSummary;
+  };
 }
 
 export async function getChatHistory(conversationId: string): Promise<ChatMessage[]> {
@@ -1024,6 +1050,8 @@ export async function ask(opts: {
   answer_language?: "auto" | "zh" | "en";
   /** 全文检索确认门：正文超阈值时后端返回 409，用户同意后带 true 重发同一请求。 */
   confirmed?: boolean;
+  /** 3.0.0 联网补充：对话栏开关打开时为 true。 */
+  external?: boolean;
   /** 清空聊天时中止这次请求（后端任务由 DELETE /api/chat/history 一并取消）。 */
   signal?: AbortSignal;
 }): Promise<AskResult> {
@@ -1043,6 +1071,7 @@ export async function ask(opts: {
       use_english_retrieval: opts.use_english_retrieval ?? false,
       use_context: opts.use_context ?? false,
       model_thinking: opts.model_thinking ?? true,
+      external: opts.external ?? false,
       answer_language: opts.answer_language ?? "auto",
       confirmed: opts.confirmed ?? false,
     }),

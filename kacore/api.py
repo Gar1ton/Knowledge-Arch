@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from kacore.api_answer import AnswerPromptMixin
 from kacore.api_capabilities import CapabilitiesApiMixin
+from kacore.api_external import ExternalApiMixin
 from kacore.api_legacy_import import LegacyImportApiMixin
 from kacore.api_runtime_models import RuntimeModelsApiMixin
 from kacore.api_settings import SettingsApiMixin
@@ -728,6 +729,7 @@ def _extract_raw_doc_text(doc: SourceDocument) -> str | None:
 class KnowledgeRepositoryApi(
     AnswerPromptMixin,
     CapabilitiesApiMixin,
+    ExternalApiMixin,
     LegacyImportApiMixin,
     RuntimeModelsApiMixin,
     SettingsApiMixin,

@@ -120,6 +120,72 @@ def parse_selection(raw: str, allowed_ids: set[str], max_sources: int) -> list[S
     return out[:max_sources]
 
 
+# ── 归类：按用户自己的集合树（「体系」视图；在来源栏首次打开时才调用）──────────
+
+PLACE_SYSTEM = (
+    "You file papers into a researcher's own collection tree. Use only the collection paths "
+    "given. Output one JSON object and nothing else."
+)
+
+
+@dataclass(frozen=True)
+class Placement:
+    """path 非空 = 放进这个集合；否则 new_direction 是模型起的「新方向」短名。"""
+
+    source_id: str
+    path: str
+    new_direction: str
+    reason: str
+
+
+def render_placement_prompt(outline: Sequence[tuple[str, Sequence[str]]],
+                            papers: Sequence[Candidate]) -> str:
+    """outline：(集合路径, 集合里已有论文的标题) 列表；papers：要归类的外部文献。"""
+    tree = "\n".join(
+        f"- {path}: " + "; ".join(t for t in titles) if titles else f"- {path}: (empty)"
+        for path, titles in outline
+    )
+    rows = "\n".join(
+        json.dumps({"id": c.source_id, "title": c.title, "year": c.year,
+                    "abstract": " ".join(c.abstract.split())[:_ABSTRACT_CHARS]},
+                   ensure_ascii=False)
+        for c in papers
+    )
+    return (
+        "The researcher's collections (path: titles of papers already in it):\n"
+        f"{tree}\n\nPapers to file (one JSON object per line):\n{rows}\n\n"
+        "For each paper choose the single collection path it fits best, judged by the topic of "
+        "the papers already there. If no collection fits, leave path empty and give a short name "
+        "(2-5 words, in the language of the collection names) for the new direction it opens. "
+        "Give one short sentence of reason.\n"
+        'Output: {"items": [{"id": "...", "path": "...", "new_direction": "", '
+        '"reason": "..."}]}'
+    )
+
+
+def parse_placements(raw: str, allowed_ids: set[str], paths: set[str]) -> list[Placement]:
+    data = extract_json_object(raw)
+    items = data.get("items")
+    if not isinstance(items, list):
+        raise JsonContractError("items must be a list")
+    out: list[Placement] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        sid = str(item.get("id") or "").strip()
+        path = str(item.get("path") or "").strip()
+        new = " ".join(str(item.get("new_direction") or "").split())
+        if sid not in allowed_ids:
+            continue
+        if path and path not in paths:                      # 写错的路径不收，不猜
+            path = ""
+        if not path and not new:
+            continue
+        out.append(Placement(sid, path, "" if path else new,
+                             " ".join(str(item.get("reason") or "").split())))
+    return out
+
+
 def _str_list(value: object, name: str) -> list[str]:
     if value is None:
         return []
@@ -129,7 +195,11 @@ def _str_list(value: object, name: str) -> list[str]:
 
 
 __all__ = [
+    "PLACE_SYSTEM",
     "PLAN_SYSTEM",
+    "Placement",
+    "parse_placements",
+    "render_placement_prompt",
     "SELECT_SYSTEM",
     "Candidate",
     "SearchPlan",

@@ -154,3 +154,47 @@ async def test_external_paper_already_in_library_is_not_used_as_external() -> No
 
     assert [s["n"] for s in result["sources"]] == [1]
     assert result["external"]["in_library"] == 1 and result["external"]["used"] == 0
+
+
+# ── 来源栏：详情、归类、导出 ──────────────────────────────────
+
+
+async def test_capture_detail_placement_and_export(tmp_path: Path) -> None:
+    from kacore.pipelines.external_prompts import Placement
+
+    store = InMemorySourceDocumentStore()
+    api = await _api(store, _SynthLLM())
+    manager = _external(store)
+    calls: list[int] = []
+
+    async def fake_place(papers, outline):
+        calls.append(len(papers))
+        assert outline and outline[0][0]                     # 集合树带路径
+        return [Placement(p.source_id, outline[0][0], "", "fits") for p in papers]
+
+    manager.place = fake_place  # type: ignore[method-assign]
+    api.attach_external_evidence(manager)
+    from kacore.domain.models import Collection
+
+    await store.upsert_collection(Collection(name="[26.3] Agentic", coll_key="Lagentic"))
+    await store.set_document_collections("d1", ["Lagentic"])
+    result = await api.ask(question="alpha", collection="c1", external=True)
+    cid = result["external"]["capture_id"]
+
+    detail = await api.get_external_capture(cid)
+    assert detail["capture"]["ordinal"] == 1 and detail["capture"]["question"] == "alpha"
+    [src] = detail["sources"]
+    assert src["source_id"] == "doi:10.1234/drift" and src["trust"] == "verified"
+    assert src["cited"][0]["passage"].startswith("Drift grows")
+    assert {h["engine"] for h in src["hits"]} == {"crossref"}
+    assert any(f["field"] == "title" for f in src["fields"])
+
+    placed = await api.place_external_capture(cid)
+    assert placed["sources"][0]["placement"]["reason"] == "fits"
+    await api.place_external_capture(cid)
+    assert calls == [1]                                      # 已归类的不再调用模型
+
+    out = await api.export_external_capture(cid, str(tmp_path))
+    csv_text = Path(out["files"][0]).read_text(encoding="utf-8")
+    assert csv_text.splitlines()[0].startswith('"rank","capture_id","capture_timestamp"')
+    assert '"cited"' in csv_text and "knowledge-arch" in csv_text

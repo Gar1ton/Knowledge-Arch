@@ -21,6 +21,7 @@ import { ProgressDock } from "@/components/progress/ProgressDock";
 import { TopBar } from "@/components/layout/TopBar";
 import { FilePanel } from "@/components/panels/FilePanel";
 import { DocumentsPanel } from "@/components/panels/DocumentsPanel";
+import { SourcesPanel } from "@/components/panels/SourcesPanel";
 import { ChatPanel } from "@/components/panels/ChatPanel";
 import { ReadingSidebar } from "@/components/panels/ReadingSidebar";
 
@@ -64,7 +65,7 @@ const MAX_FILE_W = 528;
 type DragTarget = "file" | "chat" | null;
 
 function ConsoleCanvas() {
-  const { noteDocId, selectedDocId, view, setView, openPrefs } = useConsole();
+  const { noteDocId, selectedDocId, view, setView, openPrefs, sourcePanel } = useConsole();
 
   // 菜单 / 托盘 Preferences…（桌面壳）与 ⌘, / Ctrl+,（窗口内）都打开偏好设置。
   // Windows / Linux 没有菜单栏，Ctrl+Q 在这里退出（macOS 的 ⌘Q 由系统菜单处理）。
@@ -156,6 +157,11 @@ function ConsoleCanvas() {
           overflow: "hidden",
         }}
       >
+        {sourcePanel ? (
+          // 3.0.0 来源栏：占据左栏 + 中栏，对话栏不动；关闭后回到原来的文件 / 文档视图。
+          <SourcesPanel key={sourcePanel.captureId} />
+        ) : (
+        <>
         {/* Left: 浏览时集合树；阅读（或只开笔记）时同集合论文 + 笔记 */}
         <div
           style={{
@@ -202,6 +208,8 @@ function ConsoleCanvas() {
 
         {/* Middle: Documents */}
         <DocumentsPanel />
+        </>
+        )}
 
         {/* Chat drag handle */}
         <div

@@ -1743,6 +1743,44 @@ async def handle_external_evidence(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def handle_external_capture(request: web.Request) -> web.Response:
+    """GET /api/external/captures/{capture_id} — 回答「来源」栏的详情。"""
+    try:
+        result = await _api(request).get_external_capture(request.match_info["capture_id"])
+    except ValueError as exc:
+        return web.json_response({"status": "error", "message": str(exc)}, status=404)
+    return web.json_response(result)
+
+
+async def handle_external_capture_placement(request: web.Request) -> web.Response:
+    """POST /api/external/captures/{capture_id}/placement — 按用户集合树归类。
+
+    在来源栏第一次打开「体系」时才调用；已归类的文献不再调用模型。
+    """
+    try:
+        result = await _api(request).place_external_capture(request.match_info["capture_id"])
+    except ValueError as exc:
+        return web.json_response({"status": "error", "message": str(exc)}, status=404)
+    return web.json_response(result)
+
+
+async def handle_external_capture_export(request: web.Request) -> web.Response:
+    """POST /api/external/captures/{capture_id}/export {folder} — 导出 CSV + JSON 到所选文件夹。"""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    folder = str((body or {}).get("folder") or "").strip()
+    if not folder:
+        return web.json_response({"error": "folder is required"}, status=400)
+    try:
+        result = await _api(request).export_external_capture(
+            request.match_info["capture_id"], folder)
+    except ValueError as exc:
+        return web.json_response({"status": "error", "message": str(exc)}, status=400)
+    return web.json_response(result)
+
+
 # ── 序列化 helper（domain → JSON-safe dict）─────────────────────
 
 
@@ -2006,6 +2044,11 @@ def build_app(
     app.router.add_post("/api/logs/events", handle_log_event)
     app.router.add_post("/api/ask/evidence", handle_ask_evidence)
     app.router.add_post("/api/external/evidence", handle_external_evidence)
+    app.router.add_get("/api/external/captures/{capture_id}", handle_external_capture)
+    app.router.add_post("/api/external/captures/{capture_id}/placement",
+                        handle_external_capture_placement)
+    app.router.add_post("/api/external/captures/{capture_id}/export",
+                        handle_external_capture_export)
     app.router.add_post("/api/ask", handle_ask)
     app.router.add_get("/api/console/scope-state", handle_console_scope_state_get)
     app.router.add_put("/api/console/scope-state", handle_console_scope_state_upsert)

@@ -735,7 +735,18 @@
     `Icons.tsx`（globe）、`ExternalActions.tsx`（数据库状态表与额度）、`QuickConfigPanel.tsx`、文案与样式。
     验证：新增 `test_external_status.py` 3 项、编排 1 项、能力 1 项；全量 pytest、ruff、mypy、前端 tsc / lint 通过；
     真后端 + next dev + Playwright 截图：节点、开关、key 输入、状态表与连线均正常（未向外部数据库发请求）。
-  - [ ] P3 来源栏：列表、体系、图谱、出处详情、导出；对话栏开关。
+  - [x] P3 来源栏与对话栏开关（用户 11-20：「刚刚讨论中的前端检查一下是否已经完成」）：后端 `kacore/api_external.py`
+    （`ExternalApiMixin`：一次联网补充的详情——每篇的核验、各数据库名次、同一对话里的排名历史与漂移、回答引用的段落与页码、
+    字段来源；按用户集合树归类，第一次打开「体系」时才调用 research 模型、结果存回账本；导出 `ka-sources_<capture>.csv/.json`，
+    前 15 列同 ai-source-scraper 1.7.0，后接 trust / pid / cited_passages / pages）；`kacore/domain/source_graph.py`
+    （图谱边只来自参考文献列表：引用、共同引用、引用库内文档）；`pipelines/external_prompts.py` 归类提示；路由
+    `GET /api/external/captures/{id}`、`POST …/placement`、`POST …/export`。前端：`components/panels/SourcesPanel.tsx`
+    （列表 / 体系 / 图谱三栏 + 出处详情 + 导出；占左侧文件区，关闭后恢复）、`ChatPanel.tsx`（输入框「联网补充」开关，
+    只对当前对话有效、新对话默认关；回答下方「来源 · 外部 N 篇」条；外部引用点开来源栏并定位）、`lib/externalApi.ts`、
+    `ConsoleContext.tsx`、`app/(console)/layout.tsx`、文案与样式。「入库…」按钮先置灰，P4 接上。
+    验证：新增 `test_source_graph.py` 1 项、`test_ask_external.py` 1 项（详情、归类、导出）；全量 pytest 1703 passed /
+    4 skipped；ruff；mypy；前端 lint / tsc / build。真后端 + next dev + Playwright：用写进临时库的示例数据（不发外部请求）
+    截图检查开关、来源条、列表、体系、图谱，无页面错误；图谱长作者名截断保留年份。
   - [ ] P4 入库：`PaperImporter`、入库框（本地 / Zotero 集合）、待补 PDF。
   - [ ] P5 Zotero 推送：Web API 写入、文件移交、推送账本、拉取认领。
   - [ ] P6 导出导入：`.kaarch`、口令加密、偏好设置「备份与迁移」、覆盖 / 合并。

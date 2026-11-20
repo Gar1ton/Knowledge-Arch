@@ -1769,3 +1769,51 @@
 .flow-external-status--warn { color: var(--warn); }
 .flow-external-status--error { color: var(--danger); word-break: break-word; }
 .flow-external-status--muted { color: var(--fg-subtle); }
+
+/* 3.0.0 回答的来源栏（components/panels/SourcesPanel.tsx） */
+.src-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.src-seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 6px; overflow: hidden; }
+.src-seg button { border: 0; background: var(--surface); padding: 3px 12px; font-size: 12px; color: var(--fg-muted); cursor: pointer; }
+.src-seg button.on { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
+.src-meta { color: var(--fg-subtle); font-size: 11.5px; }
+.src-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 340px); flex: 1; min-height: 0; }
+.src-main, .src-detail { min-width: 0; overflow: auto; }
+.src-detail { border-left: 1px solid var(--border); }
+.src-group { padding: 10px 12px 3px; font-size: 10.5px; font-weight: 700; letter-spacing: .05em; color: var(--fg-subtle); text-transform: uppercase; }
+.src-row { padding: 8px 12px; border-bottom: 1px solid var(--border); cursor: pointer; display: flex; flex-direction: column; gap: 3px; }
+.src-row:hover { background: var(--bg-subtle); }
+.src-row.on { background: var(--bg-inset); }
+.src-row-main { font-size: 12.5px; line-height: 1.45; }
+.src-row-sub { font-size: 11.5px; color: var(--fg-subtle); }
+.src-badges { display: inline-flex; gap: 4px; margin-right: 6px; vertical-align: 1px; }
+.src-drift { color: var(--warn); }
+.src-note { padding: 10px 12px; color: var(--fg-subtle); font-size: 12px; }
+.src-note--error { color: var(--danger); }
+.src-link { background: none; border: 0; padding: 0; color: var(--info); cursor: pointer; font-size: 12px; }
+.src-det { padding: 12px; display: flex; flex-direction: column; gap: 10px; font-size: 12.5px; }
+.src-det h3 { margin: 0 0 3px; font-size: 14px; line-height: 1.35; }
+.src-det p { margin: 3px 0 0; color: var(--fg-muted); line-height: 1.5; }
+.src-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.src-box { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.src-h { font-size: 10.5px; font-weight: 700; letter-spacing: .04em; color: var(--fg-subtle); }
+.src-quote { margin: 2px 0; padding: 2px 8px; border-left: 3px solid var(--border-strong); color: var(--fg-muted); line-height: 1.5; }
+.src-quote b { font-family: var(--font-mono); font-size: 11px; color: var(--fg); margin-right: 4px; }
+.src-kv { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.src-kv td { padding: 2px 4px; border-top: 1px solid var(--border); vertical-align: top; }
+.src-kv tr:first-child td { border-top: 0; }
+.src-tree { padding: 4px 12px 12px; }
+.src-tnode { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; }
+.src-tnode button { background: none; border: 0; padding: 0; color: var(--fg); cursor: pointer; text-align: left; font-size: 12.5px; }
+.src-tnode button:hover { text-decoration: underline; }
+.src-n { font-family: var(--font-mono); font-size: 11px; color: var(--fg-subtle); }
+.src-explain { margin-top: 12px; padding: 10px 12px; border: 1px dashed var(--border-strong); border-radius: 8px; color: var(--fg-muted); font-size: 12px; line-height: 1.55; }
+.src-graph { padding: 8px 12px; }
+.src-graph svg { width: 100%; height: auto; max-width: 100%; display: block; }
+.src-legend { font-size: 11.5px; color: var(--fg-muted); padding-bottom: 6px; }
+.src-gnode { cursor: pointer; }
+.src-gnode text { font-size: 11px; fill: var(--fg-muted); }
+.src-gnode text.on { fill: var(--fg); font-weight: 700; }
+.chat-external-bar { margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; font-size: 11.5px; color: var(--fg-muted); }
+.chat-external-toggle { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--fg-muted); font-size: 11.5px; cursor: pointer; }
+.chat-external-toggle.on { border-color: var(--info); color: var(--info); background: var(--info-soft); font-weight: 600; }
+@media (max-width: 1100px) { .src-grid { grid-template-columns: minmax(0, 1fr); } .src-detail { border-left: 0; border-top: 1px solid var(--border); } }
