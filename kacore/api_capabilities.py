@@ -65,6 +65,7 @@ class CapabilitiesApiMixin:
         await self._overlay_milvus_runtime_health(data)
         self._overlay_zotero_config_state(data)
         self._overlay_reranker_runtime_status(data)
+        self._overlay_external_runtime(data)
         return data
 
     def list_dependencies(self) -> list[dict[str, Any]]:
@@ -101,7 +102,32 @@ class CapabilitiesApiMixin:
         await self._overlay_milvus_runtime_health(data)
         self._overlay_zotero_config_state(data)
         self._overlay_reranker_runtime_status(data)
+        self._overlay_external_runtime(data)
         return data
+
+    def _overlay_external_runtime(self, data: dict[str, Any]) -> None:
+        """联网补充节点：叠加各数据库最近的成功 / 错误、OpenAlex 今日额度、两个 key 是否已填。
+
+        Semantic Scholar 开着却没填 key 时它不会被查（factory 跳过），节点标 degraded 提示去填。
+        """
+        from kacore.config import OPENALEX_KEY_SECRET, SEMANTIC_SCHOLAR_KEY_SECRET
+
+        manager = getattr(self, "_external_evidence", None)
+        secrets = getattr(self, "_secret_store", None)
+        for stage in data.get("pipeline", []):
+            if not isinstance(stage, dict) or stage.get("id") != "external":
+                continue
+            detail = stage.setdefault("detail", {})
+            detail["runtime"] = manager.status() if manager is not None else {}
+            keys = {"openalex": False, "semantic_scholar": False}
+            if secrets is not None:
+                keys = {"openalex": bool(secrets.has_secret(OPENALEX_KEY_SECRET)),
+                        "semantic_scholar": bool(secrets.has_secret(SEMANTIC_SCHOLAR_KEY_SECRET))}
+            detail["keys"] = keys
+            engines = detail.get("engines") or []
+            if "semantic_scholar" in engines and not keys["semantic_scholar"]:
+                stage["status"] = "degraded"
+            return
 
     def _overlay_reranker_runtime_status(self, data: dict[str, Any]) -> None:
         orchestrator = getattr(self, "_deep_thinking_orchestrator", None)

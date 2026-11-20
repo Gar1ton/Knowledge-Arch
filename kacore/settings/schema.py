@@ -453,35 +453,35 @@ SPECS: tuple[SettingSpec, ...] = (
         "prefs.appearance.ui_scale", "float", 1.0, "prefs.appearance", bounds=(0.8, 1.5),
         owner="frontend",
     ),
-    # ── 偏好设置：联网补充（3.0.0；回答引用外部文献，对话栏开关打开时才运行）────────
+    # ── 联网补充（3.0.0；数据流节点；回答引用外部文献，对话栏开关打开时才运行）──────
     *(
         SettingSpec(
-            f"prefs.external.{engine}", "bool", getattr(ExternalEvidenceConfig, engine),
-            "prefs.external", target=_t("external_evidence", engine),
+            f"flow.external.{engine}", "bool", getattr(ExternalEvidenceConfig, engine),
+            "flow.external", target=_t("external_evidence", engine),
         )
         for engine in ("crossref", "openalex", "openlibrary", "arxiv", "semantic_scholar")
     ),
     SettingSpec(
-        "prefs.external.depth", "enum", ExternalEvidenceConfig.depth, "prefs.external",
+        "flow.external.depth", "enum", ExternalEvidenceConfig.depth, "flow.external",
         options=(EXTERNAL_DEPTH_FULLTEXT, EXTERNAL_DEPTH_ABSTRACT),
         target=_t("external_evidence", "depth"),
     ),
     SettingSpec(
-        "prefs.external.max_sources", "int", ExternalEvidenceConfig.max_sources,
-        "prefs.external", tier="advanced", bounds=(1, 12),
+        "flow.external.max_sources", "int", ExternalEvidenceConfig.max_sources,
+        "flow.external", tier="advanced", bounds=(1, 12),
         target=_t("external_evidence", "max_sources"),
     ),
     SettingSpec(
-        "prefs.external.openalex_key", "secret", "", "prefs.external",
+        "flow.external.openalex_key", "secret", "", "flow.external",
         secret_ref=OPENALEX_KEY_SECRET, portable=False,
     ),
     SettingSpec(
-        "prefs.external.semantic_scholar_key", "secret", "", "prefs.external",
+        "flow.external.semantic_scholar_key", "secret", "", "flow.external",
         secret_ref=SEMANTIC_SCHOLAR_KEY_SECRET, portable=False,
     ),
     SettingSpec(
-        "prefs.external.contact_email", "str", ExternalEvidenceConfig.contact_email,
-        "prefs.external", tier="advanced", portable=False,
+        "flow.external.contact_email", "str", ExternalEvidenceConfig.contact_email,
+        "flow.external", tier="advanced", portable=False,
         target=_t("external_evidence", "contact_email"),
     ),
     # ── 偏好设置：存储 / 本地模型 / 诊断 ───────────────────────────────

@@ -70,10 +70,17 @@ class ScholarlyIndex(ABC):
         """该检索对应的请求地址（不含 key、邮箱），记进出处账本；不检索的索引返回空串。"""
         return ""
 
+    def attach_observer(self, observer: Observer | None) -> None:
+        """每次 HTTP 响应后回调 observer(engine, status, headers)（运行状态与 OpenAlex 额度用）。"""
+        http = getattr(self, "_http", None)
+        if isinstance(http, HttpClient):
+            http.observer = observer
+
 
 # ── HTTP ────────────────────────────────────────────────────
 
 Opener = Callable[..., Any]
+Observer = Callable[[str, int, dict[str, str]], None]
 
 
 class RateGate:
@@ -119,6 +126,14 @@ class HttpClient:
         self._gate = RateGate(min_interval)
         self._one_at_a_time = threading.Lock()   # 同一索引一次只发一个请求（Crossref 限并发）
         self._headers = {"User-Agent": USER_AGENT, **(headers or {})}
+        self.observer: Observer | None = None
+
+    def _notify(self, status: int, headers: Any) -> None:
+        if self.observer is not None:
+            try:
+                self.observer(self.engine, status, dict(headers or {}))
+            except Exception:  # noqa: BLE001 - 状态记录失败不影响请求
+                pass
 
     def get_bytes(self, url: str, params: dict[str, Any] | None = None) -> bytes:
         """GET；遇到 429 按 Retry-After（最多等 MAX_RETRY_WAIT 秒）重试一次。"""
@@ -131,9 +146,12 @@ class HttpClient:
                 try:
                     with self._opener(request, timeout=self._timeout) as resp:
                         data: bytes = resp.read()
+                        self._notify(int(getattr(resp, "status", 200) or 200),
+                                     getattr(resp, "headers", {}))
                         return data
                 except urllib.error.HTTPError as exc:
-                    if exc.code == 429 and attempt == 1:
+                    self._notify(exc.code, exc.headers)
+                    if exc.code == 429 and attempt == 1 and not _quota_spent(exc):
                         time.sleep(_retry_after(exc))
                         continue
                     raise ScholarlyIndexError(self.engine, f"HTTP {exc.code}",
@@ -158,6 +176,15 @@ class HttpClient:
 
 
 MAX_RETRY_WAIT = 5.0
+
+
+def _quota_spent(exc: urllib.error.HTTPError) -> bool:
+    """OpenAlex 的 429 若是当日额度用完（剩余为 0），重试没有意义。"""
+    remaining = (exc.headers or {}).get("X-RateLimit-Remaining-USD")
+    try:
+        return remaining is not None and float(remaining) <= 0
+    except ValueError:
+        return False
 
 
 def _retry_after(exc: urllib.error.HTTPError) -> float:
@@ -185,6 +212,7 @@ __all__ = [
     "ENGINE_SEMANTIC_SCHOLAR",
     "USER_AGENT",
     "HttpClient",
+    "Observer",
     "Opener",
     "RateGate",
     "ScholarlyIndex",

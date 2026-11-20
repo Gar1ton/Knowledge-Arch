@@ -185,3 +185,15 @@ async def test_source_entry_and_chunk_match_citation_contract() -> None:
     assert entry["n"] == 7 and entry["origin"] == "external"
     assert entry["creators"] == ["Gao, Li"] and entry["doi"] == "10.1234/drift"
     assert entry["doc_id"] == passage_chunk(passage, 0).doc_id == "ext:doi:10.1234/drift"
+
+
+async def test_exhausted_engine_is_skipped_for_the_day() -> None:
+    from kacore.managers.external_status import EngineMonitor, EngineState
+
+    manager, indexes = _manager(_FakeLLM(None, None))
+    monitor = EngineMonitor(clock=lambda: 10.0)
+    monitor._states["crossref"] = EngineState(exhausted_until=70.0)   # 当天额度已用完
+    manager._monitor = monitor
+    bundle = await manager.collect("persona drift long dialogue", [])
+    assert [c for c in indexes.search[0].calls if c[0] == "search"] == []   # crossref 没被查
+    assert bundle.engines == ["arxiv"]

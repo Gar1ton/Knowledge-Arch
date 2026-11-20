@@ -52,6 +52,7 @@ from kacore.domain.web_sources import (
     trust_level,
 )
 from kacore.managers.external_fulltext import FulltextCache, page_passages
+from kacore.managers.external_status import EngineMonitor
 from kacore.pipelines.deep_thinking_prompts import JsonContractError
 from kacore.pipelines.external_prompts import (
     PLAN_SYSTEM,
@@ -140,7 +141,9 @@ class ExternalEvidence:
         llm_adapter: Any | None,
         reranker: Reranker | None,
         fulltext: FulltextCache,
+        monitor: EngineMonitor | None = None,
     ) -> None:
+        self._monitor = monitor or EngineMonitor()
         self._config = config_provider
         self._indexes = index_factory
         self._store = store
@@ -160,9 +163,10 @@ class ExternalEvidence:
         progress: Callable[[str], None] | None = None,
     ) -> ExternalBundle:
         cfg = self._config()
-        indexes = self._indexes(cfg)
+        indexes = self._available(self._indexes(cfg))
         if not indexes.search:
-            raise ExternalEvidenceUnavailable("no scholarly index is enabled")
+            raise ExternalEvidenceUnavailable(
+                "no scholarly index is available (all disabled or out of today's free quota)")
         step = progress or (lambda _stage: None)
         bundle = ExternalBundle(capture_id=f"c_{uuid.uuid4().hex[:12]}", question=question,
                                 started_at=_now(), queries=[],
@@ -197,6 +201,19 @@ class ExternalEvidence:
         bundle.passages = await self._read(bundle, question, cfg)
         return bundle
 
+    def status(self) -> dict[str, dict[str, object]]:
+        """各数据库最近的成功 / 错误与 OpenAlex 额度（数据流节点显示用）。"""
+        return self._monitor.snapshot()
+
+    def _available(self, indexes: IndexSet) -> IndexSet:
+        """接上状态记录，并跳过额度已用完的数据库（OpenAlex 用完当天跳过，用户 11-20 决定）。"""
+        for index in [*indexes.search, *indexes.lookup.values()]:
+            index.attach_observer(self._monitor.observe)
+        usable = self._monitor.available
+        return IndexSet(search=[i for i in indexes.search if usable(i.name)],
+                        lookup={k: v for k, v in indexes.lookup.items() if usable(k)},
+                        resolver=indexes.resolver)
+
     async def _plan(self, question: str, local_excerpts: Sequence[tuple[str, str]],
                     cfg: ExternalEvidenceConfig) -> SearchPlan | None:
         if self._llm is None:
@@ -218,6 +235,8 @@ class ExternalEvidence:
             except Exception as exc:  # noqa: BLE001 - 单个索引失败不影响其它索引
                 logger.warning("External search failed on %s for %r: %s", index.name, query, exc)
                 bundle.errors[index.name] = str(exc)
+                if getattr(exc, "status", None) is None:
+                    self._monitor.error(index.name, str(exc))
                 return []
 
         pairs = [(i, q) for q in bundle.queries for i in indexes.search]

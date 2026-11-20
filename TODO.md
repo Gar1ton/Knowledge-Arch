@@ -727,6 +727,14 @@
     访问权限（用户问能否配置）：按来源开关 + key 的机制已有；用学校账号自动访问付费库不做（机构统一登录 + 多重验证、出版社
     条款禁止程序批量下载）；可选折中「学校代理前缀 → 通过学校打开」放 P4，待用户确认。
     验证：离线测试（用户 11-20 关心真实请求的外露与费用，本步未发真实请求）；全量 pytest 通过。
+  - [x] P2c 数据流「联网补充」节点（用户 11-20：「节点加」；OpenAlex「不默认关，走免费，用完拉倒」）：设置从
+    `prefs.external.*` 改到节点分组 `flow.external.*`（目标键不变）；`capabilities.detect_pipeline` 新增 `external` 环节，
+    `api_capabilities._overlay_external_runtime` 叠加各数据库最近成功 / 错误、OpenAlex 今日免费额度、两个 key 是否已填；
+    `kacore/managers/external_status.py` 读 OpenAlex 响应头记额度，额度用完到重置时间前自动跳过（429 且额度为 0 时不重试），
+    其余数据库照常；适配器 `attach_observer`。前端：`components/flow/model.ts`（节点、网格 col5 row4、虚线连问答）、
+    `Icons.tsx`（globe）、`ExternalActions.tsx`（数据库状态表与额度）、`QuickConfigPanel.tsx`、文案与样式。
+    验证：新增 `test_external_status.py` 3 项、编排 1 项、能力 1 项；全量 pytest、ruff、mypy、前端 tsc / lint 通过；
+    真后端 + next dev + Playwright 截图：节点、开关、key 输入、状态表与连线均正常（未向外部数据库发请求）。
   - [ ] P3 来源栏：列表、体系、图谱、出处详情、导出；对话栏开关。
   - [ ] P4 入库：`PaperImporter`、入库框（本地 / Zotero 集合）、待补 PDF。
   - [ ] P5 Zotero 推送：Web API 写入、文件移交、推送账本、拉取认领。

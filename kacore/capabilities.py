@@ -310,6 +310,9 @@ def _graph_llm_label(graph_model: str, chat_model: str) -> str:
     return chat_model or "no model assigned"
 
 
+EXTERNAL_ENGINES = ("crossref", "openalex", "openlibrary", "arxiv", "semantic_scholar")
+
+
 def detect_pipeline(config: Config) -> list[dict[str, Any]]:
     """根据 typed config（含运行时探针维度/诊断）产出数据流各环节的结构化快照。
 
@@ -585,9 +588,27 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
         "detail": {"credentials_present": r2_credentials, "bucket": r2_cfg.bucket},
     }
 
+    # ⑪ 联网补充（3.0.0）：回答时引用外部文献；只在对话栏打开开关时运行，平时不发任何请求。
+    #     这里只读配置；各数据库的运行状态与 OpenAlex 额度由 api 层叠加
+    #     （_overlay_external_runtime）。
+    ext_cfg = config.get_external_evidence_config()
+    ext_engines = [name for name in EXTERNAL_ENGINES if getattr(ext_cfg, name)]
+    external = {
+        "id": "external",
+        "current": "on" if ext_engines else "off",
+        "candidates": ["on", "off"],
+        "status": STATUS_READY if ext_engines else STATUS_OFF,
+        "switchable": False,
+        "consequence": CONSEQUENCE_NONE,
+        "required_deps": [],
+        "configured": bool(ext_engines),
+        "detail": {"engines": ext_engines, "depth": ext_cfg.depth,
+                   "max_sources": ext_cfg.max_sources},
+    }
+
     return [
         zotero, ingest, embedding, vector_store, retrieval, graph, ask,
-        models_stage, providers_stage, notion, r2,
+        models_stage, providers_stage, notion, r2, external,
     ]
 
 

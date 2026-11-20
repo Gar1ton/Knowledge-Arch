@@ -78,8 +78,15 @@ def test_pipeline_has_ordered_stages_with_zotero_first(monkeypatch: pytest.Monke
     ids = [s["id"] for s in detect_pipeline(_cfg(dim=384))]
     assert ids == [
         "zotero", "ingest", "embedding", "vector_store", "retrieval", "graph", "ask",
-        "models", "providers", "notion", "r2",
+        "models", "providers", "notion", "r2", "external",
     ]
+
+
+def test_external_stage_lists_enabled_engines(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_modules(monkeypatch, {"pymupdf4llm"})
+    ext = _stage(detect_pipeline(_cfg(dim=384)), "external")
+    assert ext["status"] == STATUS_READY
+    assert ext["detail"]["engines"] == ["crossref", "openalex", "openlibrary", "arxiv"]
 
 
 def test_zotero_stage_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:

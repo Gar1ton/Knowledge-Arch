@@ -27,6 +27,10 @@
   测试：`test_external_evidence.py`、`test_ask_external.py`，以及客户端 / 适配器 / 设置的相关断言。
 - **外部文献支持只有 ISBN 的书（人文专著）。** ISBN 成为可核验编号；新增 Open Library 适配器
   （`kacore/adapters/scholarly/openlibrary.py`），Crossref 读取并可按 ISBN 查；设置 `prefs.external.openlibrary`。
+- **数据流新增「联网补充」节点。** 各数据库开关、key、读到多深都在节点里配置（设置键改为 `flow.external.*`），节点显示
+  各数据库最近是否成功与 OpenAlex 今日免费额度；OpenAlex 免费额度用完后当天自动跳过，不重试、不产生费用
+  （`kacore/managers/external_status.py`、`kacore/capabilities.py`、`kacore/api_capabilities.py`、
+  `web/frontend/components/flow/ExternalActions.tsx`、`model.ts`）。
 
 ## [v2.2.0] — 2026-11-19
 

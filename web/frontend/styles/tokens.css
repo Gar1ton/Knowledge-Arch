@@ -1760,3 +1760,12 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* 联网补充节点：各数据库状态表 */
+.flow-external-status { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+.flow-external-status td { padding: 3px 4px; border-top: 1px solid var(--border); vertical-align: top; }
+.flow-external-status td:first-child { color: var(--fg-muted); width: 42%; white-space: nowrap; }
+.flow-external-status--ok { color: var(--ok); }
+.flow-external-status--warn { color: var(--warn); }
+.flow-external-status--error { color: var(--danger); word-break: break-word; }
+.flow-external-status--muted { color: var(--fg-subtle); }

@@ -9,6 +9,7 @@ import { NodePanel } from "./NodePanel";
 import { ProvidersPanel } from "./ProvidersPanel";
 import { NotionActions, R2Actions } from "./SyncActions";
 import { VisionActions } from "./VisionActions";
+import { ExternalActions } from "./ExternalActions";
 import { ZoteroQuickConfig } from "./ZoteroQuickConfig";
 
 export type FlowConfigSnapshot = EffectiveConfig;
@@ -377,6 +378,7 @@ export const QuickConfigPanel = forwardRef<QuickConfigHandle, QuickConfigPanelPr
   const extra =
     stage.id === "notion" ? <NotionActions stage={stage} t={t} onNotify={onNotify} onChanged={() => void onRefresh?.()} />
     : stage.id === "r2" ? <R2Actions stage={stage} t={t} onNotify={onNotify} />
+    : stage.id === "external" ? <ExternalActions stage={stage} t={t} />
     : stage.id === "ingest" ? (
       // 开关保存后重新挂载，重新拉一次识图状态。
       <VisionActions
