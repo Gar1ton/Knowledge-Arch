@@ -201,3 +201,40 @@ def test_http_client_retries_once_after_429(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert HttpClient("crossref", opener=open_).get_json("https://x") == {"ok": True}
     assert len(calls) == 2
+
+
+def test_openlibrary_search_and_isbn_lookup() -> None:
+    from kacore.adapters.scholarly.openlibrary import OpenLibraryIndex
+
+    seen: list[str] = []
+    routes = {
+        "https://openlibrary.org/search.json": {"docs": [{
+            "key": "/works/OL1W", "title": "The Question Concerning Technology in China",
+            "subtitle": "An Essay in Cosmotechnics", "author_name": ["Yuk Hui"],
+            "first_publish_year": 2016, "isbn": ["0-306-40615-2"], "publisher": ["Urbanomic"]}]},
+        "https://openlibrary.org/api/books": {"ISBN:9780306406157": {
+            "title": "T", "authors": [{"name": "Yuk Hui"}], "publish_date": "December 2016",
+            "publishers": [{"name": "Urbanomic"}],
+            "identifiers": {"isbn_10": ["0306406152"]}}},
+    }
+    index = OpenLibraryIndex(opener=_opener(routes, seen))
+    index._http._gate._min = 0
+    [hit] = index.search("cosmotechnics", 5)
+    assert hit.fields["title"] == ("The Question Concerning Technology in China: "
+                                   "An Essay in Cosmotechnics")
+    assert hit.fields["creator_names"] == ["Yuk Hui"] and "creators" not in hit.fields
+    assert hit.pids()[0].key == "isbn:9780306406157"
+    found = index.lookup(Pid("isbn", "9780306406157"))
+    assert found is not None and found.fields["year"] == "2016"
+    assert index.lookup(Pid("doi", "10.1234/x")) is None
+
+
+def test_crossref_maps_isbns_and_looks_up_by_isbn() -> None:
+    seen: list[str] = []
+    item = {"DOI": "10.1234/book", "title": ["B"], "ISBN": ["978-3-16-148410-0"],
+            "type": "book", "author": [{"family": "Hui", "given": "Yuk"}]}
+    index = CrossrefIndex(opener=_opener(
+        {"https://api.crossref.org/works?": {"message": {"items": [item]}}}, seen))
+    hit = index.lookup(Pid("isbn", "9783161484100"))
+    assert hit is not None and hit.isbns == ["978-3-16-148410-0"]
+    assert "filter=isbn%3A9783161484100" in seen[0]

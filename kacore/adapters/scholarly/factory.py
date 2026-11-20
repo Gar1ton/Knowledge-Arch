@@ -12,6 +12,7 @@ from kacore.adapters.scholarly.arxiv import ArxivIndex
 from kacore.adapters.scholarly.base import ScholarlyIndex
 from kacore.adapters.scholarly.crossref import CrossrefIndex
 from kacore.adapters.scholarly.openalex import OpenAlexIndex
+from kacore.adapters.scholarly.openlibrary import OpenLibraryIndex
 from kacore.adapters.scholarly.registries import DataCiteIndex, DoiResolver
 from kacore.adapters.scholarly.semantic_scholar import SemanticScholarIndex
 from kacore.config import OPENALEX_KEY_SECRET, SEMANTIC_SCHOLAR_KEY_SECRET
@@ -31,6 +32,8 @@ def build_index_set(cfg: ExternalEvidenceConfig, read_secret: Callable[[str], st
         search.append(OpenAlexIndex(api_key=_safe(read_secret, OPENALEX_KEY_SECRET)))
     if cfg.arxiv:
         search.append(ArxivIndex())
+    if cfg.openlibrary:
+        search.append(OpenLibraryIndex())
     s2_key = _safe(read_secret, SEMANTIC_SCHOLAR_KEY_SECRET)
     if cfg.semantic_scholar and s2_key:
         search.append(SemanticScholarIndex(api_key=s2_key))

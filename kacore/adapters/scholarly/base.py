@@ -41,6 +41,7 @@ ENGINE_ARXIV = "arxiv"
 ENGINE_OPENALEX = "openalex"
 ENGINE_SEMANTIC_SCHOLAR = "semantic_scholar"
 ENGINE_DATACITE = "datacite"
+ENGINE_OPENLIBRARY = "openlibrary"
 
 
 class ScholarlyIndexError(RuntimeError):
@@ -180,6 +181,7 @@ __all__ = [
     "ENGINE_CROSSREF",
     "ENGINE_DATACITE",
     "ENGINE_OPENALEX",
+    "ENGINE_OPENLIBRARY",
     "ENGINE_SEMANTIC_SCHOLAR",
     "USER_AGENT",
     "HttpClient",

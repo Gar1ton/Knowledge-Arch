@@ -148,3 +148,33 @@ def test_rank_drift_compares_last_two_appearances() -> None:
     assert rank_drift({"c1": 5, "c3": 9}, order) == (5, 9)
     assert rank_drift({"c2": 3, "c3": 3}, order) is None
     assert rank_drift({"c3": 1}, order) is None
+
+
+# ── ISBN（人文专著）────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("0-306-40615-2", "9780306406157"),      # ISBN-10 转 13
+        ("978-3-16-148410-0", "9783161484100"),
+        ("080442957X", "9780804429573"),         # 校验位 X
+        ("0-306-40615-3", ""),                   # 校验位不对
+        ("12345", ""),
+    ],
+)
+def test_normalize_isbn(raw: str, expected: str) -> None:
+    from kacore.domain.web_sources import normalize_isbn
+
+    assert normalize_isbn(raw) == expected
+
+
+def test_books_merge_by_any_shared_isbn_and_are_verifiable() -> None:
+    [book] = merge_hits([
+        IndexHit("openlibrary", "q", 1, isbns=["0-306-40615-2", "978-3-16-148410-0"],
+                 fields={"title": "A Book"}),
+        IndexHit("crossref", "q", 3, isbns=["9783161484100"], fields={"year": "2016"}),
+    ])
+    assert book.pid.key == "isbn:9780306406157"
+    assert book.engines == ["openlibrary", "crossref"]
+    assert trust_level(book) is Trust.VERIFIED

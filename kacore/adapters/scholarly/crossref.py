@@ -17,12 +17,12 @@ from kacore.adapters.scholarly.base import (
     ScholarlyIndex,
     year_of,
 )
-from kacore.domain.web_sources import PID_DOI, IndexHit, Pid
+from kacore.domain.web_sources import PID_DOI, PID_ISBN, IndexHit, Pid
 
 API = "https://api.crossref.org/works"
 SELECT = ",".join([
     "DOI", "title", "author", "issued", "type", "container-title", "abstract", "reference",
-    "is-referenced-by-count", "updated-by", "link", "URL",
+    "is-referenced-by-count", "updated-by", "link", "URL", "ISBN",
 ])
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -47,6 +47,11 @@ class CrossrefIndex(ScholarlyIndex):
         return [to_hit(item, query=query, rank=i) for i, item in enumerate(items, start=1)]
 
     def lookup(self, pid: Pid) -> IndexHit | None:
+        if pid.kind == PID_ISBN:
+            payload = self._http.get_json(API, self._params(
+                {"filter": f"isbn:{pid.value}", "rows": 1, "select": SELECT}))
+            items = (payload.get("message") or {}).get("items") or []
+            return to_hit(items[0], query="", rank=0) if items else None
         if pid.kind != PID_DOI:
             return None
         url = f"{API}/{urllib.parse.quote(pid.value, safe='/')}"
@@ -84,6 +89,7 @@ def to_hit(item: dict[str, Any], *, query: str, rank: int) -> IndexHit:
                     for u in item.get("updated-by") or [])
     return IndexHit(
         engine=ENGINE_CROSSREF, query=query, rank=rank, doi=item.get("DOI") or "",
+        isbns=[str(i) for i in item.get("ISBN") or []],
         fields=fields, reference_ids=refs, retracted=retracted,
     )
 

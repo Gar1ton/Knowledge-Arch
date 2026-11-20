@@ -459,7 +459,7 @@ SPECS: tuple[SettingSpec, ...] = (
             f"prefs.external.{engine}", "bool", getattr(ExternalEvidenceConfig, engine),
             "prefs.external", target=_t("external_evidence", engine),
         )
-        for engine in ("crossref", "arxiv", "openalex", "semantic_scholar")
+        for engine in ("crossref", "openalex", "openlibrary", "arxiv", "semantic_scholar")
     ),
     SettingSpec(
         "prefs.external.depth", "enum", ExternalEvidenceConfig.depth, "prefs.external",

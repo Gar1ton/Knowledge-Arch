@@ -25,6 +25,8 @@
   `web/agent_routes.py`。skill：`external-evidence --user-approved`，SKILL.md 联网边界改为先问用户再查。设置分组
   `prefs.external`（`kacore/settings/schema.py`、`kacore/config.py` 的 `ExternalEvidenceConfig`、`i18nDesktop.ts` 标签）。
   测试：`test_external_evidence.py`、`test_ask_external.py`，以及客户端 / 适配器 / 设置的相关断言。
+- **外部文献支持只有 ISBN 的书（人文专著）。** ISBN 成为可核验编号；新增 Open Library 适配器
+  （`kacore/adapters/scholarly/openlibrary.py`），Crossref 读取并可按 ISBN 查；设置 `prefs.external.openlibrary`。
 
 ## [v2.2.0] — 2026-11-19
 

@@ -720,6 +720,13 @@
     验证（11-20）：新增测试 `test_external_evidence.py` 8 项、`test_ask_external.py` 6 项、客户端与适配器各 1 项；全量
     pytest 1688 passed / 4 skipped；ruff；mypy。真实接口冒烟（两个检索词、无 key）：38 篇、已核验 12 / 单源 26，Crossref
     并发时 429（已改为串行 + 重试）；同一作品的会议版与预印本各占一条（交给挑选模型去重）。对话栏开关在 P3。
+  - [x] P2b 人文专著（用户 11-20：arXiv 对人文帮助有限，「openlib 可以」）：ISBN 列为可核验的持久标识
+    （`normalize_isbn` 校验位、ISBN-10 转 13、一书多 ISBN 作别名）；`adapters/scholarly/openlibrary.py`（检索 + 按 ISBN 查）；
+    Crossref 读 `ISBN` 并支持按 ISBN 查；ISBN 核验链 Open Library ↔ Crossref；设置 `prefs.external.openlibrary`（默认开）。
+    限制：Open Library 不给结构化姓名（整名只作显示）、通常没有摘要，书多半只进来源栏供核验与入库，不作回答片段。
+    访问权限（用户问能否配置）：按来源开关 + key 的机制已有；用学校账号自动访问付费库不做（机构统一登录 + 多重验证、出版社
+    条款禁止程序批量下载）；可选折中「学校代理前缀 → 通过学校打开」放 P4，待用户确认。
+    验证：离线测试（用户 11-20 关心真实请求的外露与费用，本步未发真实请求）；全量 pytest 通过。
   - [ ] P3 来源栏：列表、体系、图谱、出处详情、导出；对话栏开关。
   - [ ] P4 入库：`PaperImporter`、入库框（本地 / Zotero 集合）、待补 PDF。
   - [ ] P5 Zotero 推送：Web API 写入、文件移交、推送账本、拉取认领。

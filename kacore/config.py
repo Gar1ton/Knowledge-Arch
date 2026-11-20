@@ -120,6 +120,7 @@ class ExternalEvidenceConfig:
 
     crossref: bool = True
     arxiv: bool = True
+    openlibrary: bool = True
     openalex: bool = True
     semantic_scholar: bool = False
     depth: str = EXTERNAL_DEPTH_FULLTEXT
@@ -688,6 +689,7 @@ class Config:
         return ExternalEvidenceConfig(
             crossref=bool(s.get("crossref", d.crossref)),
             arxiv=bool(s.get("arxiv", d.arxiv)),
+            openlibrary=bool(s.get("openlibrary", d.openlibrary)),
             openalex=bool(s.get("openalex", d.openalex)),
             semantic_scholar=bool(s.get("semantic_scholar", d.semantic_scholar)),
             depth=depth if depth in {EXTERNAL_DEPTH_FULLTEXT, EXTERNAL_DEPTH_ABSTRACT} else d.depth,

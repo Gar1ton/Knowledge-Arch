@@ -92,6 +92,7 @@ CONFIG_POLICIES: dict[str, dict[str, str]] = {
         "depth": "none",
         "max_sources": "none",
         "openalex": "none",
+        "openlibrary": "none",
         "semantic_scholar": "none",
     },
     "graph": {

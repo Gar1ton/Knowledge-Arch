@@ -27,6 +27,7 @@ from kacore.adapters.scholarly.base import (
     ENGINE_CROSSREF,
     ENGINE_DATACITE,
     ENGINE_OPENALEX,
+    ENGINE_OPENLIBRARY,
     ENGINE_SEMANTIC_SCHOLAR,
     ScholarlyIndex,
 )
@@ -42,6 +43,7 @@ from kacore.domain.web_sources import (
     CITABLE,
     PID_ARXIV,
     PID_DOI,
+    PID_ISBN,
     PID_PMID,
     IndexHit,
     SourceRecord,
@@ -410,11 +412,12 @@ def _confirmed(record: SourceRecord) -> bool:
 
 def _lookup_chain(record: SourceRecord, indexes: IndexSet) -> list[ScholarlyIndex]:
     """按编号种类决定去哪查：DOI → Crossref / OpenAlex / DataCite；arXiv → DataCite / arXiv；
-    PMID → OpenAlex。已经给出过它的索引不再查（查到自己不算第二个来源）。"""
+    PMID → OpenAlex；ISBN → Open Library / Crossref。给出过它的索引不再查（自己不算第二个来源）。"""
     order = {
         PID_DOI: (ENGINE_CROSSREF, ENGINE_OPENALEX, ENGINE_DATACITE, ENGINE_SEMANTIC_SCHOLAR),
         PID_ARXIV: (ENGINE_DATACITE, ENGINE_ARXIV, ENGINE_SEMANTIC_SCHOLAR),
         PID_PMID: (ENGINE_OPENALEX, ENGINE_SEMANTIC_SCHOLAR),
+        PID_ISBN: (ENGINE_OPENLIBRARY, ENGINE_CROSSREF),
     }.get(record.pid.kind, ())
     engines = set(record.engines)
     return [indexes.lookup[name] for name in order

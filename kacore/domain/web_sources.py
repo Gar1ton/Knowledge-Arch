@@ -10,7 +10,8 @@
 不判断文本含义。
 
 去重键的优先级参照 ai-source-scraper 1.7.0 的做法（按净化后的 URL 去重），但把学术标识排在 URL 前：
-DOI > arXiv 号 > PMID > OpenAlex 作品号 > 净化后的 URL。
+DOI > arXiv 号 > PMID > ISBN > OpenAlex 作品号 > 净化后的 URL。ISBN 让只有 ISBN、没有 DOI 的书
+（人文领域的专著常见）也能核验与引用。
 """
 from __future__ import annotations
 
@@ -25,10 +26,12 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 PID_DOI = "doi"
 PID_ARXIV = "arxiv"
 PID_PMID = "pmid"
+PID_ISBN = "isbn"
 PID_OPENALEX = "openalex"
 PID_URL = "url"
 # 可核验的持久标识：URL 与 OpenAlex 作品号不算（前者会变，后者只是单一索引的内部编号）。
-PERSISTENT_KINDS = frozenset({PID_DOI, PID_ARXIV, PID_PMID})
+PERSISTENT_KINDS = frozenset({PID_DOI, PID_ARXIV, PID_PMID, PID_ISBN})
+PID_ORDER = (PID_DOI, PID_ARXIV, PID_PMID, PID_ISBN, PID_OPENALEX, PID_URL)
 
 _DOI_PREFIXES = (
     "https://doi.org/", "http://doi.org/", "https://dx.doi.org/", "http://dx.doi.org/", "doi:",
@@ -69,6 +72,24 @@ def normalize_arxiv(raw: str) -> str:
     text = text.strip()
     match = _ARXIV_NEW_RE.match(text) or _ARXIV_OLD_RE.match(text)
     return match.group(1) if match else ""
+
+
+def normalize_isbn(raw: str) -> str:
+    """ISBN 去掉连字符与空格并校验校验位；ISBN-10 统一转成 ISBN-13。不合格返回空串。"""
+    text = "".join(ch for ch in (raw or "").upper() if ch.isdigit() or ch == "X")
+    if len(text) == 10 and text[:9].isdigit():
+        total = sum((10 - i) * int(ch) for i, ch in enumerate(text[:9]))
+        check = 10 if text[9] == "X" else int(text[9]) if text[9].isdigit() else -1
+        if (total + check) % 11 != 0:
+            return ""
+        text = "978" + text[:9]
+        return text + str((10 - sum((3 if i % 2 else 1) * int(c)
+                                     for i, c in enumerate(text)) % 10) % 10)
+    if len(text) == 13 and text.isdigit():
+        digits = [int(c) for c in text]
+        if sum((3 if i % 2 else 1) * d for i, d in enumerate(digits)) % 10 == 0:
+            return text
+    return ""
 
 
 def clean_url(raw: str) -> str:
@@ -120,6 +141,7 @@ class IndexHit:
     pmid: str = ""
     openalex: str = ""
     url: str = ""
+    isbns: list[str] = field(default_factory=list)
     fields: dict[str, object] = field(default_factory=dict)
     reference_ids: list[str] = field(default_factory=list)
     retracted: bool = False
@@ -133,6 +155,9 @@ class IndexHit:
             out.append(Pid(PID_ARXIV, arxiv))
         if self.pmid.strip().isdigit():
             out.append(Pid(PID_PMID, self.pmid.strip()))
+        for raw in self.isbns:                       # 一本书常有多个 ISBN（版次 / 装帧），都作别名
+            if (isbn := normalize_isbn(raw)) and all(p.value != isbn for p in out):
+                out.append(Pid(PID_ISBN, isbn))
         openalex = self.openalex.strip().rsplit("/", 1)[-1]
         if _OPENALEX_RE.match(openalex):
             out.append(Pid(PID_OPENALEX, openalex))
@@ -142,7 +167,7 @@ class IndexHit:
 
 
 def canonical_id(hit: IndexHit) -> str:
-    """去重键：DOI > arXiv > PMID > OpenAlex 作品号 > 净化后的 URL；什么都没有返回空串。"""
+    """去重键：DOI > arXiv > PMID > ISBN > OpenAlex 作品号 > 净化后的 URL；什么都没有返回空串。"""
     pids = hit.pids()
     return pids[0].key if pids else ""
 
@@ -208,9 +233,8 @@ def merge_hits(hits: Iterable[IndexHit]) -> list[SourceRecord]:
 
 def _upgrade_pid(record: SourceRecord, pids: list[Pid]) -> None:
     """后来的命中带了更可靠的标识（如 OpenAlex 号之后出现 DOI）时，首选标识随之升级。"""
-    order = (PID_DOI, PID_ARXIV, PID_PMID, PID_OPENALEX, PID_URL)
-    best = min(pids, key=lambda p: order.index(p.kind))
-    if order.index(best.kind) < order.index(record.pid.kind):
+    best = min(pids, key=lambda p: PID_ORDER.index(p.kind))
+    if PID_ORDER.index(best.kind) < PID_ORDER.index(record.pid.kind):
         record.pid = best
         record.source_id = best.key
 
@@ -238,7 +262,7 @@ CITABLE = frozenset({Trust.VERIFIED, Trust.SINGLE})
 def trust_level(record: SourceRecord) -> Trust:
     """按结构化字段给出可信状态（顺序即优先级）。
 
-    ① 撤稿标记 → RETRACTED；② 没有 DOI / arXiv 号 / PMID → UNRESOLVED；
+    ① 撤稿标记 → RETRACTED；② 没有 DOI / arXiv 号 / PMID / ISBN → UNRESOLVED；
     ③ DOI 已确认在 doi.org 查不到（doi_resolves is False）→ CONFLICT；
     ④ 除最先给出它的索引外，还有别的索引按编号查到它 → VERIFIED；⑤ 否则 SINGLE。
     doi_resolves 为 None 表示还没查，不据此降级。
@@ -269,7 +293,9 @@ __all__ = [
     "PERSISTENT_KINDS",
     "PID_ARXIV",
     "PID_DOI",
+    "PID_ISBN",
     "PID_OPENALEX",
+    "PID_ORDER",
     "PID_PMID",
     "PID_URL",
     "TRACKING_PARAMS",
@@ -282,6 +308,7 @@ __all__ = [
     "merge_hits",
     "normalize_arxiv",
     "normalize_doi",
+    "normalize_isbn",
     "rank_drift",
     "trust_level",
 ]
