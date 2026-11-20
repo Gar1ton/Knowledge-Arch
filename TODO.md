@@ -688,3 +688,29 @@
     mini 未证明有效，待全量切片确认。
   - 小结（11-19）：P5 三项在 mini_v2 上都没有显著变化。3 次对 3 次能分辨的大约是 ±4 题；48 题里 22 题时对时错，
     deep_thinking 自身的答案波动是目前最大的噪声来源。下一步：在全量切片（b02 + b03）上跑 P1–P5c 的累计效果。
+- [ ] P33 · 3.0.0 回答引用外部文献、Zotero 回推与迁移（🚧）。计划：工作区本地 `data/ka_v3/ka_v3_plan.html`（未入库），
+  交互原型 `data/ka_v3/ka_v3_demo.html`。决策（11-19 ~ 11-20 用户确认）：对话栏只在打开「联网补充」时查外部；skill 先问用户、
+  同意后才查；外部服务只取数据（书目、标识、参考文献、撤稿标记），写检索词 / 排序 / 归类只用用户配置的模型；核验 = 持久标识 +
+  拿编号去第二个索引直接查得到（P0 实测两家检索结果很少重合，故不比两份结果）；每个回答一个「来源」栏（照 ai-source-scraper 记账：capture、rank、去重、排名漂移；导出列兼容）；
+  「体系」= 用户自己的集合树；图谱边只来自参考文献列表；外部全文读到多深先按「能拿到开放获取全文就读片段，否则摘要」实现，
+  做成设置项，之后再定；入库文件名按用户现有风格（`{作者} ({年份}) - {标题}`，目录 = 集合路径）；Zotero 推送只走
+  「KA 放文件 + Web API 建独立 linked_file 附件」，推送 = 移交（不留副本）；导出 `.kaarch`（密钥用口令另行加密），
+  导入时本机库非空弹框选「完全覆盖 / 合并」；版本 3.0.0。
+  - [ ] P0 验证：① 🚧→已测（11-20）：三个研究题上 Crossref / arXiv / OpenAlex 各返回 10 条，主题对口；前 10 条里
+    Crossref 与 OpenAlex 同一 DOI 只重合 1–2 篇 → 核验改为「拿编号去另一家查」；Crossref 摘要覆盖 2–4 / 10、参考文献 3–6 / 10，
+    OpenAlex 参考文献 8–10 / 10；arXiv 只有 1–3 / 10 带期刊 DOI；OpenAlex 无 key 每天 0.1 美元、一次检索 0.001 美元（约 100 次）；
+    同一作品的预印本与会议版在 OpenAlex 里是两条（只靠索引给出的编号关联合并，不按标题猜）。② Zotero Web API 能否建带
+    `path` 的独立 linked_file 附件（需用户的写权限 key，测试条目验完删除）。
+  - [x] P1 数据层：迁移 `029_external_sources.sql` / `030_zotero_push_ledger.sql`；domain `web_sources`（标识规整、
+    按编号归并、核验规则、排名漂移）、`file_style`（命名 / 目录风格、Windows 字符、风格统计）、`external_ledger`（记录类型）；
+    `kacore/adapters/scholarly/`（Crossref、arXiv、OpenAlex、Semantic Scholar、DataCite、doi.org；限速、可注入请求函数、
+    内存实现）；仓储契约 `source_store/external.py` 与 SQLite / 内存实现（混入源文档库）。作者姓名只从结构化来源取
+    （Crossref family/given、DataCite familyName/givenName），整名不拆（沿用 `citation.normalize_creators` 的规则）。
+    验证（11-20）：新增测试 4 个文件 55 项；全量 pytest 1671 passed / 4 skipped；ruff；mypy（domain 严格）。
+    真实接口冒烟：三家检索、按编号互查（判为已核验）、DataCite 补姓氏、doi.org 分辨真假 DOI 均正常。
+  - [ ] P2 问答接入：`ExternalEvidence`（检索词、核验、片段）、引用标记、出处账本、`/api/ask` 的 `external`；skill `--external`。
+  - [ ] P3 来源栏：列表、体系、图谱、出处详情、导出；对话栏开关。
+  - [ ] P4 入库：`PaperImporter`、入库框（本地 / Zotero 集合）、待补 PDF。
+  - [ ] P5 Zotero 推送：Web API 写入、文件移交、推送账本、拉取认领。
+  - [ ] P6 导出导入：`.kaarch`、口令加密、偏好设置「备份与迁移」、覆盖 / 合并。
+  - [ ] P7 收尾：版本 3.0.0、README 中英、CHANGELOG、全量 pytest / ruff / mypy / 前端三项、真后端 + Playwright 走查。

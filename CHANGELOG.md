@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### 新增 (Added)
+
+- **3.0.0 数据层（P33 P1）：回答引用外部文献的出处账本与学术索引适配器。**
+  `kacore/domain/web_sources.py`：外部文献的标识规整（DOI / arXiv / PMID / OpenAlex / 净化 URL，跟踪参数表同
+  ai-source-scraper 1.7.0）、按任一共同标识归并（不按标题猜）、字段级出处、核验规则（持久标识 + 第二个索引按编号查到
+  = 已核验；撤稿 / doi.org 查不到 / 无持久标识不可引用）、排名漂移。`kacore/domain/file_style.py`：入库文件按用户现有
+  风格命名（`{作者} ({年份}) - {标题}`，目录 = 集合路径，Windows 字符清理、同名加序号）与风格统计。
+  `kacore/domain/external_ledger.py`：账本记录类型。迁移 `029_external_sources.sql`（capture / 文献 / 命中 / 引用段落 /
+  字段出处）与 `030_zotero_push_ledger.sql`。`kacore/adapters/scholarly/`：Crossref、arXiv、OpenAlex、Semantic Scholar、
+  DataCite、doi.org 适配器（只取书目数据，不取外部服务的分类与推荐；限速；请求函数可注入）。仓储契约
+  `kacore/repository/source_store/external.py` 与 `external_sqlite.py` / `external_memory.py`（混入源文档库）。
+  测试：`test_web_sources.py`、`test_file_style.py`、`test_migration_029_030.py`、`test_scholarly_adapters.py`、
+  `test_external_ledger_store.py`。尚未接入问答与界面（P2 起）。
+
 ## [v2.2.0] — 2026-11-19
 
 ### 修复 (Fixed)
