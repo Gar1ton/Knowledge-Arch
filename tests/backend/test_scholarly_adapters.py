@@ -184,3 +184,20 @@ def test_memory_index_rewrites_rank_and_can_fail() -> None:
     assert (hit.engine, hit.query, hit.rank) == ("crossref", "q", 1)
     with pytest.raises(ScholarlyIndexError):
         MemoryIndex("arxiv", fail=True).search("q", 5)
+
+
+def test_http_client_retries_once_after_429(monkeypatch: pytest.MonkeyPatch) -> None:
+    import kacore.adapters.scholarly.base as base
+
+    monkeypatch.setattr(base.time, "sleep", lambda _s: None)
+    calls: list[int] = []
+
+    def open_(request: Any, timeout: float = 0) -> _Resp:
+        calls.append(1)
+        if len(calls) == 1:
+            raise urllib.error.HTTPError(request.full_url, 429, "slow down",
+                                         {"Retry-After": "2"}, None)  # type: ignore[arg-type]
+        return _Resp(b'{"ok": true}')
+
+    assert HttpClient("crossref", opener=open_).get_json("https://x") == {"ok": True}
+    assert len(calls) == 2

@@ -45,7 +45,7 @@ def test_homes_cover_the_data_flow_nodes_and_preference_groups() -> None:
     }  # 第 11 个节点「模型供应商」是连接列表，不是 SettingSpec
     assert set(PREFS_HOMES) == {
         "prefs.general", "prefs.appearance", "prefs.storage", "prefs.local_models",
-        "prefs.diagnostics",
+        "prefs.diagnostics", "prefs.external",
     }
     assert {s.key for s in specs_for_home("flow.graph")} >= {
         "flow.graph.enabled", "flow.graph.query_mode"

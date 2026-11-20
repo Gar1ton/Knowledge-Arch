@@ -129,3 +129,25 @@ When troubleshooting via the low-level `search` command, hits carry raw `title` 
 - Keep quotations short; prefer paraphrase and synthesis.
 - If local evidence is insufficient, say what was searched and what evidence is missing. Ask before using
   external web sources unless the user already requested them.
+
+## External literature
+
+Use this only after the user agreed to external literature for the current question (see SKILL.md).
+Knowledge Arch searches scholarly indexes (Crossref, arXiv, OpenAlex, and Semantic Scholar when the
+user set a key), verifies each paper by its identifier, and returns citable passages. It calls no
+model: you write the queries and you decide what to cite.
+
+```
+KA external-evidence --question "original user question" --query "keyword phrase" --query "another phrase" --user-approved
+```
+
+- Write 1-4 English keyword phrases that target the gap you named, not the whole question. Keep
+  names and technical terms verbatim.
+- `evidence` holds the citable passages: a full-text passage with its page, or the abstract
+  (`abstract_only: true`). Cite with the returned `harvard_in_text` and list `harvard_reference`,
+  and mark the source as external in your answer.
+- `candidates` lists everything found with its `trust`: `verified` (a second index confirmed the
+  identifier), `single` (one index only: you may cite it but say it is unverified), `retracted`,
+  `conflict` (the DOI does not resolve) and `unresolved` (no identifier). Never cite the last three.
+- Every call is recorded in the app's source ledger; the user sees it in the app.
+

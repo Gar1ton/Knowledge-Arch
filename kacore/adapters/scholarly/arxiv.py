@@ -28,6 +28,9 @@ class ArxivIndex(ScholarlyIndex):
     def __init__(self, *, opener: Opener | None = None) -> None:
         self._http = HttpClient(ENGINE_ARXIV, opener=opener, min_interval=3.0)
 
+    def search_url(self, query: str, limit: int) -> str:
+        return HttpClient.request_url(API, {"search_query": f"all:{query}", "max_results": limit})
+
     def search(self, query: str, limit: int) -> list[IndexHit]:
         raw = self._http.get_bytes(API, {"search_query": f"all:{query}", "max_results": limit})
         return parse_feed(raw, query=query)

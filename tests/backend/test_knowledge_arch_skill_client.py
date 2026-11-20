@@ -508,7 +508,9 @@ def test_skill_requires_explicit_connection_and_external_authorization() -> None
     assert "9821" not in source
     assert "connection-status" in source
     assert "connection-setup" not in source and "password" not in source.lower()
-    assert "unless the user explicitly grants permission" in source
+    # 3.0.0：外部文献只经 external-evidence，且先问用户、同意后才查（先问再查）。
+    assert "only after the user agrees for the current question" in source
+    assert "external-evidence --user-approved` only after the user says yes" in source
     assert "request-secret" in source and "references/setup.md" in source
     assert "notion-save-qa" in source
     assert "qa_database_id" in source
@@ -1027,3 +1029,12 @@ def test_cli_output_is_redacted(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert str(Path.home()) not in result.stdout
     assert "system" not in json.loads(result.stdout)
+
+
+def test_external_evidence_refuses_without_user_approval() -> None:
+    """先问再查：没有 --user-approved 时客户端不发请求。"""
+    client = CLIENT.KnowledgeArchClient("http://127.0.0.1:9", TOKEN)
+    with pytest.raises(CLIENT.UsageError, match="Ask the user first"):
+        CLIENT.external_evidence(client, "q", ["persona drift"], user_approved=False)
+    with pytest.raises(CLIENT.UsageError, match="--query"):
+        CLIENT.external_evidence(client, "q", [], user_approved=True)

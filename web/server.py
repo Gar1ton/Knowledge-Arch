@@ -1601,6 +1601,7 @@ async def handle_ask(request: web.Request) -> web.Response:
             answer_language=answer_language,
             doc_id=doc_id,
             confirmed=confirmed,
+            external=body.get("external") is True,
             scope_type=str(body.get("scope_type") or ""),
             scope_key=str(body.get("scope_key") or ""),
             scope_library_id=str(body.get("scope_library_id") or ""),
@@ -1701,6 +1702,39 @@ async def handle_ask_evidence(request: web.Request) -> web.Response:
             scope_type=str(body.get("scope_type") or ""),
             scope_key=str(body.get("scope_key") or ""),
             scope_library_id=str(body.get("scope_library_id") or ""),
+        )
+    except ValueError as exc:
+        return web.json_response({"status": "error", "message": str(exc)}, status=400)
+    except RuntimeError as exc:
+        return web.json_response({"status": "unavailable", "message": str(exc)}, status=503)
+    return web.json_response(result)
+
+
+async def handle_external_evidence(request: web.Request) -> web.Response:
+    """POST /api/external/evidence — AI 助手取外部证据。
+
+    必须带 user_approved=true：助手先问过用户、用户同意了才能查（skill 的「先问再查」）。
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = None
+    if not isinstance(body, dict):
+        return web.json_response({"error": "JSON object required"}, status=400)
+    if body.get("user_approved") is not True:
+        return web.json_response(
+            {"status": "approval_required",
+             "message": "Ask the user before looking for external literature."},
+            status=403,
+        )
+    queries = body.get("queries")
+    if not isinstance(queries, list) or not all(isinstance(q, str) for q in queries):
+        return web.json_response({"error": "queries must be a list of strings"}, status=400)
+    try:
+        result = await _api(request).collect_external_for_agent(
+            question=str(body.get("question") or ""),
+            queries=queries,
+            conversation_id=str(body.get("conversation_id") or ""),
         )
     except ValueError as exc:
         return web.json_response({"status": "error", "message": str(exc)}, status=400)
@@ -1971,6 +2005,7 @@ def build_app(
     app.router.add_get("/api/logs", handle_logs)
     app.router.add_post("/api/logs/events", handle_log_event)
     app.router.add_post("/api/ask/evidence", handle_ask_evidence)
+    app.router.add_post("/api/external/evidence", handle_external_evidence)
     app.router.add_post("/api/ask", handle_ask)
     app.router.add_get("/api/console/scope-state", handle_console_scope_state_get)
     app.router.add_put("/api/console/scope-state", handle_console_scope_state_upsert)

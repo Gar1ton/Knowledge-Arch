@@ -101,6 +101,36 @@ class SourceStoreConfig:
     ocr_enabled: bool = False
 
 
+EXTERNAL_DEPTH_FULLTEXT = "fulltext"
+EXTERNAL_DEPTH_ABSTRACT = "abstract"
+OPENALEX_KEY_SECRET = "external.openalex_api_key"
+SEMANTIC_SCHOLAR_KEY_SECRET = "external.semantic_scholar_api_key"
+
+
+@dataclass
+class ExternalEvidenceConfig:
+    """联网补充（3.0.0）：回答时去学术索引找外部文献。只在对话栏打开开关时运行。
+
+    索引只提供书目数据；写检索词、排相关度用「模型分配」的 research 角色。depth 决定外部证据
+    读到多深：fulltext = 能拿到开放获取全文就读片段，否则用摘要；abstract = 一律用摘要
+    （用户 11-20：先按 fulltext 实现，之后再定）。各上限是成本护栏（假设值，可在设置里改）：
+    每次最多写 max_queries 个检索词、每个检索词每家取 per_query 条、最多核验 max_candidates 篇、
+    最多 max_sources 篇进入回答。OpenAlex / Semantic Scholar 的 key 存在加密机密库，不在这里。
+    """
+
+    crossref: bool = True
+    arxiv: bool = True
+    openalex: bool = True
+    semantic_scholar: bool = False
+    depth: str = EXTERNAL_DEPTH_FULLTEXT
+    max_queries: int = 3
+    per_query: int = 8
+    max_candidates: int = 12
+    max_sources: int = 5
+    max_pdf_mb: int = 40
+    contact_email: str = ""
+
+
 @dataclass
 class VisionConfig:
     """识图（2.1.0）：给 PDF 图表空位写描述。模型在「模型分配」的 vision 角色里选。
@@ -649,6 +679,25 @@ class Config:
             ),
             sync_mode=sync_mode,
             # rate_limit_rps 固定为平台上限，不从配置读取。
+        )
+
+    def get_external_evidence_config(self) -> ExternalEvidenceConfig:
+        s = _section(self.raw, "external_evidence")
+        d = ExternalEvidenceConfig
+        depth = str(s.get("depth", d.depth))
+        return ExternalEvidenceConfig(
+            crossref=bool(s.get("crossref", d.crossref)),
+            arxiv=bool(s.get("arxiv", d.arxiv)),
+            openalex=bool(s.get("openalex", d.openalex)),
+            semantic_scholar=bool(s.get("semantic_scholar", d.semantic_scholar)),
+            depth=depth if depth in {EXTERNAL_DEPTH_FULLTEXT, EXTERNAL_DEPTH_ABSTRACT} else d.depth,
+            max_queries=min(6, max(1, _int_or_default(s.get("max_queries"), d.max_queries))),
+            per_query=min(25, max(1, _int_or_default(s.get("per_query"), d.per_query))),
+            max_candidates=min(40, max(1, _int_or_default(s.get("max_candidates"),
+                                                          d.max_candidates))),
+            max_sources=min(12, max(1, _int_or_default(s.get("max_sources"), d.max_sources))),
+            max_pdf_mb=min(200, max(1, _int_or_default(s.get("max_pdf_mb"), d.max_pdf_mb))),
+            contact_email=str(s.get("contact_email", d.contact_email) or "").strip(),
         )
 
     def get_vision_config(self) -> VisionConfig:

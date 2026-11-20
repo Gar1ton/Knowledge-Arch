@@ -17,6 +17,14 @@
   `kacore/repository/source_store/external.py` 与 `external_sqlite.py` / `external_memory.py`（混入源文档库）。
   测试：`test_web_sources.py`、`test_file_style.py`、`test_migration_029_030.py`、`test_scholarly_adapters.py`、
   `test_external_ledger_store.py`。尚未接入问答与界面（P2 起）。
+- **3.0.0 问答接入外部文献（P33 P2，后端）。** `ask(external=True)`：库内检索后去学术索引找外部文献、按编号核验，
+  可引用的作为追加证据合成，Harvard 引用照常（来源条目 `origin: "external"`、带核验状态）；已在库（按 DOI）的不作外部证据；
+  结果与聊天记录带 `external` 摘要，出处与引用段落写进账本。`kacore/managers/external_evidence.py`、
+  `kacore/managers/external_fulltext.py`、`kacore/pipelines/external_prompts.py`、`kacore/adapters/scholarly/factory.py`、
+  `kacore/api.py`、`kacore/app_initializer.py`、`web/server.py`（`/api/ask` 的 `external`，新 `POST /api/external/evidence`）、
+  `web/agent_routes.py`。skill：`external-evidence --user-approved`，SKILL.md 联网边界改为先问用户再查。设置分组
+  `prefs.external`（`kacore/settings/schema.py`、`kacore/config.py` 的 `ExternalEvidenceConfig`、`i18nDesktop.ts` 标签）。
+  测试：`test_external_evidence.py`、`test_ask_external.py`，以及客户端 / 适配器 / 设置的相关断言。
 
 ## [v2.2.0] — 2026-11-19
 

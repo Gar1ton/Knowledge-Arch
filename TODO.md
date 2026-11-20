@@ -708,7 +708,18 @@
     （Crossref family/given、DataCite familyName/givenName），整名不拆（沿用 `citation.normalize_creators` 的规则）。
     验证（11-20）：新增测试 4 个文件 55 项；全量 pytest 1671 passed / 4 skipped；ruff；mypy（domain 严格）。
     真实接口冒烟：三家检索、按编号互查（判为已核验）、DataCite 补姓氏、doi.org 分辨真假 DOI 均正常。
-  - [ ] P2 问答接入：`ExternalEvidence`（检索词、核验、片段）、引用标记、出处账本、`/api/ask` 的 `external`；skill `--external`。
+  - [x] P2 问答接入（后端）：`kacore/managers/external_evidence.py`（写检索词 → 并发检索 → 按编号归并 → 第二个索引按编号
+    查证 + 补结构化作者 → 模型挑选 → 全文片段 / 摘要；`persist` 写账本，is_new 按同一对话计算）、`external_fulltext.py`
+    （开放获取 PDF 临时缓存，按内容 sha256 命名，只收 `%PDF-`）、`pipelines/external_prompts.py`（plan / select 两次调用，
+    research 角色；挑选时同一作品只留一个版本）、`adapters/scholarly/factory.py`；`ask(external=True)` 外部证据编号续接、
+    deep / enhanced 有外部证据时重写一稿、已在库（按 DOI）的不作外部证据、结果与聊天记录带 `external` 摘要、引用段落入账；
+    `POST /api/external/evidence`（skill 用：必须 `user_approved=true`，助手给检索词、KA 不调模型，进 agent 白名单）；
+    skill 客户端 `external-evidence --user-approved`、SKILL.md 联网边界改为「先问再查」、research.md 新增 External literature；
+    设置分组 `prefs.external`（索引开关、depth、篇数上限、两个 key、Crossref 邮箱）与中英文标签；`citation_rendering.cited_numbers`。
+    外部来源条目与库内同形（`origin: "external"`），引用改写不改。索引同一实例一次一个请求、429 按 Retry-After 重试一次。
+    验证（11-20）：新增测试 `test_external_evidence.py` 8 项、`test_ask_external.py` 6 项、客户端与适配器各 1 项；全量
+    pytest 1688 passed / 4 skipped；ruff；mypy。真实接口冒烟（两个检索词、无 key）：38 篇、已核验 12 / 单源 26，Crossref
+    并发时 429（已改为串行 + 重试）；同一作品的会议版与预印本各占一条（交给挑选模型去重）。对话栏开关在 P3。
   - [ ] P3 来源栏：列表、体系、图谱、出处详情、导出；对话栏开关。
   - [ ] P4 入库：`PaperImporter`、入库框（本地 / Zotero 集合）、待补 PDF。
   - [ ] P5 Zotero 推送：Web API 写入、文件移交、推送账本、拉取认领。

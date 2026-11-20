@@ -65,6 +65,10 @@ class ScholarlyIndex(ABC):
     def lookup(self, pid: Pid) -> IndexHit | None:
         """按编号直接查一条；查不到或不支持该编号种类返回 None。"""
 
+    def search_url(self, query: str, limit: int) -> str:
+        """该检索对应的请求地址（不含 key、邮箱），记进出处账本；不检索的索引返回空串。"""
+        return ""
+
 
 # ── HTTP ────────────────────────────────────────────────────
 
@@ -112,20 +116,30 @@ class HttpClient:
         self._opener = opener or urllib.request.urlopen
         self._timeout = timeout
         self._gate = RateGate(min_interval)
+        self._one_at_a_time = threading.Lock()   # 同一索引一次只发一个请求（Crossref 限并发）
         self._headers = {"User-Agent": USER_AGENT, **(headers or {})}
 
     def get_bytes(self, url: str, params: dict[str, Any] | None = None) -> bytes:
+        """GET；遇到 429 按 Retry-After（最多等 MAX_RETRY_WAIT 秒）重试一次。"""
         full = f"{url}?{urllib.parse.urlencode(params)}" if params else url
-        request = urllib.request.Request(full, headers=self._headers, method="GET")  # noqa: S310
-        self._gate.wait()
-        try:
-            with self._opener(request, timeout=self._timeout) as resp:
-                data: bytes = resp.read()
-                return data
-        except urllib.error.HTTPError as exc:
-            raise ScholarlyIndexError(self.engine, f"HTTP {exc.code}", status=exc.code) from exc
-        except Exception as exc:  # noqa: BLE001 - 网络层错误统一归类
-            raise ScholarlyIndexError(self.engine, str(exc)) from exc
+        with self._one_at_a_time:
+            for attempt in (1, 2):
+                request = urllib.request.Request(full, headers=self._headers,  # noqa: S310
+                                                 method="GET")
+                self._gate.wait()
+                try:
+                    with self._opener(request, timeout=self._timeout) as resp:
+                        data: bytes = resp.read()
+                        return data
+                except urllib.error.HTTPError as exc:
+                    if exc.code == 429 and attempt == 1:
+                        time.sleep(_retry_after(exc))
+                        continue
+                    raise ScholarlyIndexError(self.engine, f"HTTP {exc.code}",
+                                              status=exc.code) from exc
+                except Exception as exc:  # noqa: BLE001 - 网络层错误统一归类
+                    raise ScholarlyIndexError(self.engine, str(exc)) from exc
+        raise ScholarlyIndexError(self.engine, "HTTP 429", status=429)
 
     def get_json(self, url: str, params: dict[str, Any] | None = None) -> Any:
         raw = self.get_bytes(url, params)
@@ -140,6 +154,18 @@ class HttpClient:
             return url
         public = {k: v for k, v in params.items() if k not in cls.SECRET_PARAMS}
         return f"{url}?{urllib.parse.urlencode(public)}" if public else url
+
+
+MAX_RETRY_WAIT = 5.0
+
+
+def _retry_after(exc: urllib.error.HTTPError) -> float:
+    """Retry-After 秒数（缺省 1 秒，上限 MAX_RETRY_WAIT）。"""
+    try:
+        value = float((exc.headers or {}).get("Retry-After") or 1)
+    except (TypeError, ValueError):
+        value = 1.0
+    return min(max(value, 0.0), MAX_RETRY_WAIT)
 
 
 def year_of(value: object) -> str:

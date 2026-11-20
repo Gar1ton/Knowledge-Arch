@@ -622,6 +622,24 @@ class AppInitializer:
         )
         self.api.attach_zotero_pipeline(self.zotero_sync_pipeline)
 
+        # 5.52) 联网补充（3.0.0）：回答时引用外部文献。只在对话栏开关打开或 skill 经用户同意时运行；
+        #       设置与 key 每次现读（换设置不用重启）。写检索词与挑选用 research 角色的模型。
+        from kacore.adapters.scholarly.factory import build_index_set
+        from kacore.managers.external_evidence import ExternalEvidence, fulltext_cache_dir
+        from kacore.managers.external_fulltext import FulltextCache
+
+        ext_cfg = self._config.get_external_evidence_config()
+        self.external_evidence = ExternalEvidence(
+            config_provider=self._config.get_external_evidence_config,
+            index_factory=lambda cfg: build_index_set(cfg, self.secret_store.get_secret),
+            store=self.source_store,
+            llm_adapter=research_llm_adapter,
+            reranker=self.reranker,
+            fulltext=FulltextCache(fulltext_cache_dir(self._data_dir),
+                                   max_bytes=ext_cfg.max_pdf_mb * 1024 * 1024),
+        )
+        self.api.attach_external_evidence(self.external_evidence)
+
         # 5.55) Notion 单向推送管线（文章两表增量 + QA 暂存箱补推）。
         from kacore.pipelines.notion_sync_pipeline import NotionSyncPipeline
 

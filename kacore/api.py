@@ -381,6 +381,24 @@ _GENERATION_STATUS_NOTICE_EN: dict[str, str] = {
 GENERATION_LLM_UNAVAILABLE = "llm_unavailable"
 
 
+
+def _cited_external(answer: str, sources: list[dict[str, Any]]) -> list[Any]:
+    """回答正文里真正引用到的外部段落（按 [n] 对回 source），供出处账本记录引用段落。"""
+    from kacore.managers.external_evidence import ExternalPassage
+    from kacore.pipelines.citation_rendering import cited_numbers
+
+    numbers = cited_numbers(answer) if answer else set()
+    out: list[Any] = []
+    for source in sources:
+        if source.get("origin") != "external" or source.get("n") not in numbers:
+            continue
+        pages = source.get("pages") or [None]
+        out.append(ExternalPassage(
+            str(source.get("source_id") or ""), str(source.get("text") or ""),
+            pages[0], str(source.get("file_sha256") or ""),
+        ))
+    return out
+
 def _excerpt_answer(sources: list[dict], answer_language: str, question: str) -> str:
     """LLM 不可用的降级排版：引导行说明「未合成」+ 每条摘录带标题/页码、按句边界截断。
 
@@ -829,10 +847,154 @@ class KnowledgeRepositoryApi(
         self._pending_zotero_account_change: dict[str, Any] | None = None
         # Milvus 自动重建调度器（组合根在 api 构造后注入；为空表示当轮不自动重建）。
         self._auto_reindex: Any | None = None
+        self._external_evidence: Any | None = None
 
     def attach_zotero_pipeline(self, pipeline: Any) -> None:
         """组合根注入 ZoteroSyncPipeline（其回调引用本 api 的索引/LRAG 助手）。"""
         self._zotero_pipeline = pipeline
+
+    def attach_external_evidence(self, manager: Any) -> None:
+        """组合根注入 ExternalEvidence（联网补充，3.0.0）。未注入时 external=True 的提问照常回答、
+        结果里标明联网补充不可用。"""
+        self._external_evidence = manager
+
+    async def _collect_external(
+        self,
+        question: str,
+        sources: list[dict[str, Any]],
+        chunks: list[DocumentChunk],
+        context_parts: list[str],
+        progress: Callable[..., None],
+    ) -> tuple[Any, dict[str, Any]]:
+        """联网补充：取外部证据并就地追加到 sources / chunks / context_parts（编号续接）。
+
+        失败不影响回答：返回 (None, 摘要)，摘要的 status 为 unavailable / error 并带原因。
+        """
+        from kacore.managers.external_evidence import (
+            ExternalEvidenceUnavailable,
+            passage_chunk,
+            source_entry,
+        )
+
+        if self._external_evidence is None:
+            return None, {"status": "unavailable", "error": "external evidence is not configured"}
+        progress("external", 70)
+        excerpts = [(str(s.get("title") or ""), str(s.get("text") or "")) for s in sources[:8]]
+        try:
+            bundle = await self._external_evidence.collect(
+                question, excerpts, progress=lambda stage: progress(stage, 72)
+            )
+        except ExternalEvidenceUnavailable as exc:
+            return None, {"status": "unavailable", "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001 - 联网补充失败时照常用库内证据回答
+            logger.warning("External evidence failed, answering from the library only: %s", exc)
+            return None, {"status": "error", "error": str(exc)}
+        # 已在库的文献（按 DOI 对上，不按标题猜）不作外部证据：库内全文更可靠，检索时已能召回。
+        in_library = await self._library_dois()
+        kept = []
+        for passage in bundle.passages:
+            record = bundle.record(passage.source_id)
+            doc_id = (in_library.get(record.pid.value)
+                      if record is not None and record.pid.kind == "doi" else None)
+            if record is not None and doc_id:
+                record.fields["in_library_doc_id"] = doc_id
+                continue
+            kept.append(passage)
+        bundle.passages = kept
+        for i, passage in enumerate(bundle.passages):
+            n = len(sources) + 1
+            entry = source_entry(bundle, passage, n)
+            sources.append(entry)
+            chunks.append(passage_chunk(passage, i))
+            where = f" (Page {passage.page})" if passage.page is not None else " (abstract)"
+            context_parts.append(f"[{n}] {entry['title']}{where} [external]\n{passage.text}")
+        return bundle, {
+            "status": "ok",
+            "capture_id": bundle.capture_id,
+            "queries": bundle.queries,
+            "gaps": bundle.gaps,
+            "retrieved": len(bundle.records),
+            "used": len({p.source_id for p in bundle.passages}),
+            "in_library": sum(1 for r in bundle.records if r.fields.get("in_library_doc_id")),
+            "cited": 0,
+            "errors": bundle.errors,
+        }
+
+    async def collect_external_for_agent(
+        self, *, question: str, queries: list[str], conversation_id: str = ""
+    ) -> dict[str, Any]:
+        """AI 助手经 skill 取外部证据（用户已同意之后）：助手给检索词，KA 只检索、核验、取段落，
+        不调用模型（plugin_llm_used=false）。返回可引用证据（带 Harvard 串）与全部候选的核验状态；
+        出处记账（actor=agent），引用段落留空——助手自己写回答，KA 不知道最终引用了哪些。"""
+        from kacore.managers.external_evidence import source_entry
+        from kacore.pipelines.citation_rendering import annotate_sources
+
+        if self._external_evidence is None:
+            raise RuntimeError("external evidence is not configured")
+        clean_question = str(question or "").strip()
+        clean_queries = [q.strip() for q in queries if q and q.strip()]
+        if not clean_question or not clean_queries:
+            raise ValueError("question and at least one query are required")
+        bundle = await self._external_evidence.collect(
+            clean_question, [], queries=clean_queries, use_model=False
+        )
+        evidence = [source_entry(bundle, p, i) for i, p in enumerate(bundle.passages, start=1)]
+        annotate_sources(evidence)
+        conv = conversation_id.strip() or f"agent-{bundle.started_at[:10]}"
+        try:
+            await self._external_evidence.persist(
+                bundle, conv_id=conv, msg_idx=0, actor="agent", cited=[]
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to record agent external sources: %s", exc)
+        candidates = [
+            {"source_id": r.source_id, "title": r.fields.get("title", ""),
+             "year": r.fields.get("year", ""), "trust": bundle.trust[r.source_id].value,
+             "engines": r.engines}
+            for r in bundle.records
+        ]
+        return {
+            "status": "ok",
+            "capture_id": bundle.capture_id,
+            "queries": bundle.queries,
+            "evidence": evidence,
+            "candidates": candidates,
+            "errors": bundle.errors,
+            "plugin_llm_used": False,
+        }
+
+    async def _library_dois(self) -> dict[str, str]:
+        """库里有 DOI 的文档：DOI（小写）→ doc_id。
+
+        Zotero 文档取镜像条目的 DOI，本地文档取书目字段里的 DOI。
+        """
+        from kacore.domain.web_sources import normalize_doi
+
+        out: dict[str, str] = {}
+        docs = await self._source_store.list_documents()
+        by_item = {(d.library_id, d.zotero_item_key): d.doc_id for d in docs if d.zotero_item_key}
+        for item in await self._source_store.list_zotero_items():
+            doc_id = by_item.get((item.library_id, item.item_key))
+            doi = normalize_doi(getattr(item, "doi", "") or "")
+            if doc_id and doi:
+                out.setdefault(doi, doc_id)
+        for doc in docs:
+            doi = normalize_doi(str((doc.local_meta or {}).get("doi") or ""))
+            if doi:
+                out.setdefault(doi, doc.doc_id)
+        return out
+
+    async def _persist_external(self, cid: str, bundle: Any, cited: list[Any]) -> None:
+        """把这次联网补充写进出处账本；msg_idx 是刚写入的回答在对话里的序号。失败只记日志。"""
+        if self._external_evidence is None:
+            return
+        try:
+            msg_idx = len(await self._source_store.get_chat_messages(cid)) - 1
+            await self._external_evidence.persist(
+                bundle, conv_id=cid, msg_idx=max(msg_idx, 0), actor="ui", cited=cited
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to record external sources for %s: %s", cid, exc)
 
     def attach_auto_reindex_scheduler(self, scheduler: Any) -> None:
         """组合根注入 AutoReindexScheduler（本 api 只负责在标记待重建时给它打信号）。"""
@@ -2812,8 +2974,13 @@ class KnowledgeRepositoryApi(
         doc_id: str | None = None,
         confirmed: bool = False,
         model_thinking: bool = True,
+        external: bool = False,
     ) -> dict:
         """Retrieve evidence and generate one final answer.
+
+        external=True（3.0.0 联网补充，对话栏开关）：库内检索之后再去学术索引找外部文献，核验后作为
+        追加证据一起合成，编号接在库内来源后面；结果与聊天记录带 `external` 摘要，出处写进账本。
+        全文模式与 graph_only 不支持（忽略并在摘要里说明）。
 
         candidate_k / use_reranker：研究路径用——候选池宽召回 + cross-encoder 重排再取 top_k
         （仅 default 模式生效；默认 answer top_k 不变）。reranker 为 passthrough 时自动退回 RRF。
@@ -3178,11 +3345,23 @@ class KnowledgeRepositoryApi(
                 page_info = f" (Page {chunk.metadata['page_number']})" if has_page else ""
                 context_parts.append(f"[{n}] {source['title']}{page_info}\n{chunk.text}")
 
+            # 3.0.0 联网补充：外部证据追加在库内来源之后（编号续接）。deep / enhanced 的草稿只用了
+            # 库内证据，有外部证据时作废，由下方「deep 风格合成」用库内 + 外部重写一稿。
+            external_bundle: Any = None
+            external_summary: dict[str, Any] | None = None
+            if external:
+                external_bundle, external_summary = await self._collect_external(
+                    question, sources, chunks, context_parts, _progress
+                )
+            has_external = bool(external_bundle is not None and external_bundle.passages)
+
             _progress("llm_generate", 80)
             t_llm = time.monotonic()
 
             has_evidence = bool(context_parts or lightrag_context)
-            deep_answer = deep_outcome.answer if deep_outcome is not None else None
+            deep_answer = (
+                deep_outcome.answer if deep_outcome is not None and not has_external else None
+            )
             generation_status = (
                 deep_outcome.answer_generation_status if deep_outcome is not None else ""
             )
@@ -3280,6 +3459,9 @@ class KnowledgeRepositoryApi(
             # v1.1.0：把 LLM 写的 [n] 确定性改写为 Harvard in-text 短引（带页码）并追加参考
             # 文献表。放在这里是唯一应用点——所有分支的 answer 都已定稿，且 sources 已就地补上
             # harvard_* 字段供前端还原点击态。引用由代码而非模型生成，杜绝编造作者与年份。
+            cited_external = _cited_external(answer if citable else "", sources)
+            if external_summary is not None and external_bundle is not None:
+                external_summary["cited"] = len({p.source_id for p in cited_external})
             references: list[str] = []
             if citable and sources:
                 answer, references = render_answer_with_references(
@@ -3352,10 +3534,13 @@ class KnowledgeRepositoryApi(
                             if deep_outcome
                             else {}
                         ),
+                        **({"external": external_summary} if external_summary else {}),
                     },
                 )
             except Exception as exc:
                 logger.warning("Failed to persist chat history: %s", exc)
+            if external_bundle is not None:
+                await self._persist_external(cid, external_bundle, cited_external)
 
             self._runtime_events.finish(
                 operation_id=cid,
@@ -3385,6 +3570,7 @@ class KnowledgeRepositoryApi(
                 "thinking_trace": _serialize_deep_thinking(deep_outcome) if deep_outcome else None,
                 # 生成状态：length / content_filter / reasoning_only / llm_unavailable，正常为空。
                 "generation_status": generation_status,
+                "external": external_summary,
             }
 
         def _finish(result: dict) -> dict:

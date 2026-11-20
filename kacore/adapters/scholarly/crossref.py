@@ -37,6 +37,9 @@ class CrossrefIndex(ScholarlyIndex):
     def _params(self, extra: dict[str, Any]) -> dict[str, Any]:
         return {**extra, **({"mailto": self._mailto} if self._mailto else {})}
 
+    def search_url(self, query: str, limit: int) -> str:
+        return HttpClient.request_url(API, {"query.bibliographic": query, "rows": limit})
+
     def search(self, query: str, limit: int) -> list[IndexHit]:
         params = self._params({"query.bibliographic": query, "rows": limit, "select": SELECT})
         payload = self._http.get_json(API, params)

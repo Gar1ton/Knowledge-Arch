@@ -83,6 +83,7 @@ AGENT_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/api/kb/search"),
     ("GET", "/api/kb/chunk-context"),
     ("POST", "/api/ask/evidence"),
+    ("POST", "/api/external/evidence"),
     ("POST", "/api/notion/push-note"),
     # 索引与知识图谱
     ("GET", "/api/documents/pending-reindex-count"),

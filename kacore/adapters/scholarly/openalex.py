@@ -39,6 +39,9 @@ class OpenAlexIndex(ScholarlyIndex):
     def _params(self, extra: dict[str, Any]) -> dict[str, Any]:
         return {**extra, "select": SELECT, **({"api_key": self._key} if self._key else {})}
 
+    def search_url(self, query: str, limit: int) -> str:
+        return HttpClient.request_url(API, {"search": query, "per-page": limit})
+
     def search(self, query: str, limit: int) -> list[IndexHit]:
         payload = self._http.get_json(API, self._params({"search": query, "per-page": limit}))
         works = payload.get("results") or []

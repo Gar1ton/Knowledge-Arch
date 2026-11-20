@@ -32,6 +32,9 @@ class SemanticScholarIndex(ScholarlyIndex):
         self._http = HttpClient(ENGINE_SEMANTIC_SCHOLAR, opener=opener, min_interval=1.0,
                                 headers=headers)
 
+    def search_url(self, query: str, limit: int) -> str:
+        return HttpClient.request_url(f"{API}/search", {"query": query, "limit": limit})
+
     def search(self, query: str, limit: int) -> list[IndexHit]:
         payload = self._http.get_json(f"{API}/search", {"query": query, "limit": limit,
                                                         "fields": FIELDS})

@@ -85,6 +85,15 @@ CONFIG_POLICIES: dict[str, dict[str, str]] = {
         "rerank_weight": "none",
         "wide_top_k": "none",
     },
+    "external_evidence": {
+        "arxiv": "none",
+        "contact_email": "none",
+        "crossref": "none",
+        "depth": "none",
+        "max_sources": "none",
+        "openalex": "none",
+        "semantic_scholar": "none",
+    },
     "graph": {
         "embedding_max_async": "restart",
         "enabled": "restart",
@@ -716,6 +725,36 @@ def ask_evidence(
     return result
 
 
+def external_evidence(
+    client: KnowledgeArchClient,
+    question: str,
+    queries: list[str],
+    *,
+    user_approved: bool,
+) -> dict[str, Any]:
+    """Look for external literature through Knowledge Arch (only after the user agreed)."""
+    clean_question = question.strip()
+    clean_queries = [query.strip() for query in queries if query.strip()]
+    if not clean_question:
+        raise UsageError("--question must not be empty")
+    if not clean_queries:
+        raise UsageError("give at least one --query")
+    if not user_approved:
+        raise UsageError(
+            "Ask the user first. Rerun with --user-approved only after the user agreed to "
+            "external literature for this question."
+        )
+    payload = client.request_json(
+        "/api/external/evidence",
+        method="POST",
+        body={"question": clean_question, "queries": clean_queries, "user_approved": True},
+    )
+    result = _expect_dict(payload, "/api/external/evidence")
+    if result.get("plugin_llm_used") is not False:
+        raise ApiError("External evidence endpoint did not affirm plugin_llm_used=false")
+    return result
+
+
 def read_document(
     client: KnowledgeArchClient,
     doc_id: str,
@@ -1275,6 +1314,14 @@ def build_parser() -> argparse.ArgumentParser:
     ask_scope.add_argument("--collection")
     ask_scope.add_argument("--all", dest="all_collections", action="store_true")
 
+    external_parser = subparsers.add_parser(
+        "external-evidence",
+        help="Find and verify external literature (only after the user agreed)",
+    )
+    external_parser.add_argument("--question", required=True)
+    external_parser.add_argument("--query", action="append", default=[])
+    external_parser.add_argument("--user-approved", action="store_true")
+
     read_parser = subparsers.add_parser("read", help="Read one page of document Markdown")
     read_parser.add_argument("--doc-id", required=True)
     read_parser.add_argument("--start", type=int, default=0)
@@ -1401,6 +1448,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     None if args.all_collections else args.collection,
                     mode=args.mode,
                     round_number=args.round,
+                )
+            elif args.command == "external-evidence":
+                result = external_evidence(
+                    client, args.question, list(args.query), user_approved=args.user_approved
                 )
             elif args.command == "read":
                 result = read_document(
