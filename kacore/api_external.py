@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
-from kacore.domain.source_graph import GraphSource, build_edges
+from kacore.domain.source_graph import LIBRARY_PREFIX, GraphSource, build_edges
 from kacore.domain.web_sources import rank_drift
 
 if TYPE_CHECKING:
@@ -91,6 +91,11 @@ class ExternalApiMixin:
                          frozenset(stored[x["source_id"]].reference_ids)) for x in sources],
             library,
         )
+        library_nodes = sorted({e.target for e in edges if e.kind == "cites_library"})
+        library_titles: dict[str, str] = {}
+        for node in library_nodes:
+            doc = await store.get_document(node[len(LIBRARY_PREFIX):])
+            library_titles[node] = doc.title if doc is not None else ""
         return {
             "capture": {"capture_id": capture.capture_id, "conversation_id": capture.conv_id,
                         "msg_idx": capture.msg_idx, "question": capture.question,
@@ -98,9 +103,8 @@ class ExternalApiMixin:
                         "actor": capture.actor, "captured_at": capture.captured_at,
                         "ordinal": order.index(capture_id) + 1},
             "sources": sources,
-            "graph": {"edges": [e.__dict__ for e in edges],
-                      "library_nodes": sorted({e.target for e in edges
-                                               if e.kind == "cites_library"})},
+            "graph": {"edges": [e.__dict__ for e in edges], "library_nodes": library_nodes,
+                      "library_titles": library_titles},
         }
 
     # ── 归类（体系）─────────────────────────────────────────

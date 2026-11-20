@@ -1807,12 +1807,36 @@
 .src-tnode button:hover { text-decoration: underline; }
 .src-n { font-family: var(--font-mono); font-size: 11px; color: var(--fg-subtle); }
 .src-explain { margin-top: 12px; padding: 10px 12px; border: 1px dashed var(--border-strong); border-radius: 8px; color: var(--fg-muted); font-size: 12px; line-height: 1.55; }
-.src-graph { padding: 8px 12px; }
-.src-graph svg { width: 100%; height: auto; max-width: 100%; display: block; }
-.src-legend { font-size: 11.5px; color: var(--fg-muted); padding-bottom: 6px; }
-.src-gnode { cursor: pointer; }
-.src-gnode text { font-size: 11px; fill: var(--fg-muted); }
-.src-gnode text.on { fill: var(--fg); font-weight: 700; }
+/* 图谱（components/panels/SourceGraph.tsx）：画布铺满左栏，操作手感同数据流页 */
+.src-main:has(> .src-graph) { overflow: hidden; }
+.src-graph { display: flex; flex-direction: column; height: 100%; min-height: 360px; }
+.src-graph-bar { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; padding: 7px 12px; border-bottom: 1px solid var(--border); font-size: 11.5px; color: var(--fg-muted); }
+.src-legend { display: inline-flex; flex-wrap: wrap; gap: 4px 12px; }
+.src-legend > span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.src-graph-toggle { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
+.src-graph-canvas { position: relative; flex: 1; min-height: 0; overflow: hidden; background: var(--flow-canvas); cursor: grab; touch-action: none; user-select: none; }
+.src-graph-canvas.is-panning { cursor: grabbing; }
+.src-graph-canvas > svg { position: absolute; inset: 0; display: block; z-index: 1; }
+.src-gedge { fill: none; transition: opacity .12s; }
+.src-gedge--cites, .src-gedge--cites_library { stroke: var(--fg-subtle); stroke-width: 1.3; }
+.src-gedge--coupling { stroke: var(--info); stroke-opacity: .5; }
+.src-gedge.hot { stroke: var(--fg); stroke-width: 1.8; }
+.src-gedge--coupling.hot { stroke: var(--info); stroke-opacity: .95; }
+.src-gnode { cursor: pointer; outline: none; transition: opacity .12s; }
+.src-gnode .src-ghit { fill: transparent; }
+.src-gnode .src-gdot { stroke-width: 2; transition: stroke-width .12s; }
+.src-gnode.hot .src-gdot, .src-gnode:focus-visible .src-gdot { stroke-width: 3.2; }
+.src-gnode .src-gring { fill: none; stroke: var(--info); stroke-width: 2; }
+.src-gnode:focus-visible .src-ghit { stroke: var(--info); stroke-width: 1.5; stroke-dasharray: 3 3; }
+.src-gnode text { fill: var(--fg-muted); paint-order: stroke; stroke: var(--flow-canvas); stroke-width: 4px; stroke-linejoin: round; }
+.src-gnode.cited text { fill: var(--fg); }
+.src-gnode.on text, .src-gnode.hot text { fill: var(--fg); font-weight: 700; }
+.src-gnode.dim, .src-gedge.dim { opacity: .16; }
+.src-gtip { position: absolute; z-index: 7; padding: 8px 10px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; box-shadow: var(--shadow-pop); font-size: 12px; line-height: 1.45; pointer-events: none; display: flex; flex-direction: column; gap: 2px; }
+.src-gtip .m { color: var(--fg-subtle); font-size: 11.5px; }
+.src-graph-foot { display: flex; align-items: center; gap: 12px; padding: 6px 8px 6px 12px; border-top: 1px solid var(--border); }
+.src-graph-foot-text { flex: 1; min-width: 0; font-size: 11.5px; line-height: 1.5; color: var(--fg-subtle); }
+.flow-zoom-control.src-graph-zoom { position: static; box-shadow: none; flex: none; }
 .chat-external-bar { margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; font-size: 11.5px; color: var(--fg-muted); }
 .chat-external-toggle { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--fg-muted); font-size: 11.5px; cursor: pointer; }
 .chat-external-toggle.on { border-color: var(--info); color: var(--info); background: var(--info-soft); font-weight: 600; }

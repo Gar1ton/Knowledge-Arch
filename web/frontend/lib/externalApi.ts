@@ -49,7 +49,19 @@ export interface ExternalCapture {
   graph: {
     edges: { source: string; target: string; kind: "cites" | "coupling" | "cites_library"; weight: number }[];
     library_nodes: string[];
+    /** 库内节点（`lib:<doc_id>`）→ 文档标题。 */
+    library_titles: Record<string, string>;
   };
+}
+
+/** 来源的作者短标签（与 Harvard 引用同规则：一人 / 两人用 and / 三人以上 et al.）。 */
+export function authorsLabel(s: ExternalSourceDetail): string {
+  const raw = (s.meta.creators?.length ? s.meta.creators : s.meta.creator_names) ?? [];
+  const names = raw.map((n) => String(n).split(",")[0].trim()).filter(Boolean);
+  if (!names.length) return "Anon.";
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names[0]} et al.`;
 }
 
 const enc = encodeURIComponent;

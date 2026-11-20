@@ -747,6 +747,15 @@
     验证：新增 `test_source_graph.py` 1 项、`test_ask_external.py` 1 项（详情、归类、导出）；全量 pytest 1703 passed /
     4 skipped；ruff；mypy；前端 lint / tsc / build。真后端 + next dev + Playwright：用写进临时库的示例数据（不发外部请求）
     截图检查开关、来源条、列表、体系、图谱，无页面错误；图谱长作者名截断保留年份。
+  - [x] P3b 图谱手感与显示（用户 11-20：图放大难、点也看不清）：图谱拆成 `components/panels/SourceGraph.tsx`，
+    画布铺满左栏、按真实像素绘制；操作同数据流页（滚轮以光标为中心缩放、拖空白处平移、放大 / 缩小 / 适应窗口），
+    另可拖节点、悬停或 Tab 聚焦显示信息卡并调暗不相连的节点、点圆点或标签都能选中、双击空白处适应窗口；
+    `lib/sourceGraphLayout.ts` 布局改为按相连的簇分别力导向、孤立节点排成网格再逐行拼放（确定性，刷新不跳）；
+    适应窗口按标签宽度留边；标签字号不小于 12px；节点超过 14 个时只常显引用的、选中的与悬停相邻的标签，
+    放大到 1.5 倍以上全部显示；「只看回答引用的」开关；图例改为图形；库内节点显示文档标题
+    （`api_external` 新增 `graph.library_titles`）。验证：`test_ask_external.py` 增加库内节点断言；全量 pytest
+    1703 passed / 4 skipped；ruff；mypy；前端 lint / tsc / build；Playwright 用 20 篇示例（不发外部请求）走查
+    适应窗口、悬停、滚轮放大、平移、拖节点、单击标签选中、只看引用的、小图。
   - [ ] P4 入库：`PaperImporter`、入库框（本地 / Zotero 集合）、待补 PDF。
   - [ ] P5 Zotero 推送：Web API 写入、文件移交、推送账本、拉取认领。
   - [ ] P6 导出导入：`.kaarch`、口令加密、偏好设置「备份与迁移」、覆盖 / 合并。

@@ -39,6 +39,10 @@
   （`/api/external/captures/{id}` 及 `placement`、`export`）、`web/frontend/components/panels/SourcesPanel.tsx`、
   `ChatPanel.tsx`、`lib/externalApi.ts`、`ConsoleContext.tsx`、`app/(console)/layout.tsx`。
   测试：`test_source_graph.py`、`test_ask_external.py`。
+- **来源栏图谱好点、看得清。** 画布铺满、可滚轮缩放 / 拖动平移 / 拖节点 / 适应窗口（与数据流页同手感）；
+  悬停显示信息卡并调暗无关节点；相连的簇分开排、孤立文献排成网格；标签不小于 12px，篇数多时只常显关键标签；
+  「只看回答引用的」开关；库内节点显示文档标题。`web/frontend/components/panels/SourceGraph.tsx`、
+  `web/frontend/lib/sourceGraphLayout.ts`、`kacore/api_external.py`（`graph.library_titles`）。
 
 ## [v2.2.0] — 2026-11-19
 

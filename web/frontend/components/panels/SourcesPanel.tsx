@@ -13,7 +13,9 @@ import { DirPickerDialog } from "@/components/flow/DirPickerDialog";
 import { useToast } from "@/components/ui/Toast";
 import { useConsole } from "@/lib/ConsoleContext";
 import { inDesktopShell, pickFolder } from "@/lib/backend";
+import { SourceGraph } from "@/components/panels/SourceGraph";
 import {
+  authorsLabel,
   exportExternalCapture,
   getExternalCapture,
   placeExternalCapture,
@@ -32,15 +34,6 @@ const ENGINE: Record<string, string> = {
   crossref: "Crossref", openalex: "OpenAlex", openlibrary: "Open Library", arxiv: "arXiv",
   semantic_scholar: "Semantic Scholar", datacite: "DataCite",
 };
-
-function authorsLabel(s: ExternalSourceDetail): string {
-  const raw = (s.meta.creators?.length ? s.meta.creators : s.meta.creator_names) ?? [];
-  const names = raw.map((n) => String(n).split(",")[0].trim()).filter(Boolean);
-  if (!names.length) return "Anon.";
-  if (names.length === 1) return names[0];
-  if (names.length === 2) return `${names[0]} and ${names[1]}`;
-  return `${names[0]} et al.`;
-}
 
 function placementKey(s: ExternalSourceDetail): string {
   if (!CITABLE.includes(s.trust)) return "none";
@@ -263,62 +256,6 @@ function PlacementTree({ data, placing, t, onPick }: {
       <div className="src-group" />
       {counts.get("none") ? node("none", t("src_tree_none")) : null}
       <div className="src-explain">{t("src_tree_explain")}</div>
-    </div>
-  );
-}
-
-// 图谱节点标签里作者部分的最大字符数（超出截断、保留年份，悬停显示全名）。
-const GRAPH_LABEL_MAX = 18;
-
-function SourceGraph({ data, sel, onSel, onOpenLibrary, t }: {
-  data: ExternalCapture; sel: string | null; onSel: (id: string) => void;
-  onOpenLibrary: (docId: string) => void; t: T;
-}) {
-  const ids = [...data.sources.map((s) => s.source_id), ...data.graph.library_nodes];
-  const W = 700, H = 420, R = 165, cx = W / 2, cy = H / 2;
-  const pos = new Map(ids.map((id, i) => {
-    const a = (2 * Math.PI * i) / Math.max(ids.length, 1) - Math.PI / 2;
-    return [id, [cx + R * Math.cos(a), cy + R * Math.sin(a)] as [number, number]];
-  }));
-  const byId = new Map(data.sources.map((s) => [s.source_id, s]));
-  const color = (s?: ExternalSourceDetail) =>
-    !s ? "var(--fg)" : s.trust === "retracted" ? "var(--danger)" : s.trust === "conflict" ? "var(--warn)"
-      : s.trust === "verified" ? "var(--fg)" : "var(--fg-subtle)";
-  return (
-    <div className="src-graph">
-      <div className="src-legend">{t("src_graph_legend")}</div>
-      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={t("src_tab_graph")}>
-        <defs>
-          <marker id="src-arrow" viewBox="0 0 8 8" refX="14" refY="4" markerWidth="7" markerHeight="7" orient="auto">
-            <path d="M0,0 L8,4 L0,8 z" fill="var(--fg-subtle)" />
-          </marker>
-        </defs>
-        {data.graph.edges.map((e, i) => {
-          const a = pos.get(e.source), b = pos.get(e.target);
-          if (!a || !b) return null;
-          return e.kind === "coupling"
-            ? <line key={i} x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke="var(--border-strong)" strokeWidth={1 + Math.min(e.weight, 6)} />
-            : <line key={i} x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke="var(--fg-subtle)" strokeWidth={1.2} markerEnd="url(#src-arrow)" />;
-        })}
-        {ids.map((id) => {
-          const [x, y] = pos.get(id)!;
-          const s = byId.get(id);
-          const lib = id.startsWith("lib:");
-          const who = lib ? t("src_library_node") : authorsLabel(s!).replace(" et al.", " 等");
-          const year = lib ? "" : String(s?.meta.year ?? "");
-          const full = `${who} ${year}`.trim();
-          const label = `${who.length > GRAPH_LABEL_MAX ? `${who.slice(0, GRAPH_LABEL_MAX - 1)}…` : who} ${year}`.trim();
-          return (
-            <g key={id} className="src-gnode" onClick={() => (lib ? onOpenLibrary(id.slice(4)) : onSel(id))}>
-              <circle cx={x} cy={y} r={sel === id ? 10 : 8} fill={lib || s?.meta.in_library_doc_id ? color(s) : "var(--surface)"}
-                stroke={color(s)} strokeWidth={2} strokeDasharray={!lib && s && !s.cited.length ? "3 2" : undefined} />
-              <text x={x + (x >= cx ? 13 : -13)} y={y + 4} textAnchor={x >= cx ? "start" : "end"}
-                className={sel === id ? "on" : ""}><title>{full}</title>{label}</text>
-            </g>
-          );
-        })}
-      </svg>
-      <div className="src-note">{data.graph.edges.length ? t("src_graph_note") : t("src_graph_empty")}</div>
     </div>
   );
 }

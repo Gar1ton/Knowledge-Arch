@@ -28,11 +28,13 @@ class _SynthLLM:
         return GenerationResult(text="Situations constrain traits [1]. Drift grows [2].")
 
 
-def _external(store: InMemorySourceDocumentStore) -> ExternalEvidence:
+def _external(store: InMemorySourceDocumentStore,
+              references: list[str] | None = None) -> ExternalEvidence:
     crossref = MemoryIndex("crossref", results={"alpha": [IndexHit(
         "", "", 0, doi="10.1234/drift",
         fields={"title": "Persona Drift", "creators": ["Gao, Li"], "year": "2025",
-                "abstract": "Drift grows over long dialogue."})]})
+                "abstract": "Drift grows over long dialogue."},
+        reference_ids=list(references or []))]})
     openalex = MemoryIndex("openalex", records={"doi:10.1234/drift": IndexHit(
         "openalex", "", 0, doi="10.1234/drift")})
     indexes = IndexSet(search=[crossref], lookup={"crossref": crossref, "openalex": openalex})
@@ -164,7 +166,7 @@ async def test_capture_detail_placement_and_export(tmp_path: Path) -> None:
 
     store = InMemorySourceDocumentStore()
     api = await _api(store, _SynthLLM())
-    manager = _external(store)
+    manager = _external(store, references=["doi:10.1234/mischel"])
     calls: list[int] = []
 
     async def fake_place(papers, outline):
@@ -174,6 +176,11 @@ async def test_capture_detail_placement_and_export(tmp_path: Path) -> None:
 
     manager.place = fake_place  # type: ignore[method-assign]
     api.attach_external_evidence(manager)
+
+    async def library_dois() -> dict[str, str]:
+        return {"10.1234/mischel": "d1"}
+
+    api._library_dois = library_dois  # type: ignore[method-assign]
     from kacore.domain.models import Collection
 
     await store.upsert_collection(Collection(name="[26.3] Agentic", coll_key="Lagentic"))
@@ -188,6 +195,8 @@ async def test_capture_detail_placement_and_export(tmp_path: Path) -> None:
     assert src["cited"][0]["passage"].startswith("Drift grows")
     assert {h["engine"] for h in src["hits"]} == {"crossref"}
     assert any(f["field"] == "title" for f in src["fields"])
+    assert detail["graph"]["library_nodes"] == ["lib:d1"]    # 引用了库内文档 → 库内节点带标题
+    assert detail["graph"]["library_titles"]["lib:d1"].startswith("Mischel and Shoda (1995)")
 
     placed = await api.place_external_capture(cid)
     assert placed["sources"][0]["placement"]["reason"] == "fits"
