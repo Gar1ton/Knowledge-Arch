@@ -1710,34 +1710,72 @@ async def handle_ask_evidence(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
-async def handle_external_evidence(request: web.Request) -> web.Response:
-    """POST /api/external/evidence — AI 助手取外部证据。
-
-    必须带 user_approved=true：助手先问过用户、用户同意了才能查（skill 的「先问再查」）。
-    """
+async def _json_body(request: web.Request) -> dict[str, Any] | None:
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
-        body = None
-    if not isinstance(body, dict):
+        return None
+    return body if isinstance(body, dict) else None
+
+
+async def handle_tools_list(request: web.Request) -> web.Response:
+    """GET /api/tools — 联网工具的声明、开关、是否就绪与最近状态（工具面板与 AI 助手用）。"""
+    try:
+        return web.json_response({"tools": _api(request).list_tools()})
+    except RuntimeError as exc:
+        return web.json_response({"status": "unavailable", "message": str(exc)}, status=503)
+
+
+async def handle_tools_recent_calls(request: web.Request) -> web.Response:
+    """GET /api/tools/calls?limit=50 — 最近的工具调用（跨运行，新的在前）。"""
+    try:
+        limit = int(request.query.get("limit", "50"))
+    except ValueError:
+        limit = 50
+    calls = await _api(request).recent_tool_calls(min(max(limit, 1), 200))
+    return web.json_response({"calls": calls})
+
+
+async def handle_tool_call(request: web.Request) -> web.Response:
+    """POST /api/tools/{name}/call {arguments, capture_id?, question?, conversation_id?, actor?}
+
+    必须带 user_approved=true：AI 助手先问过用户才能联网（skill 的「先问再查」）；工具面板的
+    试调用由用户按「调用」发起，同样带上。
+    """
+    body = await _json_body(request)
+    if body is None:
         return web.json_response({"error": "JSON object required"}, status=400)
     if body.get("user_approved") is not True:
         return web.json_response(
             {"status": "approval_required",
-             "message": "Ask the user before looking for external literature."},
-            status=403,
-        )
-    queries = body.get("queries")
-    if not isinstance(queries, list) or not all(isinstance(q, str) for q in queries):
-        return web.json_response({"error": "queries must be a list of strings"}, status=400)
+             "message": "Ask the user before calling external tools."}, status=403)
+    arguments = body.get("arguments") or {}
+    if not isinstance(arguments, dict):
+        return web.json_response({"error": "arguments must be an object"}, status=400)
     try:
-        result = await _api(request).collect_external_for_agent(
+        result = await _api(request).call_tool(
+            request.match_info["name"], arguments,
+            capture_id=str(body.get("capture_id") or ""),
             question=str(body.get("question") or ""),
-            queries=queries,
             conversation_id=str(body.get("conversation_id") or ""),
+            actor=str(body.get("actor") or "agent"),
         )
     except ValueError as exc:
         return web.json_response({"status": "error", "message": str(exc)}, status=400)
+    except RuntimeError as exc:
+        return web.json_response({"status": "unavailable", "message": str(exc)}, status=503)
+    return web.json_response(result)
+
+
+async def handle_tool_cite(request: web.Request) -> web.Response:
+    """POST /api/tools/cite {capture_id, call, passage, title, ...} — 登记一条引用（逐字核对）。"""
+    body = await _json_body(request)
+    if body is None or not str(body.get("capture_id") or "").strip():
+        return web.json_response({"error": "capture_id is required"}, status=400)
+    try:
+        result = await _api(request).cite_tool(str(body["capture_id"]).strip(), body)
+    except ValueError as exc:
+        return web.json_response({"status": "error", "message": str(exc)}, status=404)
     except RuntimeError as exc:
         return web.json_response({"status": "unavailable", "message": str(exc)}, status=503)
     return web.json_response(result)
@@ -2043,7 +2081,10 @@ def build_app(
     app.router.add_get("/api/logs", handle_logs)
     app.router.add_post("/api/logs/events", handle_log_event)
     app.router.add_post("/api/ask/evidence", handle_ask_evidence)
-    app.router.add_post("/api/external/evidence", handle_external_evidence)
+    app.router.add_get("/api/tools", handle_tools_list)
+    app.router.add_get("/api/tools/calls", handle_tools_recent_calls)
+    app.router.add_post("/api/tools/cite", handle_tool_cite)
+    app.router.add_post("/api/tools/{name}/call", handle_tool_call)
     app.router.add_get("/api/external/captures/{capture_id}", handle_external_capture)
     app.router.add_post("/api/external/captures/{capture_id}/placement",
                         handle_external_capture_placement)

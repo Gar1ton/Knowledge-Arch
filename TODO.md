@@ -756,6 +756,39 @@
     （`api_external` 新增 `graph.library_titles`）。验证：`test_ask_external.py` 增加库内节点断言；全量 pytest
     1703 passed / 4 skipped；ruff；mypy；前端 lint / tsc / build；Playwright 用 20 篇示例（不发外部请求）走查
     适应窗口、悬停、滚轮放大、平移、拖节点、单击标签选中、只看引用的、小图。
+  - [x] P3c 整理：联网功能改为工具调用（用户 11-22 批准，计划 `data/ka_v3/ka_v3_tools_plan.html`，未入库）。
+    用户 11-22：代码要足够干净、不预设很多东西；人文专著这类特殊代码不合适；「将每个联网功能适配成类似 MCP 的方式，
+    允许一个 distributor 通过任务内容调用」，便于之后调试与管理来源。取代 P1–P3b 里按索引写死的部分：
+    逐索引适配器、DOI/arXiv/PMID/ISBN 规整与第二家互查、DataCite / doi.org、OpenAlex 额度模块、按库名写的配置与
+    设置项、图谱与排名漂移、P4/P5 提前写的 `file_style.py` 与迁移 030。决策：内置 6 个工具（crossref / openalex /
+    arxiv / semantic_scholar / openlibrary 检索 + read_open_pdf）；核验 = 可追溯（引用段落与书目字段逐字出现在本次
+    运行记下的工具原文里）；distributor 用供应商原生工具调用，默认最多 4 轮（假设值：检索、读全文、登记引用、
+    重试一次被拒引用）；skill 路径由助手自己挑工具，KA 只执行、核对、记账。
+    - [x] T1 工具层：`domain/tool_calls.py`（类型 + `trace_check`）、`adapters/tools/`（base、registry、6 个工具；
+      OpenAlex 额度只在 `openalex.py`）；设置项由工具声明生成（`tool_setting_specs`，home `flow.external.tools`），
+      配置 `ToolsConfig`；删除 `adapters/scholarly/`、`domain/web_sources.py`、`managers/external_status.py`，
+      `managers/external_fulltext.py` 并入 `adapters/tools/read_open_pdf.py`。
+    - [x] T2 供应商工具调用：`ProviderClient.generate_with_tools`（默认 `ERROR_NO_TOOLS`）、OpenAI 兼容（tools /
+      tool_calls，助手原始消息含 reasoning_content 原样回放，400 / 422 报 ERROR_NO_TOOLS）、Anthropic（tools / tool_use，
+      思考块原样回放，相邻工具结果合进一条 user 消息）、`RoleClient` 委派。
+    - [x] T3 distributor 与账本：`managers/tool_distributor.py`（`ToolSession` 执行并记账、cite 核对、可按 capture_id
+      恢复；`ToolDistributor` 最多 `max_rounds` 轮，最后一轮只给 cite；`place` 归类）、`pipelines/external_prompts.py`
+      重写、迁移 `029_tool_calls.sql`（DROP 旧 029 / 030 的表）、`ToolLedgerRepository`（SQLite / 内存）、`api.py`
+      接入（`_collect_external` / `_finish_external`，已在库按 DOI 跳过）、`api_external.py` 重写（来源详情、归类、导出、
+      工具接口）；删除 `external_evidence.py`、`file_style.py`、`source_graph.py`、`external_ledger.py`、迁移 030；
+      `api_capabilities.py` 恢复 2.2.0 原样，`capabilities.py` 的节点只读开着几个工具。
+    - [x] T4 界面：`components/flow/ToolsPanel.tsx`（开关、设置、试调用、最近调用；全部来自工具声明）；来源栏只留列表 /
+      体系，来源标「工具 · 调用 · 块」，可看每次调用的参数与原文；对话栏来源条与「没有运行」的原因文案；删除
+      `ExternalActions.tsx`、`SourceGraph.tsx`、`sourceGraphLayout.ts` 与相应样式和文案。
+    - [x] T5 skill 与收尾：`GET /api/tools`、`GET /api/tools/calls`、`POST /api/tools/{name}/call`（须 user_approved）、
+      `POST /api/tools/cite`，进 agent 白名单；skill 命令 `tools` / `tool-call` / `tool-cite`，SKILL.md、research.md；
+      skill 的可写配置不含工具设置（工具开关由用户在面板里定）。
+    - 验证（11-22）：新增 `test_tools.py` 11 项、`test_tool_distributor.py` 5 项、`test_provider_tools.py` 3 项，重写
+      `test_ask_external.py` 6 项、`test_external_ledger_store.py` 9 项；删除只测已删规则的 6 个测试文件；全量 pytest
+      1657 passed / 4 skipped；ruff；mypy；前端 tsc / lint / build。真后端 + next dev + Playwright：临时数据目录写入示例
+      账本（不发外部请求、未按「调用」），走查工具面板（6 个工具、缺 key 的 Semantic Scholar 不提供给模型、最近调用含
+      被拒 cite 与 OpenAlex 额度错误）、对话栏来源条、来源栏列表 / 调用原文 / 体系，无页面错误。未做：真实模型的工具调用
+      冒烟（需要真实请求，待用户同意）。
   - [ ] P4 入库：`PaperImporter`、入库框（本地 / Zotero 集合）、待补 PDF。
   - [ ] P5 Zotero 推送：Web API 写入、文件移交、推送账本、拉取认领。
   - [ ] P6 导出导入：`.kaarch`、口令加密、偏好设置「备份与迁移」、覆盖 / 合并。

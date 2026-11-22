@@ -101,35 +101,23 @@ class SourceStoreConfig:
     ocr_enabled: bool = False
 
 
-EXTERNAL_DEPTH_FULLTEXT = "fulltext"
-EXTERNAL_DEPTH_ABSTRACT = "abstract"
-OPENALEX_KEY_SECRET = "external.openalex_api_key"
-SEMANTIC_SCHOLAR_KEY_SECRET = "external.semantic_scholar_api_key"
+TOOLS_SECTION = "external_tools"
 
 
 @dataclass
-class ExternalEvidenceConfig:
-    """联网补充（3.0.0）：回答时去学术索引找外部文献。只在对话栏打开开关时运行。
+class ToolsConfig:
+    """联网工具（3.0.0）：每个联网功能一个工具，distributor 按问题挑着调用（「联网补充」打开时）。
 
-    索引只提供书目数据；写检索词、排相关度用「模型分配」的 research 角色。depth 决定外部证据
-    读到多深：fulltext = 能拿到开放获取全文就读片段，否则用摘要；abstract = 一律用摘要
-    （用户 11-20：先按 fulltext 实现，之后再定）。各上限是成本护栏（假设值，可在设置里改）：
-    每次最多写 max_queries 个检索词、每个检索词每家取 per_query 条、最多核验 max_candidates 篇、
-    最多 max_sources 篇进入回答。OpenAlex / Semantic Scholar 的 key 存在加密机密库，不在这里。
+    本类不认识任何具体工具：enabled 与 values 的键是工具名，由工具自己的声明
+    （`kacore/adapters/tools`）决定；机密设置不在这里，工具装配时从加密库现取。
+    max_rounds：一次回答最多调用研究模型几轮（用户 11-22 定默认 4：检索、读全文、登记引用、重试一次
+    被拒引用，假设值）；max_result_chars：每次工具结果交给模型的最大字数（控制上下文长度的假设值）。
     """
 
-    crossref: bool = True
-    arxiv: bool = True
-    openlibrary: bool = True
-    openalex: bool = True
-    semantic_scholar: bool = False
-    depth: str = EXTERNAL_DEPTH_FULLTEXT
-    max_queries: int = 3
-    per_query: int = 8
-    max_candidates: int = 12
-    max_sources: int = 5
-    max_pdf_mb: int = 40
-    contact_email: str = ""
+    max_rounds: int = 4
+    max_result_chars: int = 6000
+    enabled: dict[str, bool] = field(default_factory=dict)
+    values: dict[str, dict[str, object]] = field(default_factory=dict)
 
 
 @dataclass
@@ -682,24 +670,26 @@ class Config:
             # rate_limit_rps 固定为平台上限，不从配置读取。
         )
 
-    def get_external_evidence_config(self) -> ExternalEvidenceConfig:
-        s = _section(self.raw, "external_evidence")
-        d = ExternalEvidenceConfig
-        depth = str(s.get("depth", d.depth))
-        return ExternalEvidenceConfig(
-            crossref=bool(s.get("crossref", d.crossref)),
-            arxiv=bool(s.get("arxiv", d.arxiv)),
-            openlibrary=bool(s.get("openlibrary", d.openlibrary)),
-            openalex=bool(s.get("openalex", d.openalex)),
-            semantic_scholar=bool(s.get("semantic_scholar", d.semantic_scholar)),
-            depth=depth if depth in {EXTERNAL_DEPTH_FULLTEXT, EXTERNAL_DEPTH_ABSTRACT} else d.depth,
-            max_queries=min(6, max(1, _int_or_default(s.get("max_queries"), d.max_queries))),
-            per_query=min(25, max(1, _int_or_default(s.get("per_query"), d.per_query))),
-            max_candidates=min(40, max(1, _int_or_default(s.get("max_candidates"),
-                                                          d.max_candidates))),
-            max_sources=min(12, max(1, _int_or_default(s.get("max_sources"), d.max_sources))),
-            max_pdf_mb=min(200, max(1, _int_or_default(s.get("max_pdf_mb"), d.max_pdf_mb))),
-            contact_email=str(s.get("contact_email", d.contact_email) or "").strip(),
+    def get_tools_config(self) -> ToolsConfig:
+        """原始键形如 `<工具名>.enabled` / `<工具名>.<设置名>`（设置项由工具声明生成）。"""
+        s = _section(self.raw, TOOLS_SECTION)
+        d = ToolsConfig
+        enabled: dict[str, bool] = {}
+        values: dict[str, dict[str, object]] = {}
+        for key, value in s.items():
+            tool, _, name = str(key).partition(".")
+            if not name:
+                continue
+            if name == "enabled":
+                enabled[tool] = bool(value)
+            else:
+                values.setdefault(tool, {})[name] = value
+        return ToolsConfig(
+            max_rounds=min(8, max(1, _int_or_default(s.get("max_rounds"), d.max_rounds))),
+            max_result_chars=min(20000, max(1000, _int_or_default(
+                s.get("max_result_chars"), d.max_result_chars))),
+            enabled=enabled,
+            values=values,
         )
 
     def get_vision_config(self) -> VisionConfig:

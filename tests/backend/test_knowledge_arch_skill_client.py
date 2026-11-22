@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from kacore.config import TOOLS_SECTION
 from kacore.settings.schema import SPECS_BY_TARGET
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -508,9 +509,9 @@ def test_skill_requires_explicit_connection_and_external_authorization() -> None
     assert "9821" not in source
     assert "connection-status" in source
     assert "connection-setup" not in source and "password" not in source.lower()
-    # 3.0.0：外部文献只经 external-evidence，且先问用户、同意后才查（先问再查）。
+    # 3.0.0：外部来源只经 KA 的工具，且先问用户、同意后才查（先问再查）。
     assert "only after the user agrees for the current question" in source
-    assert "external-evidence --user-approved` only after the user says yes" in source
+    assert "tool-call --user-approved` only after the user says yes" in source
     assert "request-secret" in source and "references/setup.md" in source
     assert "notion-save-qa" in source
     assert "qa_database_id" in source
@@ -672,7 +673,8 @@ def test_read_document_requires_explicit_intent() -> None:
 def test_distribution_policy_snapshot_matches_config_truth_source() -> None:
     expected: dict[str, dict[str, str]] = {}
     for (section, key), spec in SPECS_BY_TARGET.items():
-        if spec.kind != "secret":
+        # 联网工具的开关与设置由用户在工具面板里定，助手不能改（客户端也就不列工具名）。
+        if spec.kind != "secret" and section != TOOLS_SECTION:
             expected.setdefault(section, {})[key] = spec.consequence
     # 旧 embedding.provider / model 写入经 api 的过渡映射仍可用（后果为重建）。
     expected.setdefault("embedding", {}).update({"provider": "rebuild", "model": "rebuild"})
@@ -1031,10 +1033,9 @@ def test_cli_output_is_redacted(tmp_path: Path) -> None:
     assert "system" not in json.loads(result.stdout)
 
 
-def test_external_evidence_refuses_without_user_approval() -> None:
+def test_tool_call_refuses_without_user_approval() -> None:
     """先问再查：没有 --user-approved 时客户端不发请求。"""
     client = CLIENT.KnowledgeArchClient("http://127.0.0.1:9", TOKEN)
     with pytest.raises(CLIENT.UsageError, match="Ask the user first"):
-        CLIENT.external_evidence(client, "q", ["persona drift"], user_approved=False)
-    with pytest.raises(CLIENT.UsageError, match="--query"):
-        CLIENT.external_evidence(client, "q", [], user_approved=True)
+        CLIENT.call_tool(client, "crossref_search", "{}", question="q", capture_id="",
+                         user_approved=False)

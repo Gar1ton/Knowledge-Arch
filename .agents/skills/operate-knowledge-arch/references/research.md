@@ -132,22 +132,25 @@ When troubleshooting via the low-level `search` command, hits carry raw `title` 
 
 ## External literature
 
-Use this only after the user agreed to external literature for the current question (see SKILL.md).
-Knowledge Arch searches scholarly indexes (Crossref, arXiv, OpenAlex, and Semantic Scholar when the
-user set a key), verifies each paper by its identifier, and returns citable passages. It calls no
-model: you write the queries and you decide what to cite.
+Use this only after the user agreed to external sources for the current question (see SKILL.md).
+Each external function of Knowledge Arch is a tool with a name, a description and an input schema,
+like an MCP tool. You choose the tools and the arguments; Knowledge Arch only runs them, records every
+call and checks citations. It calls no model.
 
 ```
-KA external-evidence --question "original user question" --query "keyword phrase" --query "another phrase" --user-approved
+KA tools
+KA tool-call crossref_search --arguments '{"query": "keyword phrase"}' --question "original user question" --user-approved
+KA tool-call read_open_pdf --arguments '{"url": "...", "query": "..."}' --capture c_... --user-approved
+KA tool-cite --capture c_... --call c1 --title "..." --creator "Family, Given" --year 2025 --passage "..."
 ```
 
-- Write 1-4 English keyword phrases that target the gap you named, not the whole question. Keep
-  names and technical terms verbatim.
-- `evidence` holds the citable passages: a full-text passage with its page, or the abstract
-  (`abstract_only: true`). Cite with the returned `harvard_in_text` and list `harvard_reference`,
-  and mark the source as external in your answer.
-- `candidates` lists everything found with its `trust`: `verified` (a second index confirmed the
-  identifier), `single` (one index only: you may cite it but say it is unverified), `retracted`,
-  `conflict` (the DOI does not resolve) and `unresolved` (no identifier). Never cite the last three.
-- Every call is recorded in the app's source ledger; the user sees it in the app.
-
+- `tools` lists every tool with `ready` and `missing` settings; call only ready tools.
+- The first `tool-call` returns a `capture_id`; pass it as `--capture` to later calls for the same
+  question so that `tool-cite` can see all of them. Each result starts with its call id (`c1`, `c2`…).
+- Query with English keyword phrases of 3-8 words that target the gap you named. Keep names and
+  technical terms verbatim.
+- `tool-cite` checks word for word that the passage is in the named call and that every field you
+  give is in some call of the capture. Copy them exactly; leave out what you cannot copy. A rejected
+  citation must not be used. An accepted one returns `harvard_in_text` and `harvard_reference`; cite
+  with those and mark the source as external in your answer.
+- Every call and citation is recorded in the app's ledger; the user sees it in the app.

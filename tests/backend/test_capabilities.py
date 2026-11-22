@@ -82,11 +82,15 @@ def test_pipeline_has_ordered_stages_with_zotero_first(monkeypatch: pytest.Monke
     ]
 
 
-def test_external_stage_lists_enabled_engines(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_external_stage_is_off_only_when_every_tool_is_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kacore.adapters.tools.registry import builtin_specs
+
     _patch_modules(monkeypatch, {"pymupdf4llm"})
-    ext = _stage(detect_pipeline(_cfg(dim=384)), "external")
-    assert ext["status"] == STATUS_READY
-    assert ext["detail"]["engines"] == ["crossref", "openalex", "openlibrary", "arxiv"]
+    assert _stage(detect_pipeline(_cfg(dim=384)), "external")["status"] == STATUS_READY
+    off = {"external_tools": {f"{s.name}.enabled": False for s in builtin_specs()}}
+    assert _stage(detect_pipeline(_cfg(off, dim=384)), "external")["status"] == STATUS_OFF
 
 
 def test_zotero_stage_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -10,10 +10,7 @@ import re
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
-from kacore.repository.source_store.external import (
-    ExternalSourceRepository,
-    ZoteroPushRepository,
-)
+from kacore.repository.source_store.external import ToolLedgerRepository
 from kacore.repository.source_store.figures import FigureRepository
 
 if TYPE_CHECKING:
@@ -37,9 +34,7 @@ if TYPE_CHECKING:
     )
 
 
-class SourceDocumentStore(
-    FigureRepository, ExternalSourceRepository, ZoteroPushRepository, ABC
-):
+class SourceDocumentStore(FigureRepository, ToolLedgerRepository, ABC):
     """原件 + 集合 + 分块的仓储。
 
     标识约定：

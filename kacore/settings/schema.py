@@ -14,13 +14,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from kacore.adapters.tools.registry import SETTINGS_HOME as TOOLS_HOME
+from kacore.adapters.tools.registry import builtin_specs, secret_ref, setting_key
 from kacore.config import (
-    EXTERNAL_DEPTH_ABSTRACT,
-    EXTERNAL_DEPTH_FULLTEXT,
     NOTION_SYNC_PRESERVE,
     NOTION_SYNC_STRICT,
-    OPENALEX_KEY_SECRET,
-    SEMANTIC_SCHOLAR_KEY_SECRET,
+    TOOLS_SECTION,
     VECTOR_BACKEND_LEXICAL,
     VECTOR_BACKEND_MILVUS,
     ZOTERO_ACCESS_LOCAL,
@@ -35,16 +34,17 @@ from kacore.config import (
     DeepThinkingConfig,
     EmbeddingConfig,
     EnhancedRecallConfig,
-    ExternalEvidenceConfig,
     GraphConfig,
     NotionSyncConfig,
     R2SyncConfig,
     RerankConfig,
     SourceStoreConfig,
+    ToolsConfig,
     VectorDbConfig,
     VisionConfig,
     ZoteroSyncConfig,
 )
+from kacore.domain.tool_calls import SETTING_INT, SETTING_SECRET
 
 Kind = Literal["bool", "int", "float", "str", "text", "enum", "path", "secret", "model_ref"]
 Consequence = Literal["none", "restart", "rebuild"]
@@ -112,6 +112,35 @@ class SettingSpec:
 
 def _t(section: str, key: str) -> tuple[tuple[str, str], ...]:
     return ((section, key),)
+
+
+def tool_setting_specs() -> tuple[SettingSpec, ...]:
+    """各联网工具的开关与设置，按工具自己的声明生成（本文件不写任何工具名）。
+
+    显示在数据流「联网补充」节点的工具面板里（home = flow.external.tools）；机密只进加密库，
+    不随快照携带。
+    """
+    out: list[SettingSpec] = []
+    for spec in builtin_specs():
+        out.append(SettingSpec(
+            setting_key(spec.name, "enabled"), "bool", spec.default_enabled, TOOLS_HOME,
+            target=_t(TOOLS_SECTION, f"{spec.name}.enabled"),
+        ))
+        for setting in spec.settings:
+            key = setting_key(spec.name, setting.name)
+            if setting.kind == SETTING_SECRET:
+                out.append(SettingSpec(key, "secret", "", TOOLS_HOME, portable=False,
+                                       secret_ref=secret_ref(spec.name, setting.name)))
+            else:
+                kind: Kind = "int" if setting.kind == SETTING_INT else "str"
+                default = setting.default if setting.default is not None else (
+                    0 if kind == "int" else "")
+                out.append(SettingSpec(
+                    key, kind, default, TOOLS_HOME, portable=False,
+                    bounds=(0, _MAX_INT) if kind == "int" else None,
+                    target=_t(TOOLS_SECTION, f"{spec.name}.{setting.name}"),
+                ))
+    return tuple(out)
 
 
 _R = CONSEQUENCE_RESTART
@@ -453,37 +482,12 @@ SPECS: tuple[SettingSpec, ...] = (
         "prefs.appearance.ui_scale", "float", 1.0, "prefs.appearance", bounds=(0.8, 1.5),
         owner="frontend",
     ),
-    # ── 联网补充（3.0.0；数据流节点；回答引用外部文献，对话栏开关打开时才运行）──────
-    *(
-        SettingSpec(
-            f"flow.external.{engine}", "bool", getattr(ExternalEvidenceConfig, engine),
-            "flow.external", target=_t("external_evidence", engine),
-        )
-        for engine in ("crossref", "openalex", "openlibrary", "arxiv", "semantic_scholar")
-    ),
+    # ── 联网补充（3.0.0）：轮数上限；各工具的开关与设置由工具声明生成（tool_setting_specs）──
     SettingSpec(
-        "flow.external.depth", "enum", ExternalEvidenceConfig.depth, "flow.external",
-        options=(EXTERNAL_DEPTH_FULLTEXT, EXTERNAL_DEPTH_ABSTRACT),
-        target=_t("external_evidence", "depth"),
+        "flow.external.max_rounds", "int", ToolsConfig.max_rounds, "flow.external",
+        bounds=(1, 8), target=_t(TOOLS_SECTION, "max_rounds"),
     ),
-    SettingSpec(
-        "flow.external.max_sources", "int", ExternalEvidenceConfig.max_sources,
-        "flow.external", tier="advanced", bounds=(1, 12),
-        target=_t("external_evidence", "max_sources"),
-    ),
-    SettingSpec(
-        "flow.external.openalex_key", "secret", "", "flow.external",
-        secret_ref=OPENALEX_KEY_SECRET, portable=False,
-    ),
-    SettingSpec(
-        "flow.external.semantic_scholar_key", "secret", "", "flow.external",
-        secret_ref=SEMANTIC_SCHOLAR_KEY_SECRET, portable=False,
-    ),
-    SettingSpec(
-        "flow.external.contact_email", "str", ExternalEvidenceConfig.contact_email,
-        "flow.external", tier="advanced", portable=False,
-        target=_t("external_evidence", "contact_email"),
-    ),
+    *tool_setting_specs(),
     # ── 偏好设置：存储 / 本地模型 / 诊断 ───────────────────────────────
     SettingSpec(
         "prefs.storage.data_dir", "path", "", "prefs.storage", consequence=_R, owner="shell",

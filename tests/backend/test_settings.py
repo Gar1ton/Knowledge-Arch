@@ -42,6 +42,7 @@ def test_homes_cover_the_data_flow_nodes_and_preference_groups() -> None:
     assert set(FLOW_HOMES) == {
         "flow.models", "flow.import", "flow.zotero", "flow.embedding", "flow.vector_store",
         "flow.graph", "flow.retrieval", "flow.answer", "flow.notion", "flow.r2", "flow.external",
+        "flow.external.tools",
     }  # 第 11 个节点「模型供应商」是连接列表，不是 SettingSpec
     assert set(PREFS_HOMES) == {
         "prefs.general", "prefs.appearance", "prefs.storage", "prefs.local_models",

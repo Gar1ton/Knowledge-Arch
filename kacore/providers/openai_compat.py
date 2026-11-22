@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import time
+from collections.abc import Callable, Sequence
+from dataclasses import replace
 from typing import Any
 
 import aiohttp
@@ -26,10 +29,19 @@ from kacore.domain.llm_generation import (
     STATUS_REASONING_ONLY,
     GenerationResult,
 )
+from kacore.domain.tool_calls import (
+    AssistantTurn,
+    ToolCallRequest,
+    ToolSpec,
+    ToolTurn,
+    Turn,
+    UserTurn,
+)
 from kacore.providers.base import (
     ERROR_AUTH,
     ERROR_BAD_RESPONSE,
     ERROR_NO_IMAGE_INPUT,
+    ERROR_NO_TOOLS,
     ERROR_NOT_FOUND,
     ERROR_RATE_LIMITED,
     ERROR_SERVER,
@@ -88,6 +100,45 @@ def _as_int(value: Any) -> int | None:
         return None
 
 
+def _openai_messages(turns: Sequence[Turn]) -> list[dict[str, Any]]:
+    """供应商中立的轮次 → chat/completions 的 messages。"""
+    out: list[dict[str, Any]] = []
+    for turn in turns:
+        if isinstance(turn, UserTurn):
+            out.append({"role": "user", "content": turn.text})
+        elif isinstance(turn, AssistantTurn):
+            if isinstance(turn.raw, dict):
+                out.append(turn.raw)
+                continue
+            message: dict[str, Any] = {"role": "assistant", "content": turn.text or None}
+            if turn.calls:
+                message["tool_calls"] = [
+                    {"id": c.id, "type": "function",
+                     "function": {"name": c.name, "arguments": json.dumps(c.arguments)}}
+                    for c in turn.calls
+                ]
+            out.append(message)
+        else:
+            out.append({"role": "tool", "tool_call_id": turn.call_id, "content": turn.text})
+    return out
+
+
+def _openai_call(raw: dict[str, Any]) -> ToolCallRequest:
+    """一条 tool_call → ToolCallRequest；arguments 不是 JSON 对象时给空参数（工具会报缺参数）。"""
+    function = raw.get("function") or {}
+    try:
+        arguments = json.loads(function.get("arguments") or "{}")
+    except (TypeError, ValueError):
+        arguments = {}
+    return ToolCallRequest(str(raw.get("id") or ""), str(function.get("name") or ""),
+                           arguments if isinstance(arguments, dict) else {})
+
+
+def _turns_text(turns: Sequence[Turn]) -> str:
+    """用量估算用的输入文本（端点没报 token 数时按它计）。"""
+    return "\n".join(getattr(t, "text", "") for t in turns)
+
+
 class OpenAICompatChat(ProviderClient):
     """一个 OpenAI 兼容连接上的一个模型。"""
 
@@ -142,6 +193,49 @@ class OpenAICompatChat(ProviderClient):
             payload, prompt, system_prompt, allow_mock=allow_mock, thinking_off=thinking_disabled()
         )
 
+    async def generate_with_tools(
+        self, turns: Sequence[Turn], tools: Sequence[ToolSpec], system_prompt: str = ""
+    ) -> ToolTurn:
+        """OpenAI 兼容的 `tools` / `tool_calls`。助手消息原样留在 raw 里回放（含 reasoning_content，
+        有的端点在思考模式下要求交回）。端点拒收 tools（400 / 422）时报 ERROR_NO_TOOLS。"""
+        messages: list[dict[str, Any]] = (
+            [{"role": "system", "content": system_prompt}] if system_prompt else []
+        )
+        messages.extend(_openai_messages(turns))
+        payload: dict[str, Any] = {
+            "model": self._model, "messages": messages, "temperature": 0.1,
+            "tools": [{"type": "function", "function": {
+                "name": t.name, "description": t.description, "parameters": t.input_schema,
+            }} for t in tools],
+        }
+        captured: dict[str, Any] = {}
+
+        def build(data: dict[str, Any], started: float, attempt: int) -> GenerationResult:
+            message = ((data.get("choices") or [{}])[0].get("message") or {})
+            captured["message"] = message
+            result = self._build_result(data, started=started, attempt=attempt)
+            return replace(result, status=STATUS_OK) if message.get("tool_calls") else result
+
+        try:
+            result = await self._complete(
+                payload, _turns_text(turns), system_prompt, allow_mock=False,
+                thinking_off=thinking_disabled(), build=build,
+            )
+        except ProviderError as error:
+            if error.status in _REJECTED_PARAMS_STATUS:
+                raise ProviderError(
+                    ERROR_NO_TOOLS,
+                    f"{self._model} rejected the tool request (it may not support tool calls). "
+                    f"{error.message}",
+                    status=error.status,
+                ) from None
+            raise
+        message = captured.get("message") or {}
+        calls = tuple(_openai_call(c) for c in message.get("tool_calls") or [])
+        raw = {k: v for k, v in message.items() if v is not None}
+        raw["role"] = "assistant"
+        return ToolTurn(result, calls, raw)
+
     async def describe_image(
         self,
         prompt: str,
@@ -187,7 +281,10 @@ class OpenAICompatChat(ProviderClient):
         *,
         allow_mock: bool,
         thinking_off: bool,
+        build: Callable[[dict[str, Any], float, int], GenerationResult] | None = None,
     ) -> GenerationResult:
+        build = build or (lambda data, started, attempt: self._build_result(
+            data, started=started, attempt=attempt))
         thinking_fields: dict[str, Any] = {}
         if thinking_off and self._thinking_off_accepted:
             thinking_fields = openai_compat_thinking_off(self._base_url)
@@ -203,7 +300,7 @@ class OpenAICompatChat(ProviderClient):
             result: GenerationResult | None = None
             try:
                 data = await self._post_json(url, payload)
-                result = self._build_result(data, started=started, attempt=attempt)
+                result = build(data, started, attempt)
                 return result
             except Exception as exc:
                 last_error = classify_exception(exc)

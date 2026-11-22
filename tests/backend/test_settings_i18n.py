@@ -7,6 +7,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from kacore.adapters.tools.registry import SETTINGS_HOME as TOOLS_HOME
 from kacore.settings.schema import SPECS
 
 I18N_DESKTOP = Path(__file__).resolve().parents[2] / "web" / "frontend" / "lib" / "i18nDesktop.ts"
@@ -21,6 +22,7 @@ def _table(source: str, name: str) -> set[str]:
 def test_every_setting_has_zh_and_en_label() -> None:
     source = I18N_DESKTOP.read_text(encoding="utf-8")
     zh, en = _table(source, "DESKTOP_ZH"), _table(source, "DESKTOP_EN")
-    labels = {spec.label_key for spec in SPECS}
+    # 联网工具的设置由工具面板按工具自己的声明显示（工具名 + 设置名），不进文案表。
+    labels = {spec.label_key for spec in SPECS if spec.home != TOOLS_HOME}
     assert labels - zh == set()
     assert labels - en == set()

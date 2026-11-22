@@ -4,6 +4,33 @@
 
 ## [Unreleased]
 
+### 变更 (Changed)
+
+- **联网补充改为工具调用（P33 P3c 整理，取代下方 P1–P3b 里按数据库写死的部分）。** 用户 11-22：代码要干净、不预设；
+  「将每个联网功能适配成类似 MCP 的方式，允许一个 distributor 通过任务内容调用」。
+  - 每个联网功能是一个形状照 MCP 的工具（名字、描述、参数格式、返回内容块）：`kacore/adapters/tools/`
+    （`base.py` 接口与共用 HTTP、`registry.py` 内置清单与 `ToolBox`、`crossref.py`、`openalex.py`（免费额度判断只在这里）、
+    `arxiv.py`、`semantic_scholar.py`、`openlibrary.py`、`read_open_pdf.py`（原 `managers/external_fulltext.py`））。
+    设置项由工具声明生成（`kacore/settings/schema.py` 的 `tool_setting_specs`，键 `flow.external.tools.<工具>.<设置>`），
+    配置改为通用的 `ToolsConfig`（`kacore/config.py`）；核心代码不再出现任何数据库名。
+  - distributor：`kacore/managers/tool_distributor.py` 用 research 模型的原生工具调用（`ProviderClient.generate_with_tools`，
+    OpenAI 兼容 / Anthropic / `RoleClient`），默认最多 4 轮（设置 `flow.external.max_rounds`），最后一轮只给 `cite`；
+    研究模型不支持工具调用时回答照常、只用库内证据并说明原因。提示词在 `kacore/pipelines/external_prompts.py`。
+  - 可追溯核验（取代「拿编号去第二个数据库查」与 DataCite / doi.org）：`kacore/domain/tool_calls.py` 的 `trace_check`
+    逐字核对引用段落在所指调用的某一块里、书目字段在本次运行的调用原文里；页码取自内容块，不由模型填。
+  - 账本：迁移 `029_tool_calls.sql`（运行 / 每次工具调用含 cite / 通过核验的引用），删除开发库上旧 029 / 030 的表；
+    仓储 `kacore/repository/source_store/external*.py` 重写为 `ToolLedgerRepository`。
+  - 界面：数据流节点的工具面板 `web/frontend/components/flow/ToolsPanel.tsx`（开关、设置、试调用、最近调用）；
+    来源栏只留列表与体系，每条来源标出「工具 · 调用 · 块」并可打开调用原文（`SourcesPanel.tsx`、`lib/externalApi.ts`）。
+  - skill：`external-evidence` 换成 `tools` / `tool-call` / `tool-cite`（助手自己挑工具，KA 只执行、核对、记账），
+    路由 `GET /api/tools`、`GET /api/tools/calls`、`POST /api/tools/{name}/call`、`POST /api/tools/cite`。
+  - 删除：`kacore/adapters/scholarly/`、`kacore/domain/web_sources.py`（DOI/arXiv/PMID/ISBN 规整与互查）、
+    `kacore/managers/external_evidence.py`、`kacore/managers/external_status.py`、`kacore/domain/source_graph.py`
+    与来源栏图谱（`SourceGraph.tsx`、`sourceGraphLayout.ts`）、排名漂移、`ExternalActions.tsx`；P4/P5 提前写的
+    `kacore/domain/file_style.py`、`kacore/domain/external_ledger.py` 与迁移 030 等到那一步再写。
+  - 测试：新增 `test_tools.py`、`test_tool_distributor.py`、`test_provider_tools.py`；重写 `test_ask_external.py`、
+    `test_external_ledger_store.py`；删除只测已删规则的 6 个测试文件。全量 pytest 1657 passed / 4 skipped。
+
 ### 新增 (Added)
 
 - **3.0.0 数据层（P33 P1）：回答引用外部文献的出处账本与学术索引适配器。**

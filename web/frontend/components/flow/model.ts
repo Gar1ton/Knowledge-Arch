@@ -271,16 +271,6 @@ const BACKEND_LABEL_EN: Record<string, string> = {
   zotmoov: "ZotMoov folder",
 };
 
-/** 联网补充的数据库显示名（与后端 engine 名对应）。 */
-export const ENGINE_LABEL: Record<string, string> = {
-  crossref: "Crossref",
-  openalex: "OpenAlex",
-  openlibrary: "Open Library",
-  arxiv: "arXiv",
-  semantic_scholar: "Semantic Scholar",
-  datacite: "DataCite",
-};
-
 export function isFlowStageId(id: string): id is FlowStageId {
   return id in STAGE_META;
 }
@@ -311,8 +301,8 @@ export function buildDetailParts(stage: PipelineStage, lang: Lang, flowEnginesLa
     }
     if (typeof rerankModel === "string" && rerankModel) parts.push(rerankModel);
   }
-  if (stage.id === "external" && Array.isArray(stage.detail.engines)) {
-    parts.push((stage.detail.engines as string[]).map((e) => ENGINE_LABEL[e] ?? e).join(" · "));
+  if (stage.id === "external" && typeof stage.detail.tools_enabled === "number") {
+    parts.push(lang === "zh" ? `${stage.detail.tools_enabled} 个工具` : `${stage.detail.tools_enabled} tools`);
   }
   if (stage.id === "vector_store") {
     if (typeof docs === "number") parts.push(lang === "zh" ? `${docs} 文档` : `${docs} docs`);

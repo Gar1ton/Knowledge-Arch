@@ -1,8 +1,9 @@
 "use client";
 /**
- * 3.0.0 回答的「来源」栏：一次联网补充用到的外部文献——核验、引用段落、出处、体系、引用图谱、导出。
- * 打开时占据工作台左栏 + 中栏（对话栏不动）；数据来自出处账本（`lib/externalApi.ts`）。
- * 「体系」= 用户自己的集合树，第一次打开该页签时才调用一次模型归类（后端缓存，之后不再调用）。
+ * 3.0.0 回答的「来源」栏：一次联网补充登记的外部来源与全部工具调用——引用段落、出处（调用原文）、体系、导出。
+ * 打开时占据工作台左栏 + 中栏（对话栏不动）；数据来自调用账本（`lib/externalApi.ts`）。
+ * 每条来源都指向一次工具调用的原文块（可追溯核验）；「体系」= 用户自己的集合树，第一次打开该页签时
+ * 才调用一次模型归类（后端缓存，之后不再调用）。
  */
 import React, { useEffect, useMemo, useState } from "react";
 import { Panel } from "@/components/ds/Panel";
@@ -13,42 +14,34 @@ import { DirPickerDialog } from "@/components/flow/DirPickerDialog";
 import { useToast } from "@/components/ui/Toast";
 import { useConsole } from "@/lib/ConsoleContext";
 import { inDesktopShell, pickFolder } from "@/lib/backend";
-import { SourceGraph } from "@/components/panels/SourceGraph";
 import {
+  argumentsLabel,
   authorsLabel,
   exportExternalCapture,
   getExternalCapture,
   placeExternalCapture,
   type ExternalCapture,
   type ExternalSourceDetail,
-  type Trust,
+  type ToolCallRecord,
 } from "@/lib/externalApi";
 import { useI18n, type I18nKey } from "@/lib/i18n";
 
-type Tab = "list" | "tree" | "graph";
-const CITABLE: Trust[] = ["verified", "single"];
-const TRUST_TONE: Record<Trust, "ok" | "neutral" | "warn" | "danger"> = {
-  verified: "ok", single: "neutral", conflict: "warn", retracted: "danger", unresolved: "neutral",
-};
-const ENGINE: Record<string, string> = {
-  crossref: "Crossref", openalex: "OpenAlex", openlibrary: "Open Library", arxiv: "arXiv",
-  semantic_scholar: "Semantic Scholar", datacite: "DataCite",
-};
+type Tab = "list" | "tree";
+type Sel = { kind: "source" | "call"; id: string } | null;
 
 function placementKey(s: ExternalSourceDetail): string {
-  if (!CITABLE.includes(s.trust)) return "none";
   if (s.placement?.path) return `p:${s.placement.path}`;
   if (s.placement?.new_direction) return `n:${s.placement.new_direction}`;
   return "none";
 }
 
 export function SourcesPanel() {
-  const { sourcePanel, setSourcePanel, setSelectedDocId } = useConsole();
+  const { sourcePanel, setSourcePanel } = useConsole();
   const { t } = useI18n();
   const { toast } = useToast();
   const [loaded, setLoaded] = useState<{ id: string; data?: ExternalCapture; error?: string } | null>(null);
   const [tab, setTab] = useState<Tab>("list");
-  const [sel, setSel] = useState<string | null>(null);
+  const [sel, setSel] = useState<Sel>(null);
   const [placing, setPlacing] = useState(false);
   const [filter, setFilter] = useState<string | null>(null);
   const [picker, setPicker] = useState(false);
@@ -62,7 +55,8 @@ export function SourcesPanel() {
       .then((d) => {
         if (!alive) return;
         setLoaded({ id: captureId, data: d });
-        setSel(sourcePanel?.focus ?? d.sources.find((s) => s.cited.length)?.source_id ?? null);
+        const first = sourcePanel?.focus ?? d.sources.find((s) => s.cited)?.source_id ?? d.sources[0]?.source_id;
+        setSel(first ? { kind: "source", id: first } : null);
       })
       .catch((e) => {
         if (alive) setLoaded({ id: captureId, error: e instanceof Error ? e.message : String(e) });
@@ -75,8 +69,7 @@ export function SourcesPanel() {
   const openTree = async () => {
     setTab("tree");
     if (!data || placing) return;
-    const needs = data.sources.some((s) => CITABLE.includes(s.trust) && !s.placement?.path && !s.placement?.new_direction);
-    if (!needs) return;
+    if (!data.sources.some((s) => !s.placement?.path && !s.placement?.new_direction)) return;
     setPlacing(true);
     try {
       setLoaded({ id: captureId, data: await placeExternalCapture(captureId) });
@@ -108,7 +101,8 @@ export function SourcesPanel() {
     () => (data?.sources ?? []).filter((s) => !filter || placementKey(s) === filter),
     [data, filter],
   );
-  const selected = data?.sources.find((s) => s.source_id === sel) ?? null;
+  const selSource = sel?.kind === "source" ? data?.sources.find((s) => s.source_id === sel.id) ?? null : null;
+  const selCall = sel?.kind === "call" ? data?.calls.find((c) => c.call_id === sel.id) ?? null : null;
 
   const right = (
     <>
@@ -119,7 +113,7 @@ export function SourcesPanel() {
 
   return (
     <Panel
-      title={data ? t("src_panel_title", { n: data.capture.ordinal }) : t("src_panel_title_plain")}
+      title={t("src_panel_title_plain")}
       right={right}
       flush
       style={{ flex: 1, minWidth: 0 }}
@@ -131,7 +125,7 @@ export function SourcesPanel() {
         <>
           <div className="src-bar">
             <span className="src-seg" role="tablist">
-              {(["list", "tree", "graph"] as Tab[]).map((v) => (
+              {(["list", "tree"] as Tab[]).map((v) => (
                 <button key={v} type="button" role="tab" aria-selected={tab === v}
                   className={tab === v ? "on" : ""}
                   onClick={() => (v === "tree" ? void openTree() : setTab(v))}>
@@ -149,24 +143,37 @@ export function SourcesPanel() {
             <span className="src-meta">
               {t("src_panel_meta", {
                 time: new Date(data.capture.captured_at).toLocaleString(),
-                engines: data.capture.engines.map((e) => ENGINE[e] ?? e).join(" · "),
+                question: data.capture.question,
               })}
             </span>
           </div>
           <div className="src-grid">
             <div className="src-main">
-              {tab === "list" && <SourceList sources={sources} sel={sel} onSel={setSel} t={t} />}
+              {tab === "list" && (
+                <>
+                  <div className="src-group">{t("src_group_sources", { n: sources.length })}</div>
+                  {sources.map((s) => (
+                    <SourceRow key={s.source_id} s={s} t={t}
+                      sel={sel?.kind === "source" && sel.id === s.source_id}
+                      onSel={() => setSel({ kind: "source", id: s.source_id })} />
+                  ))}
+                  <div className="src-group">{t("src_group_calls", { n: data.calls.length })}</div>
+                  {data.calls.map((c) => (
+                    <CallRow key={c.call_id} c={c} t={t}
+                      sel={sel?.kind === "call" && sel.id === c.call_id}
+                      onSel={() => setSel({ kind: "call", id: c.call_id })} />
+                  ))}
+                </>
+              )}
               {tab === "tree" && (
                 <PlacementTree data={data} placing={placing} t={t}
                   onPick={(key) => { setFilter(key); setTab("list"); }} />
               )}
-              {tab === "graph" && (
-                <SourceGraph data={data} sel={sel} onSel={setSel} t={t}
-                  onOpenLibrary={(docId) => { setSourcePanel(null); setSelectedDocId(docId); }} />
-              )}
             </div>
             <div className="src-detail">
-              {selected ? <SourceDetail s={selected} t={t} /> : <div className="src-note">{t("src_detail_empty")}</div>}
+              {selSource && <SourceDetail s={selSource} call={data.calls.find((c) => c.call_id === selSource.call_id)} t={t} />}
+              {selCall && <CallDetail c={selCall} t={t} />}
+              {!selSource && !selCall && <div className="src-note">{t("src_detail_empty")}</div>}
             </div>
           </div>
         </>
@@ -187,49 +194,40 @@ function filterLabel(key: string, t: T): string {
   return key.slice(2);
 }
 
-function TrustBadge({ trust, t }: { trust: Trust; t: T }) {
-  return <Badge tone={TRUST_TONE[trust]}>{t(`src_trust_${trust}` as I18nKey)}</Badge>;
+function where(s: ExternalSourceDetail, t: T): string {
+  return s.locator || t("src_block", { n: s.block + 1 });
 }
 
 function SourceRow({ s, sel, onSel, t }: { s: ExternalSourceDetail; sel: boolean; onSel: () => void; t: T }) {
-  const pages = s.cited.filter((c) => c.page != null).map((c) => `p.${c.page}`);
-  const where = !s.cited.length
-    ? t("src_not_cited")
-    : pages.length
-      ? t("src_cited_pages", { n: s.cited.length, pages: pages.join("、") })
-      : t("src_cited_abstract", { n: s.cited.length });
-  const ranks = s.hits.map((h) => `${ENGINE[h.engine] ?? h.engine} #${h.rank}`).join(" · ");
   return (
     <div className={`src-row ${sel ? "on" : ""}`} role="button" tabIndex={0} onClick={onSel}
       onKeyDown={(e) => { if (e.key === "Enter") onSel(); }}>
       <div className="src-row-main">
         <span className="src-badges">
-          <TrustBadge trust={s.trust} t={t} />
-          {String(s.meta.item_type || "").includes("preprint") && <Badge tone="warn">{t("src_preprint")}</Badge>}
-          {s.meta.in_library_doc_id && <Badge tone="info">{t("src_in_library")}</Badge>}
+          <Badge tone={s.cited ? "ok" : "neutral"}>{s.source_id} · {s.cited ? t("src_used") : t("src_not_used")}</Badge>
         </span>
-        <b>{authorsLabel(s)} ({s.meta.year || "n.d."})</b> {s.meta.title || s.source_id}
+        <b>{authorsLabel(s)} ({s.fields.year || "n.d."})</b> {s.fields.title || s.source_id}
       </div>
-      <div className="src-row-sub">
-        {where} · {ranks}
-        {s.drift && <span className="src-drift"> · {t("src_drift", { a: s.drift[0], b: s.drift[1] })}</span>}
-      </div>
+      <div className="src-row-sub">{s.tool} · {s.call_label} · {where(s, t)}</div>
     </div>
   );
 }
 
-function SourceList({ sources, sel, onSel, t }: {
-  sources: ExternalSourceDetail[]; sel: string | null; onSel: (id: string) => void; t: T;
-}) {
-  const cited = sources.filter((s) => s.cited.length);
-  const rest = sources.filter((s) => !s.cited.length);
+function CallRow({ c, sel, onSel, t }: { c: ToolCallRecord; sel: boolean; onSel: () => void; t: T }) {
   return (
-    <>
-      <div className="src-group">{t("src_group_cited", { n: cited.length })}</div>
-      {cited.map((s) => <SourceRow key={s.source_id} s={s} sel={sel === s.source_id} onSel={() => onSel(s.source_id)} t={t} />)}
-      <div className="src-group">{t("src_group_retrieved", { n: rest.length })}</div>
-      {rest.map((s) => <SourceRow key={s.source_id} s={s} sel={sel === s.source_id} onSel={() => onSel(s.source_id)} t={t} />)}
-    </>
+    <div className={`src-row ${sel ? "on" : ""}`} role="button" tabIndex={0} onClick={onSel}
+      onKeyDown={(e) => { if (e.key === "Enter") onSel(); }}>
+      <div className="src-row-main">
+        <span className="src-badges">
+          <Badge tone={c.is_error ? "warn" : "neutral"}>{c.label}</Badge>
+        </span>
+        <b className="mono">{c.tool}</b> <span className="src-meta">{argumentsLabel(c.arguments)}</span>
+      </div>
+      <div className="src-row-sub">
+        {c.is_error ? `${t("src_call_error")}: ${c.blocks[0]?.text ?? ""}` : t("tools_blocks", { n: c.blocks.length })}
+        {" · "}{c.elapsed_ms} ms
+      </div>
+    </div>
   );
 }
 
@@ -260,34 +258,22 @@ function PlacementTree({ data, placing, t, onPick }: {
   );
 }
 
-function SourceDetail({ s, t }: { s: ExternalSourceDetail; t: T }) {
-  const authors = (s.meta.creators?.length ? s.meta.creators : s.meta.creator_names) ?? [];
+function SourceDetail({ s, call, t }: { s: ExternalSourceDetail; call?: ToolCallRecord; t: T }) {
+  const meta = [s.fields.year || "n.d.", s.fields.venue, s.fields.identifier].filter(Boolean).join(" · ");
   return (
     <div className="src-det">
       <div>
-        <h3>{s.meta.title || s.source_id}</h3>
-        <div className="src-meta">{authors.join("; ")} · {s.meta.year || "n.d."} · {s.meta.venue || "—"}</div>
-        <div className="src-meta mono">{s.source_id}</div>
+        <h3>{s.fields.title || s.source_id}</h3>
+        <div className="src-meta">{(s.fields.creators ?? []).join("; ")}</div>
+        <div className="src-meta">{meta}</div>
       </div>
       <div className="src-actions">
         <Button size="sm" variant="primary" disabled title={t("src_import_soon")}>{t("src_import")}</Button>
-        {s.meta.url && <a className="src-link" href={String(s.meta.url)} target="_blank" rel="noreferrer">{t("src_open_link")}</a>}
+        {s.fields.url && <a className="src-link" href={s.fields.url} target="_blank" rel="noreferrer">{t("src_open_link")}</a>}
       </div>
       <section className="src-box">
-        <span className="src-h">{t("src_detail_trust")}</span>
-        <TrustBadge trust={s.trust} t={t} />
-        <p>{t(`src_trust_${s.trust}_desc` as I18nKey)}</p>
-      </section>
-      <section className="src-box">
-        <span className="src-h">{t("src_detail_cited")}</span>
-        {s.cited.length ? s.cited.map((c) => (
-          <blockquote key={c.ord} className="src-quote">
-            <b>{c.page != null ? `p.${c.page}` : t("src_abstract")}</b> {c.passage}
-          </blockquote>
-        )) : <p>{t("src_cited_none")}</p>}
-        {s.cited.some((c) => c.file_sha256) && (
-          <p className="src-meta">{t("src_cited_sha", { sha: s.cited.find((c) => c.file_sha256)!.file_sha256.slice(0, 12) })}</p>
-        )}
+        <span className="src-h">{t("src_detail_passage")}</span>
+        <blockquote className="src-quote"><b>{where(s, t)}</b> {s.passage}</blockquote>
       </section>
       {(s.placement?.path || s.placement?.new_direction) && (
         <section className="src-box">
@@ -296,29 +282,36 @@ function SourceDetail({ s, t }: { s: ExternalSourceDetail; t: T }) {
           {s.placement.reason && <p>{s.placement.reason}</p>}
         </section>
       )}
-      <section className="src-box">
-        <span className="src-h">{t("src_detail_hits")}</span>
-        <table className="src-kv"><tbody>
-          {s.hits.map((h, i) => (
-            <tr key={i}><td>{ENGINE[h.engine] ?? h.engine}</td><td>#{h.rank}</td><td className="mono">{h.query}</td></tr>
-          ))}
-        </tbody></table>
-        {s.history.length > 1 && (
-          <p className="src-meta">{t("src_detail_history")}: {s.history.map((h) => `#${h.rank}`).join(" → ")}</p>
-        )}
-      </section>
-      <section className="src-box">
-        <span className="src-h">{t("src_detail_fields")}</span>
-        <table className="src-kv"><tbody>
-          {s.fields.map((f, i) => <tr key={i}><td>{f.field}</td><td>{ENGINE[f.engine] ?? f.engine}</td></tr>)}
-        </tbody></table>
-      </section>
-      {s.meta.abstract && (
-        <section className="src-box">
-          <span className="src-h">{t("src_detail_abstract")}</span>
-          <p>{String(s.meta.abstract)}</p>
-        </section>
-      )}
+      {call && <CallBlocks c={call} highlight={s.block} title={t("src_detail_origin", { call: call.label })} t={t} />}
     </div>
+  );
+}
+
+function CallDetail({ c, t }: { c: ToolCallRecord; t: T }) {
+  return (
+    <div className="src-det">
+      <div>
+        <h3 className="mono">{c.label} · {c.tool}</h3>
+        <div className="src-meta">{new Date(c.started_at).toLocaleString()} · {c.elapsed_ms} ms</div>
+      </div>
+      <section className="src-box">
+        <span className="src-h">{t("src_call_args")}</span>
+        <pre className="src-pre">{JSON.stringify(c.arguments, null, 2)}</pre>
+      </section>
+      <CallBlocks c={c} highlight={-1} title={t("src_detail_origin", { call: c.label })} t={t} />
+    </div>
+  );
+}
+
+function CallBlocks({ c, highlight, title, t }: { c: ToolCallRecord; highlight: number; title: string; t: T }) {
+  return (
+    <section className="src-box">
+      <span className="src-h">{c.is_error ? t("src_call_error") : title}</span>
+      {c.blocks.map((b, i) => (
+        <pre key={i} className={`src-pre ${i === highlight ? "on" : ""}`}>
+          <b>{b.locator || t("src_block", { n: i + 1 })}</b>{"\n"}{b.text}
+        </pre>
+      ))}
+    </section>
   );
 }

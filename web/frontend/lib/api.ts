@@ -310,25 +310,27 @@ export interface AskSource {
   // 前端据它还原「点击引用 → 跳来源卡片」。
   harvard_in_text?: string;
   harvard_reference?: string;
-  // 3.0.0 联网补充：外部文献的来源条目带 origin="external"，doc_id 为 "ext:<source_id>"。
+  // 3.0.0 联网补充：外部引用的来源条目带 origin="external"；source_id 是来源栏编号 E1、E2…，
+  // tool 是给出这段原文的工具。
   origin?: string;
-  trust?: "verified" | "single" | "conflict" | "retracted" | "unresolved";
   source_id?: string;
   capture_id?: string;
-  abstract_only?: boolean;
+  tool?: string;
+  locator?: string;
 }
 
 /** 一次联网补充的摘要（随回答返回、存进聊天记录 meta.external）。 */
 export interface ExternalSummary {
   status: "ok" | "unavailable" | "error";
+  /** unavailable 的原因：no_tools / no_model / unsupported（研究模型不支持工具调用）。 */
+  reason?: string;
   capture_id?: string;
-  queries?: string[];
-  gaps?: string[];
-  retrieved?: number;
+  calls?: number;
+  registered?: number;
+  rejected?: number;
   used?: number;
   cited?: number;
   in_library?: number;
-  errors?: Record<string, string>;
   error?: string;
 }
 

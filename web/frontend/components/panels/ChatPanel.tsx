@@ -10,7 +10,7 @@ import { Popover } from "@/components/ds/Popover";
 import { Z } from "@/lib/zLayers";
 import { useConsole } from "@/lib/ConsoleContext";
 import { useToast } from "@/components/ui/Toast";
-import { useI18n, type I18nKey } from "@/lib/i18n";
+import { useI18n, type I18nKey, type TFunc } from "@/lib/i18n";
 import { notifyAskSent } from "@/lib/tour";
 import { AnswerMarkdown } from "@/components/panels/AnswerMarkdown";
 import { FullTextConfirmDialog } from "@/components/panels/FullTextConfirmDialog";
@@ -70,6 +70,14 @@ interface FullTextConfirmDialogState {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────
+
+/** 联网补充没有运行的原因：已知原因用文案，其余显示后端给的错误。 */
+function externalReason(ext: ExternalSummary, t: TFunc): string {
+  if (ext.reason === "unsupported") return t("chat_external_unsupported");
+  if (ext.reason === "no_tools") return t("chat_external_no_tools");
+  if (ext.reason === "no_model") return t("chat_external_no_model");
+  return ext.error || ext.status;
+}
 
 function retrievalModeLabel(
   mode: string | undefined,
@@ -489,9 +497,9 @@ function SourceMini({ s, onClick }: { s: AskSource; onClick: () => void }) {
             </span>
           )}
           {s.origin === "external" && (
-            // 3.0.0 外部文献：点它打开来源栏（没有库内原文可跳）。
-            <Badge tone={s.trust === "verified" ? "info" : "warn"}>
-              <Icon name="globe" size={9} /> {s.abstract_only ? "abstract" : s.pages?.[0] != null ? `p.${s.pages[0]}` : "ext"}
+            // 3.0.0 外部来源：点它打开来源栏（没有库内原文可跳）；标出给出原文的工具与位置。
+            <Badge tone="info">
+              <Icon name="globe" size={9} /> {s.source_id} · {s.tool}{s.pages?.[0] != null ? ` · p.${s.pages[0]}` : ""}
             </Badge>
           )}
           {s.rrf_score != null && (
@@ -648,7 +656,7 @@ function MessageBubble({
             <Icon name="globe" size={12} />
             <span>{t("chat_external_bar", {
               used: msg.external.used ?? 0, cited: msg.external.cited ?? 0,
-              retrieved: msg.external.retrieved ?? 0,
+              calls: msg.external.calls ?? 0,
             })}</span>
             <span style={{ flex: 1 }} />
             <button type="button" className="src-link"
@@ -657,7 +665,7 @@ function MessageBubble({
         )}
         {msg.external && msg.external.status !== "ok" && (
           <div className="chat-external-bar" style={{ color: "var(--warn)" }}>
-            {t("chat_external_unavailable", { reason: msg.external.error || msg.external.status })}
+            {t("chat_external_unavailable", { reason: externalReason(msg.external, t) })}
           </div>
         )}
         {msg.sources && msg.sources.length > 0 && (

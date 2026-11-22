@@ -18,6 +18,12 @@ adapters/
   message_normalizer.py # 异构消息 → 统一内部结构
 ```
 
+## 本项目的子目录
+
+- `zotero/`：Zotero 本地 / Web API 与 ZotMoov。
+- `tools/`：联网工具（3.0.0）。每个联网功能一个文件，形状照 MCP（`Tool.spec` + `call()`）；内置清单只在
+  `tools/registry.py` 列一次，来源的请求形态、限速、额度、密钥只写在各自的工具文件里。
+
 ## 约定
 
 - 依赖方向：adapters 可 import 框架 SDK + `domain`；**业务层不反过来依赖具体框架**。
