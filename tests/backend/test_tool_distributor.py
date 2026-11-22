@@ -11,13 +11,21 @@ from kacore.adapters.tools.base import Tool, ToolEnv
 from kacore.adapters.tools.registry import ToolBox
 from kacore.config import ToolsConfig
 from kacore.domain.llm_generation import GenerationResult
-from kacore.domain.tool_calls import Block, ToolCallRequest, ToolResult, ToolSpec, ToolTurn
+from kacore.domain.tool_calls import (
+    Block,
+    ToolCallRequest,
+    ToolResult,
+    ToolSpec,
+    ToolTurn,
+    UserTurn,
+)
 from kacore.managers.tool_distributor import (
     REASON_NO_TOOLS,
     REASON_UNSUPPORTED,
     ExternalUnavailable,
     ToolDistributor,
 )
+from kacore.pipelines.external_prompts import FINAL_ROUND_NOTE
 from kacore.providers.base import ERROR_NO_TOOLS, ProviderError
 from kacore.repository.source_store.memory import InMemorySourceDocumentStore
 
@@ -38,9 +46,11 @@ class _Model:
                  error: ProviderError | None = None) -> None:
         self.script, self.error = script, error
         self.offered: list[list[str]] = []
+        self.turns: list[list[Any]] = []
 
     async def generate_with_tools(self, turns, tools, system_prompt=""):
         self.offered.append([t.name for t in tools])
+        self.turns.append(list(turns))
         if self.error is not None:
             raise self.error
         step = self.script.pop(0) if self.script else []
@@ -82,10 +92,25 @@ async def test_rejected_cite_is_recorded_but_not_a_citation() -> None:
     assert session.rejected == 1 and await store.list_citations(session.capture.capture_id) == []
 
 
-async def test_the_last_round_offers_only_cite() -> None:
-    model = _Model([[("fake_search", {})], [("fake_search", {})], [("fake_search", {})]])
-    await _distributor(model, InMemorySourceDocumentStore(), rounds=3).run("q", [], conv_id="c")
+async def test_the_last_round_offers_only_cite_and_refuses_other_tools() -> None:
+    store = InMemorySourceDocumentStore()
+    model = _Model([[("fake_search", {})], [("fake_search", {})],
+                    [("fake_search", {}), ("cite", CITE)]])
+    session = await _distributor(model, store, rounds=3).run("q", [], conv_id="c")
     assert model.offered == [["fake_search", "cite"], ["fake_search", "cite"], ["cite"]]
+    assert isinstance(model.turns[-1][-1], UserTurn)             # 最后一轮前追加了「检索结束」
+    assert model.turns[-1][-1].text == FINAL_ROUND_NOTE
+    calls = await store.list_tool_calls(session.capture.capture_id)
+    refused = calls[2]
+    assert refused.tool == "fake_search" and refused.is_error           # 没执行，按拒绝记账
+    assert "not available" in refused.blocks[0].text
+    assert len(session.citations) == 1                                  # 同一轮的 cite 照常核对
+
+
+async def test_the_task_states_the_round_budget() -> None:
+    model = _Model([[]])
+    await _distributor(model, InMemorySourceDocumentStore(), rounds=4).run("q", [], conv_id="c")
+    assert "4 rounds" in model.turns[0][0].text
 
 
 async def test_model_without_tool_support_leaves_no_ledger_record() -> None:

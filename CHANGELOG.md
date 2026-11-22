@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+### 修复 (Fixed)
+
+- **联网补充在真实模型上一条引用也登记不上（P33 P3c T6，真实模型冒烟发现）。** 用户库副本 + arc:chat（经 hub）+ 真实
+  Crossref / OpenAlex / arXiv / Open Library：三个问题各调用 8 次工具、登记 0 条。
+  - `kacore/managers/tool_distributor.py`：最后一轮只开放 `cite`，但模型照调检索工具、原先照样执行；现在本轮没开放的
+    工具调用不执行，按出错的调用记账（`ToolSession.refuse`）；最后一轮之前追加「检索结束，现在登记」的提示。
+  - `kacore/pipelines/external_prompts.py`：任务里写明轮数与「最后一轮只给 cite」（`render_task` 多一个 `rounds`），
+    新增 `FINAL_ROUND_NOTE`、`render_refused`。
+  - `kacore/providers/anthropic.py`：紧跟工具结果的用户文字并进同一条 user 消息（排在工具结果之后）。
+  - `kacore/domain/tool_calls.py`：`normalize_text` 两边同样把弯引号折成直引号、去掉 Markdown 强调星号；被拒的引用
+    多半是原文 `novel’s` / `“Turn to Affect”` / `**In**terviewing` 被模型抄成直引号、去了星号。模型自拼的标识符
+    （原文没有的 arXiv DOI）照旧拒绝。
+  - 修后同样三题（角色扮演人格一致性 / Massumi 情动自主性的批评 / 大网络 ERGM 估计）：登记 6 / 6 / 6 条，回答正文用到
+    6 / 5 / 5 条（第一、三题跑在引号规整之前）；那两次账本里被拒的 5 条重算，4 条排版差异通过、1 条自拼 DOI 仍拒。
+  - 测试：`tests/backend/test_tool_distributor.py`（最后一轮拒绝其他工具、提示与轮数）、`test_provider_tools.py`、`test_tools.py`。
+
 ### 变更 (Changed)
 
 - **联网补充改为工具调用（P33 P3c 整理，取代下方 P1–P3b 里按数据库写死的部分）。** 用户 11-22：代码要干净、不预设；

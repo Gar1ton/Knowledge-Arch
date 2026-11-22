@@ -783,6 +783,12 @@
     - [x] T5 skill 与收尾：`GET /api/tools`、`GET /api/tools/calls`、`POST /api/tools/{name}/call`（须 user_approved）、
       `POST /api/tools/cite`，进 agent 白名单；skill 命令 `tools` / `tool-call` / `tool-cite`，SKILL.md、research.md；
       skill 的可写配置不含工具设置（工具开关由用户在面板里定）。
+    - [x] T6 真实模型冒烟（用户 11-22「测试也给我做」）：用户库副本 + arc:chat（经 hub）+ 真实 Crossref / OpenAlex 等，
+      三个问题各调用 8 次工具、登记 0 条引用。根因：最后一轮只给 cite 但模型照调检索工具、distributor 照样执行；
+      模型不知道轮数，一直在搜。修：未开放的工具调用拒绝并记账；任务里写明轮数；最后一轮前追加「检索结束，现在登记」；
+      Anthropic 连接把这条提示并进工具结果那条 user 消息；`normalize_text` 统一弯 / 直引号、去强调星号（被拒引用的主因）。
+      修后三题各登记 6 条，正文用到 6 / 5 / 5 条。未处理：库里已有、但没有 DOI 的书（Massumi《Parables for the Virtual》）
+      仍会作为外部来源重复出现——已在库只按 DOI 判断。
     - 验证（11-22）：新增 `test_tools.py` 11 项、`test_tool_distributor.py` 5 项、`test_provider_tools.py` 3 项，重写
       `test_ask_external.py` 6 项、`test_external_ledger_store.py` 9 项；删除只测已删规则的 6 个测试文件；全量 pytest
       1657 passed / 4 skipped；ruff；mypy；前端 tsc / lint / build。真后端 + next dev + Playwright：临时数据目录写入示例

@@ -93,11 +93,16 @@ def classify_anthropic_error(exc: BaseException) -> ProviderError:
 
 
 def _anthropic_messages(turns: Sequence[Turn]) -> list[dict[str, Any]]:
-    """供应商中立的轮次 → Messages API 的 messages；相邻的工具结果合进同一条 user 消息。"""
+    """供应商中立的轮次 → Messages API 的 messages；相邻的工具结果合进同一条 user 消息，
+    紧跟工具结果的用户文字（distributor 最后一轮的提示）也并进这条消息、排在工具结果之后。"""
     out: list[dict[str, Any]] = []
     for turn in turns:
         if isinstance(turn, UserTurn):
-            out.append({"role": "user", "content": turn.text})
+            last = out[-1] if out else None
+            if last and last["role"] == "user" and isinstance(last["content"], list):
+                last["content"].append({"type": "text", "text": turn.text})
+            else:
+                out.append({"role": "user", "content": turn.text})
         elif isinstance(turn, AssistantTurn):
             content: list[Any] = list(turn.raw) if isinstance(turn.raw, list) else [
                 *([{"type": "text", "text": turn.text}] if turn.text else []),

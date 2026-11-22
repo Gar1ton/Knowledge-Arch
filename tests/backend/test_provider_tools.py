@@ -76,11 +76,14 @@ async def test_anthropic_merges_tool_results_into_one_user_message_and_replays_b
               {"type": "tool_use", "id": "u1", "name": "search", "input": {}}]
     turn = await chat.generate_with_tools(
         [UserTurn("q"), AssistantTurn("", (), raw=replay),
-         ResultTurn("u0", "r0"), ResultTurn("u1", "r1", is_error=True)], [SPEC])
+         ResultTurn("u0", "r0"), ResultTurn("u1", "r1", is_error=True), UserTurn("note")],
+        [SPEC])
     assert turn.calls == (ToolCallRequest("u2", "search", {"query": "b"}),)
     assert turn.result.status == "ok" and turn.raw == [{"type": "tool_use", "id": "u2"}]
     messages = calls[0]["messages"]
     assert messages[1]["content"] == replay                              # 思考块原样交回
-    assert [b["tool_use_id"] for b in messages[2]["content"]] == ["u0", "u1"]
+    assert [b["tool_use_id"] for b in messages[2]["content"][:2]] == ["u0", "u1"]
     assert messages[2]["content"][1]["is_error"] is True
+    assert len(messages) == 3                                            # 提示并进同一条 user 消息
+    assert messages[2]["content"][2] == {"type": "text", "text": "note"}
     assert calls[0]["tools"][0]["input_schema"] == SPEC.input_schema

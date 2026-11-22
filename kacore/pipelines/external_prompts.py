@@ -31,18 +31,39 @@ DISTRIBUTOR_SYSTEM = (
 )
 
 
-def render_task(question: str, local_excerpts: Sequence[tuple[str, str]]) -> str:
-    """local_excerpts：(来源标题, 片段) 列表，只取前若干字，让模型知道库里已有什么。"""
+def render_task(question: str, local_excerpts: Sequence[tuple[str, str]], rounds: int) -> str:
+    """local_excerpts：(来源标题, 片段) 列表，只取前若干字，让模型知道库里已有什么。
+    rounds：本次最多几轮。真实模型冒烟（11-22）里模型不知道轮数，四轮都在检索、一条也没登记。"""
     lines = [f"- {title}: {' '.join(text.split())[:_EXCERPT_CHARS]}"
              for title, text in local_excerpts]
     local = "\n".join(lines) if lines else "(the local library returned no evidence)"
+    budget = (
+        f"You have {rounds} rounds of tool calls (calls in one round run in parallel). "
+        f"Register sources with `{CITE_TOOL}` by round {rounds - 1}; the last round offers only "
+        f"`{CITE_TOOL}`, to fix rejected registrations."
+        if rounds > 1 else "You have one round of tool calls."
+    )
     return (
         f"Question:\n{question}\n\n"
         f"Evidence already found in the user's local library:\n{local}\n\n"
         "Find external sources for what this evidence does not cover (or, if it covers "
         "everything, the most useful complementary angle: recent work, counter-evidence or a key "
-        "primary source). Search queries work best as English keyword phrases of 3 to 8 words."
+        "primary source). Search queries work best as English keyword phrases of 3 to 8 words.\n\n"
+        + budget
     )
+
+
+# 最后一轮之前追加的提示：只剩 cite，没登记的来源现在登记。
+FINAL_ROUND_NOTE = (
+    f"Searching is over: this is the last round and only `{CITE_TOOL}` is available. Register "
+    "the sources the answer should cite now, copying from the tool results above. If none "
+    "support the answer, reply without calling a tool."
+)
+
+
+def render_refused(tool: str) -> str:
+    """模型调用了本轮没开放的工具（最后一轮只开放 cite）时交回的文本。"""
+    return f"refused: `{tool}` is not available in this round; only `{CITE_TOOL}` is."
 
 
 def render_call_result(label: str, tool: str, body: str) -> str:
@@ -143,6 +164,7 @@ def parse_placements(raw: str, allowed_ids: set[str], paths: set[str]) -> list[P
 
 __all__ = [
     "DISTRIBUTOR_SYSTEM",
+    "FINAL_ROUND_NOTE",
     "PLACE_SYSTEM",
     "Candidate",
     "Placement",
@@ -150,5 +172,6 @@ __all__ = [
     "render_call_result",
     "render_cite_result",
     "render_placement_prompt",
+    "render_refused",
     "render_task",
 ]

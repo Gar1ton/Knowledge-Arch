@@ -185,5 +185,13 @@ def test_every_field_must_appear_in_some_call_of_the_run() -> None:
     assert not check.ok and check.missing == ("year", "creators")
 
 
+def test_curly_quotes_and_emphasis_stars_do_not_count_as_differences() -> None:
+    calls = {"c1": ToolCall("r.1", "r", 1, "search", {}, [
+        Block("Title: The “Turn to Affect”\nAbstract: a novel’s style; **In**terviewing agents.")])}
+    check = trace_check(CiteRequest("c1", "a novel's style; Interviewing agents.",
+                                    {"title": 'The "Turn to Affect"'}), calls)
+    assert check.ok
+
+
 def test_cite_must_point_at_an_existing_tool_call() -> None:
     assert trace_check(CiteRequest("c9", "Drift grows"), _calls()).missing == ("call",)

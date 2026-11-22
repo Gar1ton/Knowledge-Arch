@@ -243,9 +243,17 @@ class TraceCheck:
     missing: tuple[str, ...] = ()
 
 
+# 排版变体，两边同样处理：弯引号 → 直引号，去掉 Markdown 强调的星号。真实模型冒烟（11-22）里
+# 被拒的引用多半是这两种：原文 novel’s / “Turn to Affect” / **In**terviewing，
+# 模型抄成直引号、去了星号。
+_TYPOGRAPHY = str.maketrans({"‘": "'", "’": "'", "‚": "'", "‛": "'",
+                             "“": '"', "”": '"', "„": '"', "‟": '"', "*": None})
+
+
 def normalize_text(text: str) -> str:
-    """比较前的格式规整：NFKC、合并空白、忽略大小写。"""
-    return " ".join(unicodedata.normalize("NFKC", text or "").casefold().split())
+    """比较前的格式规整：NFKC、统一引号、去强调星号、合并空白、忽略大小写。"""
+    folded = unicodedata.normalize("NFKC", text or "").translate(_TYPOGRAPHY)
+    return " ".join(folded.casefold().split())
 
 
 def trace_check(cite: CiteRequest, calls: Mapping[str, ToolCall]) -> TraceCheck:

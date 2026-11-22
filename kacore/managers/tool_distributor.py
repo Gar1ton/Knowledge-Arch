@@ -5,7 +5,9 @@
   执行工具、把每次调用写进账本（含 cite 本身），并用 `trace_check` 核对 cite 登记的引用。
   助手经 skill 的调用跨多个 HTTP 请求，所以会话可以按 capture_id 从账本恢复。
 - `ToolDistributor`：对话栏打开「联网补充」时，用 research 角色的模型做原生工具调用，循环最多
-  `max_rounds` 轮（每轮一次模型调用）；最后一轮只给 cite，让模型把已读到的来源登记完。
+  `max_rounds` 轮（每轮一次模型调用）；最后一轮只给 cite，让模型把已读到的来源登记完：之前先追加
+  一条「检索结束」的提示，本轮没开放的工具调用不执行、按拒绝记账（真实模型冒烟 11-22：模型照调
+  检索工具）。
   它只收集证据，不写回答。
 
 可信与否只看 cite 能否逐字对上调用原文，模型不参与；没有任何工具名出现在这里。
@@ -39,6 +41,7 @@ from kacore.domain.tool_calls import (
 from kacore.pipelines.deep_thinking_prompts import JsonContractError
 from kacore.pipelines.external_prompts import (
     DISTRIBUTOR_SYSTEM,
+    FINAL_ROUND_NOTE,
     PLACE_SYSTEM,
     Candidate,
     Placement,
@@ -46,6 +49,7 @@ from kacore.pipelines.external_prompts import (
     render_call_result,
     render_cite_result,
     render_placement_prompt,
+    render_refused,
     render_task,
 )
 from kacore.pipelines.llm_json import llm_json_call
@@ -116,6 +120,14 @@ class ToolSession:
         record = await self._record(name, arguments, result, started, t0)
         label = call_label(record.ord)
         return record, render_call_result(label, name, render_blocks(record.blocks))
+
+    async def refuse(self, name: str, arguments: dict[str, Any]) -> tuple[ToolCall, str]:
+        """模型调用了本轮没开放的工具：不执行，按出错的调用记账（工具面板能看到拒绝原因）。"""
+        started, t0 = _now(), time.monotonic()
+        text = render_refused(name)
+        record = await self._record(name, arguments, ToolResult([Block(text)], is_error=True),
+                                    started, t0)
+        return record, text
 
     async def cite(self, arguments: dict[str, Any]) -> tuple[ToolCall, str]:
         started, t0 = _now(), time.monotonic()
@@ -196,10 +208,14 @@ class ToolDistributor:
             raise ExternalUnavailable(REASON_NO_MODEL, "no research model is assigned")
         step = progress or (lambda _stage: None)
         rounds = self._config().max_rounds
-        turns: list[Turn] = [UserTurn(render_task(question, list(local_excerpts)[:8]))]
+        turns: list[Turn] = [UserTurn(render_task(question, list(local_excerpts)[:8], rounds))]
         session: ToolSession | None = None
         for round_no in range(1, rounds + 1):
-            offered = [CITE_SPEC] if round_no == rounds and rounds > 1 else [*specs, CITE_SPEC]
+            last = round_no == rounds and rounds > 1
+            offered = [CITE_SPEC] if last else [*specs, CITE_SPEC]
+            if last:
+                turns.append(UserTurn(FINAL_ROUND_NOTE))
+            allowed = {spec.name for spec in offered}
             step("external_round")
             try:
                 reply = await self._client.generate_with_tools(turns, offered, DISTRIBUTOR_SYSTEM)
@@ -213,8 +229,10 @@ class ToolDistributor:
             if session is None:
                 session = await ToolSession.open(self._toolbox, self._store, conv_id=conv_id,
                                                  question=question, actor="ui")
-            outputs = await asyncio.gather(*(session.dispatch(c.name, dict(c.arguments))
-                                             for c in reply.calls))
+            outputs = await asyncio.gather(*(
+                session.dispatch(c.name, dict(c.arguments)) if c.name in allowed
+                else session.refuse(c.name, dict(c.arguments))
+                for c in reply.calls))
             turns.extend(ResultTurn(c.id, text, record.is_error)
                          for c, (record, text) in zip(reply.calls, outputs))
         if session is None:                     # 模型一个工具都没调用：照样留一条运行记录
