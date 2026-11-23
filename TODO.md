@@ -842,7 +842,7 @@
       目录、占位 key，未按「推送」——那会请求 api.zotero.org）：推送框显示的目标文件夹与 path 正确（跟着集合里
       已有附件所在的文件夹，根目录由已有附件推出）。
       - [ ] 真实写入测试（用户 11-23 选「做」）：需要用户提供有写权限的 key；临时集合 + 测试附件，验完删除。
-  - 🚧 P6 导出导入：
+  - [x] P6 导出导入：
     - [x] P6a 后端：`utils/passphrase_box.py`（scrypt n=2^17 + AES-GCM）、打包函数从 R2 抽出共用
       （`managers/data_inventory.py`，R2 输出不变）、`managers/kaarch.py`（后台导出、读清单、完全覆盖 = 解进
       R2 暂存 + 待恢复标记 + 重启，密钥当场写入且原密钥文件另存）、`managers/kaarch_merge.py`（按路径对集合、

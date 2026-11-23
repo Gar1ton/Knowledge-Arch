@@ -83,6 +83,9 @@
   完全覆盖在页内再确认一次，没填口令时提示密钥不会导入。桌面壳新增 `pick_file` 命令按扩展名选文件
   （`desktop/src-tauri/src/lib.rs`、`web/frontend/lib/backend.ts` 的 `pickFile`），浏览器开发模式下手填路径。
   接口封装 `web/frontend/lib/kaarchApi.ts`，文案 `bk_*` / `prefs_group_backup`（中英），样式 `.bk-*` / `.imp-opt`。
+- **文档（P33 P7 部分）。** README / README_ZH：「外部文献」去掉「预览」；新增「外部论文入库」「推送到 Zotero」「备份与迁移」
+  三条功能说明；Zotero 节点写明推送的前提（ZotMoov 模式与目录、有写权限的 key、链接附件根目录可留空），联网补充节点
+  写明入库文件名模板，偏好设置列出新分组。
 
 ## [v3.0.0-preview.1] — 2026-11-23
 
