@@ -88,9 +88,24 @@
   已配置的 key 常显掩码并可更换 / 清除；回车保存、Esc 取消；必填 key 未填时写明工具不会被调用；面板拦下指针事件，
   不让点击变成画布拖动。每个工具一张卡片（开关、状态胶囊、描述、设置行），标题带可用数与缺设置数。文案 `tools_*`
   （中英），样式 `.tl-*`（`styles/tokens.css`）。后端保存路径未改（实测保存与刷新各几毫秒）。
+- **数据流页头的快捷定位按钮（用户 11-23：节点多了以后要拖画布找设置）。** 每个节点一个按钮
+  （`web/frontend/components/flow/FlowJumpBar.tsx`，放在 `components/panels/FlowPageContent.tsx` 的页头），点击后画布滑到
+  该节点（缩放不小于 90%，节点比视口高时顶部对齐）并选中它；点画布上的节点，对应按钮也高亮并滚进可见区。按钮带节点状态色，
+  按来源 / 主干 / 模型 / 备份与同步分组，「待处理」的节点集中到最左一组。状态的上游级联从 `FlowDiagram` 挪到
+  `components/flow/model.ts` 的 `effectiveStages`，画布与按钮共用；分组与短名 `JUMP_GROUPS` / `JUMP_LABEL_KEYS`。
+  `FlowDiagram` 新增 `handleRef`（`focusNode`）与 `onSelectedChange`，滑动逐帧直接写 DOM、结束再交给 state，拖动或滚轮可打断，
+  系统「减少动态效果」时直接跳到。滚动条隐藏，两端淡出并出现箭头，滚轮横向滚动。文案 `flow_jump_*`（中英，
+  `lib/i18nDesktop.ts`），样式 `.flow-jump-*`（`styles/tokens.css`），图标 `ChevronIcon`。节点内设置与后端未改。
 - **文档（P33 P7 部分）。** README / README_ZH：「外部文献」去掉「预览」；新增「外部论文入库」「推送到 Zotero」「备份与迁移」
   三条功能说明；Zotero 节点写明推送的前提（ZotMoov 模式与目录、有写权限的 key、链接附件根目录可留空），联网补充节点
   写明入库文件名模板，偏好设置列出新分组。
+
+### 修复 (Fixed)
+
+- **数据流画布在 Chromium 内核（Windows 的 WebView2）里平移与缩放错位。** `components/flow/FlowDiagram.tsx` 把
+  `translate` 与 CSS `zoom` 写在同一个元素上，Chromium 的 zoom 会连 translate 一起缩放，于是拖动只走九成、
+  「适应画布」不居中、滚轮缩放的锚点漂移、首次使用引导聚焦偏到一边（90% 时最右一列节点偏 150px）。改为外层只平移、
+  内层只缩放，`view.x / view.y` 在各引擎都是屏幕像素；节点测量与连线在缩放层内，坐标系不变。
 
 ## [v3.0.0-preview.1] — 2026-11-23
 

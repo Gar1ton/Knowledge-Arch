@@ -1899,3 +1899,118 @@
 .bk-bar { height: 6px; border-radius: 3px; background: var(--bg-inset); overflow: hidden; }
 .bk-bar span { display: block; height: 100%; background: var(--accent); transition: width .3s ease; }
 @media (max-width: 1100px) { .src-grid { grid-template-columns: minmax(0, 1fr); } .src-detail { border-left: 0; border-top: 1px solid var(--border); } }
+
+/* ─── 数据流页头：快捷定位按钮条（components/flow/FlowJumpBar.tsx） ─── */
+.flow-jump {
+  position: relative;
+  min-width: 0;
+}
+.flow-jump-scroll {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 1px 0;
+}
+.flow-jump-scroll::-webkit-scrollbar { display: none; }
+/* 两端淡出只在那一侧还有内容时出现（由组件按滚动位置加类）。 */
+.flow-jump-scroll.fade-left { -webkit-mask-image: linear-gradient(90deg, transparent, #000 44px); mask-image: linear-gradient(90deg, transparent, #000 44px); }
+.flow-jump-scroll.fade-right { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 44px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 44px), transparent); }
+.flow-jump-scroll.fade-left.fade-right {
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 44px, #000 calc(100% - 44px), transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 44px, #000 calc(100% - 44px), transparent);
+}
+.flow-jump-arrow {
+  position: absolute;
+  bottom: 3px;
+  z-index: 2;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--flow-node-bd-strong);
+  background: var(--flow-node);
+  color: var(--flow-muted);
+  box-shadow: var(--flow-shadow-node);
+  cursor: pointer;
+  transition: color 0.14s, border-color 0.14s;
+}
+.flow-jump-arrow:hover { color: var(--flow-ink); border-color: color-mix(in srgb, var(--flow-ink) 30%, var(--flow-node-bd-strong)); }
+.flow-jump-arrow--left { left: -4px; }
+.flow-jump-arrow--right { right: -4px; }
+.flow-jump-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: none;
+}
+.flow-jump-group-label {
+  padding-left: 6px;
+  font-size: 11px;
+  color: var(--flow-faint);
+  white-space: nowrap;
+}
+.flow-jump-group-items {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 3px;
+  border: 1px solid var(--flow-node-bd);
+  border-radius: var(--radius-xl);
+  background: color-mix(in srgb, var(--flow-node) 58%, transparent);
+}
+.flow-jump-group.is-attention .flow-jump-group-label {
+  color: color-mix(in srgb, var(--flow-st-warn) 78%, var(--flow-ink));
+  font-weight: 600;
+}
+.flow-jump-group.is-attention .flow-jump-group-items {
+  background: color-mix(in srgb, var(--flow-st-warn) 10%, var(--flow-node));
+  border-color: color-mix(in srgb, var(--flow-st-warn) 34%, transparent);
+}
+.flow-jump-sep {
+  font-size: 11px;
+  color: var(--flow-faint);
+  padding: 0 1px;
+  user-select: none;
+}
+.flow-jump-btn {
+  --flow-st: var(--flow-st-off);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: var(--flow-ink);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.14s, border-color 0.14s, color 0.14s;
+}
+.flow-jump-btn.ready { --flow-st: var(--flow-st-ready); }
+.flow-jump-btn.degraded { --flow-st: var(--flow-st-warn); }
+.flow-jump-btn.info { --flow-st: var(--flow-st-info); }
+.flow-jump-btn.off { color: var(--flow-muted); }
+.flow-jump-btn:hover { background: var(--flow-node); }
+.flow-jump-btn:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent); outline-offset: 1px; }
+/* 选中与画布上选中的节点一致：用节点状态色描边。 */
+.flow-jump-btn.is-active {
+  background: var(--flow-node);
+  border-color: color-mix(in srgb, var(--flow-st) 62%, var(--flow-node-bd-strong));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--flow-st) 20%, transparent);
+  color: var(--flow-ink);
+  font-weight: 600;
+}
+.flow-jump-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--flow-st);
+}

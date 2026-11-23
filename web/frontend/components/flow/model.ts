@@ -275,6 +275,64 @@ export function isFlowStageId(id: string): id is FlowStageId {
   return id in STAGE_META;
 }
 
+/**
+ * 画布与页头快捷按钮共用的节点状态：只留已知节点并按 idx 排序，再沿实线（非 dashed）边把上游的
+ * degraded 向下游传播——一个错误配置的环节会让其后的环节也变黄而非保持绿色。按 idx 左→右即拓扑序。
+ * 结果再算一遍不变（幂等）。
+ */
+export function effectiveStages(stages: PipelineStage[]): PipelineStage[] {
+  const base = stages
+    .filter((stage) => isFlowStageId(stage.id))
+    .sort((a, b) => STAGE_META[a.id as FlowStageId].idx - STAGE_META[b.id as FlowStageId].idx);
+  const incoming = new Map<FlowStageId, FlowStageId[]>();
+  for (const edge of EDGES) {
+    if (edge.dashed) continue; // 旁路/可选来源(dashed)不传播。
+    const arr = incoming.get(edge.to) ?? [];
+    arr.push(edge.from);
+    incoming.set(edge.to, arr);
+  }
+  const eff = new Map<FlowStageId, FlowStageStatus>();
+  return base.map((stage) => {
+    const id = stage.id as FlowStageId;
+    let status = stage.status;
+    if (status === "ready") {
+      for (const up of incoming.get(id) ?? []) {
+        if (eff.get(up) === "degraded") { status = "degraded"; break; }
+      }
+    }
+    eff.set(id, status);
+    return status === stage.status ? stage : { ...stage, status };
+  });
+}
+
+/** 页头快捷按钮的分组；chain 组按数据流向用 › 连接。需要处理的节点另放最左一组，不在这里。 */
+export const JUMP_GROUPS: Array<{ labelKey: I18nKey; ids: FlowStageId[]; chain?: boolean }> = [
+  { labelKey: "flow_jump_group_sources", ids: ["zotero", "external"] },
+  {
+    labelKey: "flow_jump_group_pipeline",
+    ids: ["ingest", "embedding", "vector_store", "retrieval", "graph", "ask"],
+    chain: true,
+  },
+  { labelKey: "flow_jump_group_models", ids: ["providers", "models"] },
+  { labelKey: "flow_jump_group_sync", ids: ["notion", "r2"] },
+];
+
+/** 快捷按钮上的短名（节点标题较长，按钮放不下）；完整标题放在按钮提示里。 */
+export const JUMP_LABEL_KEYS: Record<FlowStageId, I18nKey> = {
+  zotero: "flow_jump_zotero",
+  ingest: "flow_jump_ingest",
+  embedding: "flow_jump_embedding",
+  vector_store: "flow_jump_vector_store",
+  retrieval: "flow_jump_retrieval",
+  graph: "flow_jump_graph",
+  ask: "flow_jump_ask",
+  models: "flow_jump_models",
+  providers: "flow_jump_providers",
+  notion: "flow_jump_notion",
+  r2: "flow_jump_r2",
+  external: "flow_jump_external",
+};
+
 export function backendLabel(value: string, lang: Lang): string {
   return (lang === "zh" ? BACKEND_LABEL_ZH : BACKEND_LABEL_EN)[value] ?? value;
 }
