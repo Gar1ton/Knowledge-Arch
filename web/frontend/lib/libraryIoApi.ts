@@ -39,6 +39,35 @@ export interface ImportRecord {
   links: string[];
   created_at: string;
   updated_at: string;
+  /** 入库到 Zotero 集合时随后的推送结果。 */
+  push?: PushRecord | null;
+}
+
+export interface CollectionTarget {
+  coll_key: string;
+  path: string;
+}
+
+/** 一篇本地文档推送到 Zotero 的记录（推送 = 移交，拉取时认领）。 */
+export interface PushRecord {
+  doc_id: string;
+  status: "pushed" | "claimed" | "failed";
+  library_id: string;
+  collection_key: string;
+  attachment_key: string;
+  path: string;
+  file_path: string;
+  message: string;
+  pushed_at: string;
+  claimed_at: string | null;
+}
+
+export interface PushPreview {
+  targets: CollectionTarget[];
+  push: PushRecord | null;
+  plan: { dest: string; folder: string; path: string; filename: string } | null;
+  /** 推送前提不满足时的原因（没配 ZotMoov 目录、没填 key…）；空串 = 可以推送。 */
+  problem: string;
 }
 
 export interface ImportPreview {
@@ -47,7 +76,9 @@ export interface ImportPreview {
   /** 入库时会试几个链接（都来自这次联网补充记下的原文）。 */
   candidates: number;
   source: ImportSource;
-  targets: { coll_key: string; path: string }[];
+  targets: CollectionTarget[];
+  /** 配了推送时可选的 Zotero 集合（选它 = 入库后立刻推送）。 */
+  zotero_targets: CollectionTarget[];
   existing: ImportRecord | null;
   in_library: { doc_id: string; title: string } | null;
 }
@@ -103,6 +134,20 @@ export function uploadImportPdf(importId: string, file: File): Promise<ImportRec
   return apiFetch<ImportRecord>("/api/documents", {
     method: "POST",
     body: form,
+    timeoutMs: IMPORT_TIMEOUT_MS,
+  });
+}
+
+export function getPushPreview(docId: string, collectionKey = ""): Promise<PushPreview> {
+  const q = collectionKey ? `?collection_key=${enc(collectionKey)}` : "";
+  return apiFetch<PushPreview>(`/api/documents/${enc(docId)}/zotero-push${q}`);
+}
+
+export function pushDocument(docId: string, collectionKey: string): Promise<PushRecord> {
+  return apiFetch<PushRecord>(`/api/documents/${enc(docId)}/zotero-push`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ collection_key: collectionKey }),
     timeoutMs: IMPORT_TIMEOUT_MS,
   });
 }

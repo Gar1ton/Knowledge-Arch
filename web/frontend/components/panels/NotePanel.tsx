@@ -4,6 +4,7 @@ import { Eyebrow } from "@/components/ds/Eyebrow";
 import { Icon } from "@/components/ds/Icon";
 import { IconButton } from "@/components/ds/IconButton";
 import { ImportOriginRows, MetaEditForm, MetaRow, type MetaDraft } from "@/components/panels/DocumentMeta";
+import { ZoteroPushRow } from "@/components/panels/PushDialog";
 import { TagEditor } from "@/components/panels/TagEditor";
 import { useToast } from "@/components/ui/Toast";
 import { useConsole } from "@/lib/ConsoleContext";
@@ -347,6 +348,7 @@ export function NotePanel({ docId, embedded = false }: { docId: string; embedded
                 <MetaRow k={t("note_meta_type")} v={meta?.item_type} />
                 <MetaRow k="Doc ID" v={doc.doc_id} mono />
                 <ImportOriginRows docId={doc.doc_id} />
+                <ZoteroPushRow docId={doc.doc_id} local={doc.origin !== "zotero"} />
               </>
             )}
 

@@ -53,6 +53,11 @@
   - 测试 `tests/backend/test_zotero_push.py`（7 项）、`tests/backend/test_zotero_sync.py`（认领 2 项）。
   - 未处理：认领后旧切块元数据里没有 Zotero 链接（「在 Zotero 中打开」要等下次全量拉取重新处理才有）；
     本地 LOCAL 镜像行留着不删（不影响检索与列表）。
+- **Zotero 推送（P33 P5b，界面）。** 文档信息栏多一行「Zotero」：本地文档显示「未推送 · 推送到 Zotero…」，推送过的
+  显示已推送待拉取 / 已由 Zotero 管理 / 失败原因与「重新推送…」（`web/frontend/components/panels/PushDialog.tsx`、
+  `NotePanel.tsx`）。推送框选 Zotero 集合后预览文件会移到哪、附件 path，并说明推送是移交；前提不满足时显示原因。
+  入库框的目标里加 Zotero 集合（选它 = 入库后立刻推送，推送失败另行提示，`ImportDialog.tsx`）。
+  接口封装与类型 `web/frontend/lib/libraryIoApi.ts`，文案 `push_*` / `imp_zotero_note`（中英）。
 
 ## [v3.0.0-preview.1] — 2026-11-23
 

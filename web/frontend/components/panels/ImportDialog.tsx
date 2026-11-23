@@ -65,6 +65,7 @@ export function ImportDialog({
       if (record.status === "imported") {
         notifyDocumentsChanged();
         toast(t("imp_done", { name: record.filename }), "ok");
+        if (record.push?.status === "failed") toast(t("push_failed", { msg: record.push.message }), "error");
         onClose(true);
         return;
       }
@@ -118,11 +119,17 @@ export function ImportDialog({
                     ? t("imp_pdf_tries", { n: preview.candidates })
                     : t("imp_pdf_none")}</span></div>
                 <div className="imp-kv"><span>{t("imp_target")}</span>
-                  {preview.targets.length ? (
+                  {preview.targets.length + preview.zotero_targets.length ? (
                     <Select value={target} onChange={setTarget} size="md" style={{ width: "100%" }}
                       disabled={busy}
-                      options={preview.targets.map((c) => ({ value: c.coll_key, label: c.path }))} />
+                      options={[
+                        ...preview.targets.map((c) => ({ value: c.coll_key, label: c.path })),
+                        ...preview.zotero_targets.map((c) => ({ value: c.coll_key, label: `Zotero › ${c.path}` })),
+                      ]} />
                   ) : <span className="src-meta">{t("imp_no_target")}</span>}</div>
+                {preview.zotero_targets.some((c) => c.coll_key === target) && (
+                  <div className="imp-warn">{t("imp_zotero_note")}</div>
+                )}
                 <div className="imp-kv"><span>{t("imp_filename")}</span>
                   <input className="imp-input" value={filename} disabled={busy}
                     onChange={(e) => setFilename(e.target.value)} aria-label={t("imp_filename")} /></div>

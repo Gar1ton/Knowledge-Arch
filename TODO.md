@@ -836,9 +836,18 @@
       入库目标可选 Zotero 集合（入库后立刻推送）；`api_library_io` 推送接口与路由。
       验证（11-23）：新增 `test_zotero_push.py` 7 项、`test_zotero_sync.py` 认领 2 项；全量 pytest 1687 passed /
       4 skipped；ruff；mypy。
-    - [ ] P5b 界面：推送框、入库框的 Zotero 目标、状态标记；真实写入测试。
+    - 🚧 P5b 界面：推送框（`PushDialog.tsx`：选 Zotero 集合、文件会移到哪、附件 path、移交说明）、文档信息栏
+      「Zotero」一行（未推送 / 已推送待拉取 / 已认领 / 失败可重试）、入库框的目标加 Zotero 集合（选它 = 入库后
+      立刻推送）。验证（11-23）：tsc / lint；真后端 + next dev + Playwright（临时数据目录、假 Zotero 集合与 ZotMoov
+      目录、占位 key，未按「推送」——那会请求 api.zotero.org）：推送框显示的目标文件夹与 path 正确（跟着集合里
+      已有附件所在的文件夹，根目录由已有附件推出）。
+      - [ ] 真实写入测试（用户 11-23 选「做」）：需要用户提供有写权限的 key；临时集合 + 测试附件，验完删除。
   - [ ] P6 导出导入：
     - [ ] P6a 后端：`utils/passphrase_box.py`、打包函数从 R2 抽出共用（`managers/data_inventory.py`）、
       `managers/kaarch.py`（导出、读清单、完全覆盖、合并）、测试。
     - [ ] P6b 界面：偏好设置「备份与迁移」；壳加选文件命令。
+  - [ ] 用户 11-23 追加（三项做完后处理）：
+    - [ ] Bug：数据流「联网补充」节点的工具面板里填 OpenAlex 等 key 后点保存会卡住，也没有「已配置好」的提示。
+    - [ ] 工具面板那块界面不够好看，修 bug 时一起重做。
+    - [ ] 数据流 / 设置页加直接跳到各节点设置的快捷按钮（节点多了以后拖动体验变差）——先出计划再做。
   - [ ] P7 收尾：版本 3.0.0、README 中英、CHANGELOG、全量 pytest / ruff / mypy / 前端三项、真后端 + Playwright 走查。
