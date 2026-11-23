@@ -26,6 +26,10 @@ class SecretStore(Protocol):
 
     def has_secret(self, name: str) -> bool: ...
 
+    def list_names(self) -> list[str]:
+        """已存的机密名（3.0.0 导出 `.kaarch` 用），按名排序。"""
+        ...
+
     def forget_master_key(self) -> None: ...
 
 

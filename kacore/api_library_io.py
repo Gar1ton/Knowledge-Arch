@@ -22,6 +22,7 @@ from kacore.domain.paper_import import (
 
 if TYPE_CHECKING:
     from kacore.domain.paper_import import PushRecord
+    from kacore.managers.kaarch import KaarchManager
     from kacore.managers.paper_importer import PaperImporter
     from kacore.managers.zotero_pusher import ZoteroPusher
     from kacore.repository.source_store.base import SourceDocumentStore
@@ -33,6 +34,7 @@ class LibraryIoApiMixin:
     _source_store: SourceDocumentStore
     _paper_importer: PaperImporter | None = None
     _zotero_pusher: ZoteroPusher | None = None
+    _kaarch: KaarchManager | None = None
 
     def attach_paper_importer(self, importer: PaperImporter) -> None:
         """组合根注入 PaperImporter（依赖 api.register_document，故在 api 构造后注入）。"""
@@ -41,6 +43,31 @@ class LibraryIoApiMixin:
     def attach_zotero_pusher(self, pusher: ZoteroPusher) -> None:
         """组合根注入 ZoteroPusher（3.0.0 推送）。"""
         self._zotero_pusher = pusher
+
+    def attach_kaarch(self, manager: KaarchManager) -> None:
+        """组合根注入 KaarchManager（3.0.0 导出导入）。"""
+        self._kaarch = manager
+
+    # ── 备份与迁移（.kaarch）──────────────────────────────────
+
+    def _kaarch_manager(self) -> KaarchManager:
+        if self._kaarch is None:
+            raise RuntimeError("export / import is not configured")
+        return self._kaarch
+
+    def kaarch_export(self, folder: str, parts: list[str], passphrase: str = "",
+                      app_version: str = "") -> dict[str, Any]:
+        """后台导出；返回任务快照（进度用 kaarch_job 轮询）。"""
+        return self._kaarch_manager().start_export(folder, parts, passphrase, app_version)
+
+    async def kaarch_inspect(self, path: str) -> dict[str, Any]:
+        return await self._kaarch_manager().inspect(path)
+
+    def kaarch_import(self, path: str, mode: str, passphrase: str = "") -> dict[str, Any]:
+        return self._kaarch_manager().start_import(path, mode, passphrase)
+
+    def kaarch_job(self) -> dict[str, Any] | None:
+        return self._kaarch_manager().job()
 
     def _importer(self) -> PaperImporter:
         if self._paper_importer is None:

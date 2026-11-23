@@ -95,6 +95,13 @@ class EncryptedSecretStore:
     def has_secret(self, name: str) -> bool:
         return bool(self.get_secret(name))
 
+    def list_names(self) -> list[str]:
+        """已存的机密名（3.0.0 导出 `.kaarch` 用），按名排序；只列合法名字的文件。"""
+        if not self._root.is_dir():
+            return []
+        return sorted(p.stem for p in self._root.glob("*.secret")
+                      if _SECRET_NAME_RE.match(p.stem))
+
     def forget_master_key(self) -> None:
         """删除钥匙串里本数据目录的主密钥（「删除全部数据」用）；之后已有密文再也解不开。
 

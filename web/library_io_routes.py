@@ -36,8 +36,8 @@ def _ord(request: web.Request) -> int | None:
         return None
 
 
-def register_library_io_routes(app: web.Application, api_of: ApiOf) -> None:
-    """把入库相关路由挂到 app 上。"""
+def register_library_io_routes(app: web.Application, api_of: ApiOf, app_version: str = "") -> None:
+    """把入库、推送、导出导入的路由挂到 app 上。"""
 
     async def import_preview(request: web.Request) -> web.Response:
         """GET /api/external/captures/{capture_id}/sources/{ord}/import — 入库框的内容。"""
@@ -116,6 +116,55 @@ def register_library_io_routes(app: web.Application, api_of: ApiOf) -> None:
             return _error(str(exc), 503)
         return web.json_response(result)
 
+    # ── 备份与迁移（.kaarch）：不进 AI 助手的白名单（含密钥与整库）──
+    async def kaarch_export(request: web.Request) -> web.Response:
+        """POST /api/kaarch/export {folder, parts, passphrase} — 后台导出，返回任务。"""
+        body = await _json_body(request)
+        parts = body.get("parts") if isinstance(body.get("parts"), list) else []
+        try:
+            job = api_of(request).kaarch_export(str(body.get("folder") or ""),
+                                                [str(p) for p in parts],
+                                                str(body.get("passphrase") or ""), app_version)
+        except ValueError as exc:
+            return _error(str(exc), 400)
+        except RuntimeError as exc:
+            return _error(str(exc), 409)
+        return web.json_response(job)
+
+    async def kaarch_inspect(request: web.Request) -> web.Response:
+        """POST /api/kaarch/inspect {path} — 只读：文件里有什么、与本机的差别。"""
+        path = str((await _json_body(request)).get("path") or "").strip()
+        if not path:
+            return _error("path is required", 400)
+        try:
+            return web.json_response(await api_of(request).kaarch_inspect(path))
+        except ValueError as exc:
+            return _error(str(exc), 400)
+
+    async def kaarch_import(request: web.Request) -> web.Response:
+        """POST /api/kaarch/import {path, mode: overwrite|merge, passphrase} — 后台导入。"""
+        body = await _json_body(request)
+        try:
+            job = api_of(request).kaarch_import(str(body.get("path") or ""),
+                                                str(body.get("mode") or ""),
+                                                str(body.get("passphrase") or ""))
+        except ValueError as exc:
+            return _error(str(exc), 400)
+        except RuntimeError as exc:
+            return _error(str(exc), 409)
+        return web.json_response(job)
+
+    async def kaarch_job(request: web.Request) -> web.Response:
+        """GET /api/kaarch/job — 最近一次导出 / 导入的进度与结果；没有为 null。"""
+        try:
+            return web.json_response(api_of(request).kaarch_job())
+        except RuntimeError as exc:
+            return _error(str(exc), 503)
+
+    app.router.add_post("/api/kaarch/export", kaarch_export)
+    app.router.add_post("/api/kaarch/inspect", kaarch_inspect)
+    app.router.add_post("/api/kaarch/import", kaarch_import)
+    app.router.add_get("/api/kaarch/job", kaarch_job)
     app.router.add_get("/api/external/captures/{capture_id}/sources/{ord}/import", import_preview)
     app.router.add_post("/api/external/captures/{capture_id}/sources/{ord}/import", import_source)
     app.router.add_get("/api/imports", imports_list)

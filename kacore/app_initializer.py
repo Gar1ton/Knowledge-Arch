@@ -663,6 +663,24 @@ class AppInitializer:
             pusher=zotero_pusher,
         ))
 
+        # 5.54) 备份与迁移（3.0.0）：.kaarch 导出导入；库存布局与 R2 共用，
+        #       完全覆盖走 R2 的恢复流程。
+        from kacore.managers.kaarch import KaarchManager
+
+        kaarch = KaarchManager(
+            data_dir=self._data_dir,
+            db_path=db_path,
+            source_store=self.source_store,
+            config=self._config,
+            settings=self._settings,
+            secrets=self.secret_store,
+            embedding_fingerprint=self.embedding_fingerprint,
+            quiesce_indexes=self._quiesce_indexes_for_backup,
+            reload_callback=self.reload,
+        )
+        kaarch.attach_writer(self.api)
+        self.api.attach_kaarch(kaarch)
+
         # 5.55) Notion 单向推送管线（文章两表增量 + QA 暂存箱补推）。
         from kacore.pipelines.notion_sync_pipeline import NotionSyncPipeline
 

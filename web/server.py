@@ -2129,7 +2129,7 @@ def build_app(
 
     from web.library_io_routes import register_library_io_routes
 
-    register_library_io_routes(app, _api)
+    register_library_io_routes(app, _api, app_version)
 
     from web.update_routes import register_update_routes
 

@@ -58,6 +58,24 @@
   `NotePanel.tsx`）。推送框选 Zotero 集合后预览文件会移到哪、附件 path，并说明推送是移交；前提不满足时显示原因。
   入库框的目标里加 Zotero 集合（选它 = 入库后立刻推送，推送失败另行提示，`ImportDialog.tsx`）。
   接口封装与类型 `web/frontend/lib/libraryIoApi.ts`，文案 `push_*` / `imp_zotero_note`（中英）。
+- **`.kaarch` 导出导入（P33 P6a，后端）。** 一键把设置、密钥、集合与构筑打成一个 `.kaarch` 文件，换机或备份用
+  （用户 11-19 要求；11-20 定本机库不空时选「完全覆盖 / 合并」，两种都做）。
+  - 文件是 zip：`manifest.json`（格式版本、勾了哪几样、payload 文件清单与 sha256、Embedding 指纹、数量）、
+    `settings.json`（可携设置，不含机密与本机路径）、`secrets.json`（口令加密的密钥：scrypt n=2^17 + AES-GCM，
+    `kacore/utils/passphrase_box.py`；不设口令就不带密钥）、`payload/`（与 R2 快照同构）。
+  - 打包函数从 R2 备份里抽出共用：`kacore/managers/data_inventory.py`，`r2_backup_manager.py` 改为调用它，
+    R2 快照内容不变（原有 R2 测试全过）。
+  - `kacore/managers/kaarch.py`：后台导出（先停索引写入）、导入前只读清单（与本机设置差几项、密钥几条、
+    Embedding 是否一致、本机库空不空）、完全覆盖（payload 解进 R2 恢复暂存目录并逐个核对 sha256 与数据库完整性，
+    写待恢复标记后软重启，由 `r2_restore.apply_pending_restore` 替换、失败回滚；口令先验，错了什么都不动；
+    密钥当场写入，原来的密钥文件先另存到数据目录的 `.kaarch_secrets_backup/`）。
+  - `kacore/managers/kaarch_merge.py`：合并只加本机没有的——本地集合按路径对上、缺的新建；本地文档按
+    content_hash 跳过已有的，其余走现有上传管线在本机重新切块与嵌入，再写回书目、标签、所在集合与文档笔记；
+    Zotero 文档交给下次拉取，对话记录不带（用户 11-23 选默认）；设置与密钥只补本机没填的。
+  - 机密库加 `list_names`（`kacore/secret_store.py`、`kacore/settings/memory.py`、`kacore/settings/base.py`）。
+  - 接口 `POST /api/kaarch/export|inspect|import`、`GET /api/kaarch/job`（`kacore/api_library_io.py`、
+    `web/library_io_routes.py`）；不进 AI 助手白名单。
+  - 测试 `tests/backend/test_kaarch.py`（4 项）。
 
 ## [v3.0.0-preview.1] — 2026-11-23
 
