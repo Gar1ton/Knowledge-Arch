@@ -821,7 +821,12 @@
       设置 `flow.external.import_filename`（skill 客户端的可写配置表同步加一项）。出处存在入库记录里
       （不写进 local_meta：文档界面改书目时 `update_document_meta` 会整体替换 local_meta）。
       验证（11-23）：新增 `test_paper_import.py` 14 项；全量 pytest 1678 passed / 4 skipped；ruff；mypy。
-    - [ ] P4b 界面：入库框、文档栏「待补 PDF」清单（含浏览器链接与补文件）、文档信息栏出处。
+    - [x] P4b 界面：入库框（`ImportDialog.tsx`）、文档栏「待补 PDF」清单（`PendingPdfList.tsx`，浏览器链接、
+      选文件 / 拖入补 PDF）、文档信息栏出处（`DocumentMeta.tsx` 的 `ImportOriginRows`）、来源栏的入库状态标记；
+      外链统一用 `openExternalUrl`（壳的 opener 权限放宽到 http / https）。出处显示问题原文而不是「第 N 个回答」
+      （msg_idx 把提问也算在内）。验证（11-23）：tsc / lint / build；真后端 + next dev + Playwright（临时数据目录、
+      本机 HTTP 服务提供 PDF，不发外部请求）：入库下到 PDF、E1 标「已入库」、E2 无 PDF 进待补并列出 DOI 链接与原文页、
+      清单里选文件补上、新文档的信息栏显示出处与 PDF 链接。
   - [ ] P5 Zotero 推送：
     - [ ] P5a 后端：Web API 写方法、`managers/zotero_pusher.py`（目标文件夹、移动、建独立 linked_file 附件、失败移回）、
       拉取认领（`zotero_sync_pipeline.py` 一处）、设置 `flow.zotero.base_dir`、离线测试。

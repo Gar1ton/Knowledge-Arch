@@ -1833,4 +1833,22 @@
 .chat-external-bar { margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; font-size: 11.5px; color: var(--fg-muted); }
 .chat-external-toggle { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--fg-muted); font-size: 11.5px; cursor: pointer; }
 .chat-external-toggle.on { border-color: var(--info); color: var(--info); background: var(--info-soft); font-weight: 600; }
+/* 3.0.0 入库框、待补 PDF 清单 */
+.imp-body { padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; font-size: 12.5px; }
+.imp-kv { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 10px; align-items: center; }
+.imp-kv > span:first-child { color: var(--fg-subtle); font-size: 11.5px; }
+.imp-input { width: 100%; box-sizing: border-box; font: 12px var(--font-mono); color: var(--fg); background: var(--bg-inset); border: 1px solid var(--border-strong); border-radius: 6px; padding: 5px 8px; }
+.imp-warn { padding: 8px 10px; border-radius: 8px; background: var(--warn-soft); color: var(--warn); line-height: 1.5; }
+.imp-ok { padding: 8px 10px; border-radius: 8px; background: var(--ok-soft); color: var(--ok); }
+.imp-pending { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.imp-url { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; font-family: var(--font-mono); font-size: 11.5px; }
+.imp-tried { font-size: 11.5px; color: var(--fg-muted); }
+.imp-tried summary { cursor: pointer; }
+.imp-list { border-bottom: 1px solid var(--border); background: var(--warn-soft); }
+.imp-list-head { display: flex; gap: 8px; align-items: baseline; width: 100%; padding: 8px 12px; border: 0; background: none; cursor: pointer; font-size: 12.5px; font-weight: 650; color: var(--fg); text-align: left; }
+.imp-row { padding: 8px 12px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; background: var(--surface); min-width: 0; }
+.imp-row.over { outline: 2px dashed var(--accent); outline-offset: -3px; }
+.imp-row-main { font-size: 12.5px; line-height: 1.45; word-break: break-word; }
+.imp-row-links { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; }
+.imp-row-acts { display: flex; gap: 8px; align-items: center; }
 @media (max-width: 1100px) { .src-grid { grid-template-columns: minmax(0, 1fr); } .src-detail { border-left: 0; border-top: 1px solid var(--border); } }

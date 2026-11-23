@@ -25,6 +25,15 @@
     `doi_key` 挪到 domain）。skill 客户端的可写配置表加 `paper_import.filename_template`，命令不变。
   - 测试 `tests/backend/test_paper_import.py`（14 项：文件名、链接顺序、账本内存 / SQLite、入库 / 待补 / 补文件 /
     删掉、目标集合规则、工具箱下载接口、补 PDF 路由）。
+- **外部论文入库（P33 P4b，界面）。** 来源栏的「入库…」按钮接上：入库框（`web/frontend/components/panels/ImportDialog.tsx`）
+  显示书目、出处（问题原文 · E 编号 · 工具与调用 · 位置）、会试几个链接、目标本地集合与可改的文件名，库里已有同 DOI
+  的文献时提示并不再入库；找不到 PDF 时在框里列出能在浏览器打开的链接与每个试过链接的失败原因。文档栏顶部的
+  「待补 PDF」清单（`PendingPdfList.tsx`）可选文件或把 PDF 拖到那一行补上、可删掉、可打开当时的来源栏；
+  来源栏每条来源标「已入库 / 待补 PDF」（`SourcesPanel.tsx`）；入库来的文档在信息栏显示出处与下载链接
+  （`DocumentMeta.tsx` 的 `ImportOriginRows`，`NotePanel.tsx`）。接口封装 `web/frontend/lib/libraryIoApi.ts`；
+  外链统一经 `openExternalUrl`（`web/frontend/lib/backend.ts`）用系统浏览器打开，壳的 opener 权限从只放行
+  下载页改为放行 http / https 链接（`desktop/src-tauri/capabilities/default.json`）。文案 `imp_*`（中英）、
+  样式 `.imp-*`（`styles/tokens.css`）。
 
 ## [v3.0.0-preview.1] — 2026-11-23
 

@@ -18,6 +18,7 @@ import {
 import { useToast } from "@/components/ui/Toast";
 import { PdfViewer } from "@/components/panels/PdfViewer";
 import { DocList, DocListToolbar, DocStepper } from "@/components/panels/DocList";
+import { PendingPdfList } from "@/components/panels/PendingPdfList";
 import { scopeName, useCollectionDocs } from "@/lib/useCollectionDocs";
 import { useI18n } from "@/lib/i18n";
 import { parseChunkText, ChunkTextPart } from "@/lib/chunkText";
@@ -505,6 +506,7 @@ export function DocumentsPanel() {
         <ReadingView doc={activeDoc!} mode={mode} onViewInMd={viewInMd} />
       ) : (
         <>
+          <PendingPdfList />
           {!loading && !model.failed && docs.length > 0 && <DocListToolbar model={model} />}
           <DocList
             model={model}

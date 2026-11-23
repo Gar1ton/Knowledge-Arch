@@ -11,9 +11,10 @@ import { Badge } from "@/components/ds/Badge";
 import { Button } from "@/components/ds/Button";
 import { IconButton } from "@/components/ds/IconButton";
 import { DirPickerDialog } from "@/components/flow/DirPickerDialog";
+import { ImportDialog } from "@/components/panels/ImportDialog";
 import { useToast } from "@/components/ui/Toast";
 import { useConsole } from "@/lib/ConsoleContext";
-import { inDesktopShell, pickFolder } from "@/lib/backend";
+import { inDesktopShell, openExternalUrl, pickFolder } from "@/lib/backend";
 import {
   argumentsLabel,
   authorsLabel,
@@ -45,6 +46,7 @@ export function SourcesPanel() {
   const [placing, setPlacing] = useState(false);
   const [filter, setFilter] = useState<string | null>(null);
   const [picker, setPicker] = useState(false);
+  const [importing, setImporting] = useState<ExternalSourceDetail | null>(null);
   const captureId = sourcePanel?.captureId ?? "";
 
   // 组件按 captureId 挂载（layout 里 key={captureId}），换一次联网补充时状态自然重置。
@@ -171,12 +173,20 @@ export function SourcesPanel() {
               )}
             </div>
             <div className="src-detail">
-              {selSource && <SourceDetail s={selSource} call={data.calls.find((c) => c.call_id === selSource.call_id)} t={t} />}
+              {selSource && <SourceDetail s={selSource} call={data.calls.find((c) => c.call_id === selSource.call_id)} t={t}
+                onImport={() => setImporting(selSource)} />}
               {selCall && <CallDetail c={selCall} t={t} />}
               {!selSource && !selCall && <div className="src-note">{t("src_detail_empty")}</div>}
             </div>
           </div>
         </>
+      )}
+      {importing && (
+        <ImportDialog captureId={captureId} source={importing}
+          onClose={(changed) => {
+            setImporting(null);
+            if (changed) getExternalCapture(captureId).then((d) => setLoaded({ id: captureId, data: d })).catch(() => {});
+          }} />
       )}
       {picker && (
         <DirPickerDialog t={t} onClose={() => setPicker(false)}
@@ -205,6 +215,7 @@ function SourceRow({ s, sel, onSel, t }: { s: ExternalSourceDetail; sel: boolean
       <div className="src-row-main">
         <span className="src-badges">
           <Badge tone={s.cited ? "ok" : "neutral"}>{s.source_id} · {s.cited ? t("src_used") : t("src_not_used")}</Badge>
+          {s.import && <ImportBadge state={s.import.status} t={t} />}
         </span>
         <b>{authorsLabel(s)} ({s.fields.year || "n.d."})</b> {s.fields.title || s.source_id}
       </div>
@@ -258,7 +269,15 @@ function PlacementTree({ data, placing, t, onPick }: {
   );
 }
 
-function SourceDetail({ s, call, t }: { s: ExternalSourceDetail; call?: ToolCallRecord; t: T }) {
+function ImportBadge({ state, t }: { state: string; t: T }) {
+  return state === "imported"
+    ? <Badge tone="info">{t("imp_state_imported")}</Badge>
+    : <Badge tone="warn">{t("imp_state_pending")}</Badge>;
+}
+
+function SourceDetail({ s, call, t, onImport }: {
+  s: ExternalSourceDetail; call?: ToolCallRecord; t: T; onImport: () => void;
+}) {
   const meta = [s.fields.year || "n.d.", s.fields.venue, s.fields.identifier].filter(Boolean).join(" · ");
   return (
     <div className="src-det">
@@ -268,8 +287,15 @@ function SourceDetail({ s, call, t }: { s: ExternalSourceDetail; call?: ToolCall
         <div className="src-meta">{meta}</div>
       </div>
       <div className="src-actions">
-        <Button size="sm" variant="primary" disabled title={t("src_import_soon")}>{t("src_import")}</Button>
-        {s.fields.url && <a className="src-link" href={s.fields.url} target="_blank" rel="noreferrer">{t("src_open_link")}</a>}
+        <Button size="sm" variant={s.import?.status === "imported" ? "outline" : "primary"} onClick={onImport}>
+          {s.import?.status === "imported" ? t("imp_view") : t("src_import")}
+        </Button>
+        {s.import && <ImportBadge state={s.import.status} t={t} />}
+        {s.fields.url && (
+          <button type="button" className="src-link" onClick={() => void openExternalUrl(s.fields.url ?? "")}>
+            {t("src_open_link")}
+          </button>
+        )}
       </div>
       <section className="src-box">
         <span className="src-h">{t("src_detail_passage")}</span>

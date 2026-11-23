@@ -181,6 +181,19 @@ export async function wipeDataAndQuit(): Promise<void> {
 
 // ─── 手动检查更新：只打开下载页，由用户自己下载安装 ──────────────────────
 
+/**
+ * 用系统浏览器打开一个 http(s) 链接（来源栏的原文页、待补 PDF 的 DOI 链接等，用户自己去下载）。
+ * 壳里经 opener 插件（capabilities 只放行 http / https）；浏览器开发模式下开新标签页。其他协议忽略。
+ */
+export async function openExternalUrl(url: string): Promise<void> {
+  if (!/^https?:\/\//i.test(url)) return;
+  if (!inDesktopShell()) {
+    window.open(url, "_blank", "noopener");
+    return;
+  }
+  await invokeShell<void>("plugin:opener|open_url", { url });
+}
+
 /** 用系统浏览器打开下载页。壳里经 opener 插件（capabilities 只放行这一个地址），浏览器开发模式下开新标签页。 */
 export async function openDownloadPage(url: string): Promise<void> {
   if (!inDesktopShell()) {
