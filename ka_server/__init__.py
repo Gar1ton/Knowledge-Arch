@@ -13,6 +13,6 @@ from ka_server.bytecode_cache import redirect_bytecode_cache
 redirect_bytecode_cache()
 
 APP_NAME = "Knowledge Arch"
-APP_VERSION = "2.2.0"
+APP_VERSION = "3.0.0"
 
 __all__ = ["APP_NAME", "APP_VERSION"]
