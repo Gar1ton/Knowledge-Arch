@@ -1792,6 +1792,34 @@
 .flow-tool-logrow { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; gap: 8px; padding: 3px 0; border-top: 1px solid var(--border); font-size: 11px; color: var(--fg-muted); }
 .flow-tool-logrow.is-error .flow-tool-args { color: var(--danger); }
 .flow-tool-args { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 3.0.0 工具面板（11-23 重做：每个工具一张卡片，保存状态写在原地） */
+.tl-panel { font-size: 12px; }
+.tl-section { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; margin: 10px 0 6px; font-size: 11px; font-weight: 700; letter-spacing: .04em; color: var(--fg-muted); text-transform: uppercase; }
+.tl-section > span { white-space: nowrap; }
+.tl-section small { font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--fg-subtle); }
+.tl-cards { display: flex; flex-direction: column; gap: 6px; }
+.tl-card { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--surface); display: flex; flex-direction: column; gap: 5px; }
+.tl-card.is-off { opacity: .62; }
+.tl-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.tl-head code { font-size: 12px; font-weight: 600; color: var(--fg); }
+.tl-pill { margin-left: auto; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; font-weight: 600; padding: 1px 7px; border-radius: 999px; }
+.tl-pill.ok { background: var(--ok-soft); color: var(--ok); }
+.tl-pill.warn { background: var(--warn-soft); color: var(--warn); }
+.tl-pill.error { background: var(--danger-soft); color: var(--danger); }
+.tl-pill.muted { background: var(--bg-inset); color: var(--fg-subtle); }
+.tl-desc { font-size: 11px; color: var(--fg-subtle); line-height: 1.4; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.tl-info { display: flex; flex-wrap: wrap; gap: 4px; }
+.tl-setting { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 3px 8px; align-items: center; padding-top: 5px; border-top: 1px dashed var(--border); }
+.tl-label { color: var(--fg-muted); font-family: var(--font-mono); font-size: 11px; }
+.tl-label b { color: var(--warn); }
+.tl-edit { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.tl-edit input { flex: 1; min-width: 0; height: 26px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg-inset); color: var(--fg); font: 11.5px var(--font-mono); }
+.tl-edit input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.tl-set { flex: 1; min-width: 0; color: var(--ok); font-family: var(--font-mono); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-link { background: none; border: 0; padding: 0; color: var(--info); cursor: pointer; font-size: 11.5px; }
+.tl-link.danger { color: var(--danger); }
+.tl-status { grid-column: 2; font-size: 11px; }
+.tl-status.ok { color: var(--ok); } .tl-status.warn { color: var(--warn); } .tl-status.error { color: var(--danger); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .flow-tool-empty { font-size: 11.5px; color: var(--fg-subtle); padding: 3px 0; }
 
 /* 3.0.0 回答的来源栏（components/panels/SourcesPanel.tsx） */
