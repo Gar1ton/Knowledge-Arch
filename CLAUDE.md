@@ -30,9 +30,10 @@
   推送 `v*` 标签后，CI（`desktop-release.yml` 的 publish-main）按 `.release-exclude` 删去治理文档、开发期 CHANGELOG、
   内部设计稿与开发脚本，生成新的 main 提交并推送；**批准推送 `v*` 标签即同时批准这次 main 更新**。
   不要手动 push main。新增只在开发期使用的文件时，同步更新 `.release-exclude` 与 `.gitattributes`。
-- 任何 `git push`、tag push、远端分支创建/删除、force push、PR 创建或 GitHub Release 发布，
-  **执行前必须单独向用户报告 remote、源分支、目标分支与提交范围，并取得本轮明确批准**。
-- 用户批准修改、测试或本地 commit，**不等于**批准任何远端操作。
+- **验证通过的提交直接 `git push origin developer`，不必先问**（用户 2026-11-22）；推送后向用户报告 remote、
+  分支与提交范围。不要把验证过的提交留在本地等批准。
+- 下列操作仍须**执行前单独报告 remote、源分支、目标分支与提交范围，并取得本轮明确批准**：tag push（含 `v*`）、
+  远端分支创建 / 删除、PR 创建、GitHub Release 发布、手动 push main。
 - force push 默认禁止；只有用户明确点名该操作并确认风险后才允许。
 - 详细人工流程见 `docs/GIT_WORKFLOW.md`。
 

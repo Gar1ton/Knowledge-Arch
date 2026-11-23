@@ -793,8 +793,8 @@
       `test_ask_external.py` 6 项、`test_external_ledger_store.py` 9 项；删除只测已删规则的 6 个测试文件；全量 pytest
       1657 passed / 4 skipped；ruff；mypy；前端 tsc / lint / build。真后端 + next dev + Playwright：临时数据目录写入示例
       账本（不发外部请求、未按「调用」），走查工具面板（6 个工具、缺 key 的 Semantic Scholar 不提供给模型、最近调用含
-      被拒 cite 与 OpenAlex 额度错误）、对话栏来源条、来源栏列表 / 调用原文 / 体系，无页面错误。未做：真实模型的工具调用
-      冒烟（需要真实请求，待用户同意）。
+      被拒 cite 与 OpenAlex 额度错误）、对话栏来源条、来源栏列表 / 调用原文 / 体系，无页面错误。真实模型的工具调用
+      冒烟见 T6（11-22 已做）。
   - [ ] P4 入库：`PaperImporter`、入库框（本地 / Zotero 集合）、待补 PDF。
   - [ ] P5 Zotero 推送：Web API 写入、文件移交、推送账本、拉取认领。
   - [ ] P6 导出导入：`.kaarch`、口令加密、偏好设置「备份与迁移」、覆盖 / 合并。

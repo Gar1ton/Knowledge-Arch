@@ -14,17 +14,19 @@
 
 ## 2. 远端操作审批（绝对规则）
 
-下列行为都属于远端变更，执行前必须单独取得用户明确批准：
+验证通过的提交直接 `git push origin developer`，不必先问（用户 2026-11-22），推送后报告远端、分支与提交范围。
 
-- `git push`、`git push --tags`；
+下列行为仍须执行前单独取得用户明确批准：
+
+- `git push --tags` 或推送任何 tag；
 - 创建、删除或改写远端分支/tag；
 - force push（默认禁止）；
 - 创建 PR 或 GitHub Release；
-- 切换 GitHub 默认分支、替换远端 `main`。
+- 切换 GitHub 默认分支、替换远端 `main`、手动 push main。
 
 推送 `v*` 标签会让 CI 自动更新 `main`（见 §1）：申请推标签时一并说明这一点，批准推标签即批准这次 main 更新。
 
-批准修改、测试或本地 commit 不代表批准 push。申请批准时必须列出：
+申请批准时（以及推送 developer 后报告时）列出：
 
 ```bash
 git remote -v
