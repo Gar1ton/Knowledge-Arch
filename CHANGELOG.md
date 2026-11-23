@@ -30,6 +30,16 @@
 
 ### 修复 (Fixed)
 
+- **顶栏字标比图标高。** Bitcount 的大写字母在 `line-height: 1` 的行框里偏上 0.06em（ascent 0.84 / descent 0.36 /
+  cap 0.6 em），Windows WebView2 上实测比图标中心高约 2.5px。字标改用 `.kr-wordmark`（`web/frontend/styles/tokens.css`）：
+  支持 `text-box` 时裁到大写字母高度再由 flex 居中，否则下移 0.06em；Chromium 实测两条路都与图标中心差 0.3px 以内
+  （`web/frontend/components/layout/TopBar.tsx`）。
+- **偏好设置看不到当前版本。** 原来只有点过「检查更新」才显示版本；现在「软件更新」一打开就显示（浏览器开发模式也显示），
+  版本取自 `GET /api/system/info` 新增的 `app_version`（`web/server.py`、`web/frontend/lib/api.ts`、
+  `web/frontend/components/prefs/PrefsGroups.tsx`；测试 `tests/backend/test_web_server.py`）。「检查更新」要真正可用，
+  需要在仓库配置 updater 签名密钥（`TAURI_UPDATER_PUBKEY` / `TAURI_SIGNING_PRIVATE_KEY`），目前没有配置，
+  历次发布都没带自动更新。
+
 - **联网补充关着时，问答与 2.2.0 逐项一致（用户 11-23 重申：本地调用和原来一样；关掉时正常功能完全不变）。**
   对照 v2.2.0 逐文件核对后，关着时只剩两处差别，都已去掉：`kacore/api.py` 的返回结果总带 `"external": None`
   （现在只有打开时才带这个键），每次回答都会算一遍外部引用编号（现在只在有联网补充时算）；

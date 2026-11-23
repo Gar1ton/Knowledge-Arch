@@ -51,6 +51,7 @@ _UPLOAD_DIR_KEY = web.AppKey("upload_dir", Path)
 _TOKEN_KEY = web.AppKey("token", str)
 _ORIGINS_KEY = web.AppKey("allowed_origins", frozenset)
 _SHUTDOWN_KEY = web.AppKey("shutdown_callback", object)
+_APP_VERSION_KEY = web.AppKey("app_version", str)
 _CORS_ALLOW_HEADERS = "Authorization, Content-Type"
 _CORS_ALLOW_METHODS = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
 _LOG_HANDLER_KEY = web.AppKey("log_handler", object)
@@ -1378,9 +1379,10 @@ async def handle_console_scope_state_upsert(request: web.Request) -> web.Respons
 
 
 async def handle_system_info(request: web.Request) -> web.Response:
-    """GET /api/system/info — 返回后端运行环境信息（调试面板用）。"""
+    """GET /api/system/info — 返回后端运行环境信息与应用版本（调试面板、偏好设置的版本行用）。"""
     try:
-        return web.json_response(_api(request).get_system_info())
+        info = _api(request).get_system_info()
+        return web.json_response({**info, "app_version": request.app[_APP_VERSION_KEY]})
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
 
@@ -1978,6 +1980,7 @@ def build_app(
     app[_TOKEN_KEY] = token
     app[_ORIGINS_KEY] = frozenset(allowed_origins)
     app[_SHUTDOWN_KEY] = shutdown_callback
+    app[_APP_VERSION_KEY] = app_version
 
     from kacore.log_capture import install as _install_log_handler
 

@@ -1161,6 +1161,8 @@ export async function waitForLateAskAnswer(
 export interface SystemInfo {
   cwd: string; data_dir: string; db_file: string; docs_dir: string;
   python_version: string; platform: string;
+  /** 应用版本（ka_server 的 APP_VERSION）；开发时直接起的后端为空串。 */
+  app_version: string;
 }
 export interface LocalModel { name: string; dir_name: string; size_bytes: number; last_modified: string | null; }
 

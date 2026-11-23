@@ -47,11 +47,21 @@ import { WipeDataField } from "./WipeDataField";
 
 // ─── 通用 ──────────────────────────────────────────────────────
 
+/** 软件更新：当前版本一打开就显示（取自后端）；检查与安装只在桌面应用里有。 */
 function UpdateField() {
   const { t } = useI18n();
   const { toast } = useToast();
+  const shell = inDesktopShell();
+  const [version, setVersion] = useState("");
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    getSystemInfo()
+      .then((s) => { if (alive) setVersion(s.app_version || ""); })
+      .catch(() => { /* 取不到版本时只是不显示这一行 */ });
+    return () => { alive = false; };
+  }, []);
   const check = async () => {
     setBusy(true);
     try {
@@ -64,23 +74,27 @@ function UpdateField() {
       setBusy(false);
     }
   };
-  const hint = !info
+  const status = !info
     ? ""
     : !info.enabled
       ? t("update_disabled")
       : info.available
         ? t("update_available", { version: info.version ?? "" })
         : t("update_latest");
+  const current = info?.current_version || version;
+  const hint = [current ? t("update_current", { version: current }) : "", status].filter(Boolean).join(" · ");
   return (
-    <Field label={t("update_title")} hint={info ? `${t("update_current", { version: info.current_version })} · ${hint}` : undefined}>
-      <div style={{ display: "flex", gap: 6 }}>
-        <Button size="sm" variant="outline" loading={busy} onClick={() => void check()}>{t("update_check")}</Button>
-        {info?.available && (
-          <Button size="sm" variant="primary" onClick={() => void installUpdate().catch((err) => toast(String(err), "error"))}>
-            {t("update_install")}
-          </Button>
-        )}
-      </div>
+    <Field label={t("update_title")} hint={hint || undefined}>
+      {shell ? (
+        <div style={{ display: "flex", gap: 6 }}>
+          <Button size="sm" variant="outline" loading={busy} onClick={() => void check()}>{t("update_check")}</Button>
+          {info?.available && (
+            <Button size="sm" variant="primary" onClick={() => void installUpdate().catch((err) => toast(String(err), "error"))}>
+              {t("update_install")}
+            </Button>
+          )}
+        </div>
+      ) : null}
     </Field>
   );
 }
@@ -99,9 +113,8 @@ export function GeneralGroup() {
       />
       <AgentPrefsField />
       <TourReplayField />
-      {inDesktopShell() ? (
-        <UpdateField />
-      ) : (
+      <UpdateField />
+      {!inDesktopShell() && (
         <div style={{ fontSize: 11, color: "var(--fg-subtle)", paddingTop: 8 }}>{t("prefs_shell_only_hint")}</div>
       )}
     </Card>

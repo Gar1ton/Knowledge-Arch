@@ -94,13 +94,13 @@ export function TopBar() {
       />
       {/* 字标与落地页一致：Bitcount 点阵字体、全大写。 */}
       <span
+        className="kr-wordmark"
         style={{
           fontFamily: "var(--font-bitcount), var(--font-mono)",
           fontSize: 17,
           fontWeight: 400,
           color: "var(--heading)",
           letterSpacing: 0,
-          lineHeight: 1,
           flexShrink: 0,
         }}
       >

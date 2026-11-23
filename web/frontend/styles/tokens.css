@@ -30,6 +30,18 @@
   display: flex;
   align-items: center;
 }
+/* 顶栏字标：Bitcount 的大写字母在行框里偏上 0.06em（按字体度量算出）。
+   支持 text-box 时裁到大写字母高度再居中，否则下移 0.06em。 */
+.kr-wordmark {
+  line-height: 1;
+  transform: translateY(0.06em);
+}
+@supports (text-box: trim-both cap alphabetic) {
+  .kr-wordmark {
+    transform: none;
+    text-box: trim-both cap alphabetic;
+  }
+}
 
 /* ─── 动画 keyframes ──────────────────────────────────────────── */
 @keyframes dotTwinkle {
