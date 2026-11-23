@@ -2899,7 +2899,8 @@ class KnowledgeRepositoryApi(
 
         external=True（3.0.0 联网补充，对话栏开关）：库内检索之后再去学术索引找外部文献，核验后作为
         追加证据一起合成，编号接在库内来源后面；结果与聊天记录带 `external` 摘要，出处写进账本。
-        全文模式与 graph_only 不支持（忽略并在摘要里说明）。
+        全文模式与 graph_only 不走联网补充：两者在联网那一步之前就返回，开关被忽略，
+        结果里没有 `external`。
 
         candidate_k / use_reranker：研究路径用——候选池宽召回 + cross-encoder 重排再取 top_k
         （仅 default 模式生效；默认 answer top_k 不变）。reranker 为 passthrough 时自动退回 RRF。

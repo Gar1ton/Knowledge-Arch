@@ -150,9 +150,6 @@ class ToolSession:
         record = await self._record(CITE_TOOL, arguments, result, started, t0)
         return record, text
 
-    def citation(self, ord_: int) -> Citation | None:
-        return next((c for c in self.citations if c.ord == ord_), None)
-
     def _duplicate(self, request: CiteRequest, check: Any) -> int | None:
         if not check.ok:
             return None

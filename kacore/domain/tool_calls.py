@@ -24,7 +24,6 @@ from kacore.domain.llm_generation import GenerationResult
 SETTING_SECRET = "secret"
 SETTING_STR = "str"
 SETTING_INT = "int"
-SETTING_KINDS = (SETTING_SECRET, SETTING_STR, SETTING_INT)
 
 
 @dataclass(frozen=True)
@@ -172,7 +171,6 @@ CITE_FIELDS = ("title", "creators", "year", "venue", "identifier", "url")
 ACTOR_UI = "ui"
 ACTOR_AGENT = "agent"
 ACTOR_TEST = "test"
-ACTORS = (ACTOR_UI, ACTOR_AGENT, ACTOR_TEST)
 
 CITE_SPEC = ToolSpec(
     name=CITE_TOOL,
@@ -308,7 +306,6 @@ class Citation:
 
 
 __all__ = [
-    "ACTORS",
     "ACTOR_AGENT",
     "ACTOR_TEST",
     "ACTOR_UI",
@@ -316,7 +313,6 @@ __all__ = [
     "CITE_SPEC",
     "CITE_TOOL",
     "SETTING_INT",
-    "SETTING_KINDS",
     "SETTING_SECRET",
     "SETTING_STR",
     "AssistantTurn",

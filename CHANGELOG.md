@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 移除 (Removed)
+
+- **联网相关的无用代码（只查 2.2.0 之后为联网新增的代码，其他模块不动）。** 逐个查新增的函数、方法、常量、导出、
+  文案键与样式类是否被用到：删掉没有调用方的 `ToolSession.citation`（`kacore/managers/tool_distributor.py`）、
+  `RoleClient.describe`（`kacore/providers/router.py`），没被用到的常量 `SETTING_KINDS` / `ACTORS`
+  （`kacore/domain/tool_calls.py`），没被用到的文案键 `chat_external_badge`（`web/frontend/lib/i18nDesktop.ts`）。
+  已删的 P1–P3b 功能在代码与文档里没有残留引用。`ask()` 的说明改成实际行为：全文模式与 graph_only 在联网那一步之前
+  就返回，开关被忽略。
+
 ### 修复 (Fixed)
 
 - **联网补充关着时，问答与 2.2.0 逐项一致（用户 11-23 重申：本地调用和原来一样；关掉时正常功能完全不变）。**

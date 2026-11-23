@@ -127,10 +127,6 @@ class RoleClient:
             raise ProviderError(ERROR_NOT_FOUND, f"No model is assigned to “{self._role}” yet")
         return await client.generate_with_tools(turns, tools, system_prompt)
 
-    def describe(self) -> str:
-        """当前分配的「连接:模型」标签（界面提示用）；未分配为空串。"""
-        return self._router.describe(self._role)
-
     async def describe_image(
         self,
         prompt: str,
