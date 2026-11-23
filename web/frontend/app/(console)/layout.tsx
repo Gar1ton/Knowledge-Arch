@@ -15,7 +15,6 @@ import { SecretRequestDialog } from "@/components/desktop/SecretRequestDialog";
 import { WelcomeScreen, useWelcomeNeeded } from "@/components/desktop/WelcomeScreen";
 import { LandingSplash } from "@/components/desktop/LandingShell";
 import { PreferencesWindow } from "@/components/prefs/PreferencesWindow";
-import { UpdateBanner } from "@/components/desktop/UpdateBanner";
 import { FlowPageContent } from "@/components/panels/FlowPageContent";
 import { ProgressDock } from "@/components/progress/ProgressDock";
 import { TopBar } from "@/components/layout/TopBar";
@@ -139,7 +138,6 @@ function ConsoleCanvas() {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }}>
       <TopBar />
-      <UpdateBanner />
 
       {view === "flow" ? (
         <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>

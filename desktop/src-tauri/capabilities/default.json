@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "主窗口：事件订阅 + 本应用自定义命令（命令本身在 Rust 侧做校验）+ 自绘标题栏的窗口操作。",
+  "description": "主窗口：事件订阅 + 本应用自定义命令（命令本身在 Rust 侧做校验）+ 自绘标题栏的窗口操作；检查更新的「打开下载页」只放行本项目最新 Release 这一个地址。",
   "windows": [
     "main"
   ],
@@ -12,6 +12,14 @@
     "core:window:allow-toggle-maximize",
     "core:window:allow-internal-toggle-maximize",
     "core:window:allow-close",
-    "core:window:allow-start-dragging"
+    "core:window:allow-start-dragging",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "https://github.com/Gar1ton/Knowledge-Arch/releases/latest"
+        }
+      ]
+    }
   ]
 }

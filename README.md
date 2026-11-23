@@ -108,7 +108,7 @@ The top bar switches between **Workspace** and **Data Flow**. The Data Flow page
 
 Open **Preferences** via the application menu (**Preferences…**, macOS `⌘,`, Windows / Linux `Ctrl+,`) or the top-bar button:
 
-- **General**: UI language (**English** default / **中文**), minimize to tray on close, launch at login, automatic update check.
+- **General**: UI language (**English** default / **中文**), minimize to tray on close, launch at login, and **Software update**: the current version, plus a **Check for updates** button that compares it with the latest release on GitHub and, when a newer one exists, opens its download page (nothing is checked or downloaded in the background).
 - **Appearance**: Theme mode (dark by default; system or light also available), color palette, and **UI scale** (**80%–150%** in steps of `80% / 90% / 100% / 110% / 125% / 150%`, with shortcuts `Ctrl`/`⌘` + `+` / `-` / `0` in the desktop app).
 - **Storage**: Data directory location (takes effect on next app launch) and embedding cache size limit (`MB`).
 - **Local models**: Compute device (`auto` / `cpu` / `cuda` / `mps`), idle unload timeout, load timeout, VRAM release, and downloaded model cache management.

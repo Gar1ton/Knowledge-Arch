@@ -2109,6 +2109,10 @@ def build_app(
 
     register_desktop_routes(app, _api)
 
+    from web.update_routes import register_update_routes
+
+    register_update_routes(app, app_version)
+
     from web.agent_routes import register_agent_routes
 
     register_agent_routes(app, _api, agent_access, app_version)

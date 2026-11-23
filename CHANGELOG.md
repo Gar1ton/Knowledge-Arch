@@ -36,9 +36,17 @@
   （`web/frontend/components/layout/TopBar.tsx`）。
 - **偏好设置看不到当前版本。** 原来只有点过「检查更新」才显示版本；现在「软件更新」一打开就显示（浏览器开发模式也显示），
   版本取自 `GET /api/system/info` 新增的 `app_version`（`web/server.py`、`web/frontend/lib/api.ts`、
-  `web/frontend/components/prefs/PrefsGroups.tsx`；测试 `tests/backend/test_web_server.py`）。「检查更新」要真正可用，
-  需要在仓库配置 updater 签名密钥（`TAURI_UPDATER_PUBKEY` / `TAURI_SIGNING_PRIVATE_KEY`），目前没有配置，
-  历次发布都没带自动更新。
+  `web/frontend/components/prefs/PrefsGroups.tsx`；测试 `tests/backend/test_web_server.py`）。
+- **「检查更新」一直不可用，改为手动检查 + 打开下载页（用户 11-23：不要自动检测，只要一个按钮手动检测、辅助更新）。**
+  原来按钮走 Tauri updater，但仓库从没配过 updater 签名密钥，历次发布都没带 updater，按钮只会提示「未启用」。
+  现在按钮请求新接口 `GET /api/update/check`（`web/update_routes.py`，并登记进 `desktop/scripts/bundle_python.py`）：
+  后端查 GitHub 上最新的正式 Release（`releases/latest`，不含草稿与预发布版），按语义化版本与当前版本比较；有新版本时
+  显示「打开下载页」，用系统浏览器打开最新 Release 页（`web/frontend/lib/backend.ts` 的 `openDownloadPage`，
+  `desktop/src-tauri/capabilities/default.json` 只放行这一个地址），由用户自己下载安装。不在后台检查、不自动下载。
+  去掉自动检测相关的界面：启动后检查到新版本时的提示条 `UpdateBanner.tsx` 与样式、「自动检查更新」设置项
+  （`prefs.general.check_updates`）、壳的 `checkUpdate` / `installUpdate` 前端封装与相应文案。壳里 `updater` feature
+  与发布流水线的 updater 步骤保持原样（没有公钥时不启用）。README / README_ZH「通用」一节同步。
+  测试 `tests/backend/test_update_routes.py`（版本比较、接口返回、断网时报 502）。
 
 - **联网补充关着时，问答与 2.2.0 逐项一致（用户 11-23 重申：本地调用和原来一样；关掉时正常功能完全不变）。**
   对照 v2.2.0 逐文件核对后，关着时只剩两处差别，都已去掉：`kacore/api.py` 的返回结果总带 `"external": None`

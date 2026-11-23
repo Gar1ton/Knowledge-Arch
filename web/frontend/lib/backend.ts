@@ -179,24 +179,13 @@ export async function wipeDataAndQuit(): Promise<void> {
   await invokeShell<void>("wipe_data_and_quit");
 }
 
-// ─── 自动更新（桌面壳 Cargo feature `updater`；未启用时 enabled=false）──────────
+// ─── 手动检查更新：只打开下载页，由用户自己下载安装 ──────────────────────
 
-export const UPDATE_AVAILABLE_EVENT = "update://available";
-
-export type UpdateInfo = {
-  enabled: boolean;
-  available: boolean;
-  current_version: string;
-  version?: string | null;
-  notes?: string | null;
-};
-
-export async function checkUpdate(): Promise<UpdateInfo | null> {
-  if (!inDesktopShell()) return null;
-  return invokeShell<UpdateInfo>("check_update");
-}
-
-/** 下载、校验签名并安装；成功后壳会重启应用（本调用通常不会返回）。 */
-export async function installUpdate(): Promise<void> {
-  await invokeShell<void>("install_update");
+/** 用系统浏览器打开下载页。壳里经 opener 插件（capabilities 只放行这一个地址），浏览器开发模式下开新标签页。 */
+export async function openDownloadPage(url: string): Promise<void> {
+  if (!inDesktopShell()) {
+    window.open(url, "_blank", "noopener");
+    return;
+  }
+  await invokeShell<void>("plugin:opener|open_url", { url });
 }

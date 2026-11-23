@@ -470,7 +470,6 @@ SPECS: tuple[SettingSpec, ...] = (
         "prefs.general.launch_at_login", "bool", False, "prefs.general", owner="shell",
         portable=False,
     ),
-    SettingSpec("prefs.general.check_updates", "bool", True, "prefs.general", owner="shell"),
     # 允许 Codex / Claude Code 等本机 AI 助手经连接文件接入（ka_server/agent_access.py）；即时生效。
     SettingSpec("prefs.general.agent_access", "bool", False, "prefs.general", portable=False),
     SettingSpec(

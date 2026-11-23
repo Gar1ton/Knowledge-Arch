@@ -1170,6 +1170,19 @@ export async function getSystemInfo(): Promise<SystemInfo> {
   return apiFetch<SystemInfo>("/api/system/info");
 }
 
+/** 手动检查更新的结果：与 GitHub 上最新的正式 Release 比较（`web/update_routes.py`）。 */
+export interface UpdateCheck {
+  current_version: string;
+  latest_version: string;
+  newer: boolean;
+  published_at: string;
+  download_page: string;
+}
+
+export async function checkForUpdate(): Promise<UpdateCheck> {
+  return apiFetch<UpdateCheck>("/api/update/check");
+}
+
 export interface FsBrowseResult {
   path: string;
   parent: string | null;
