@@ -585,9 +585,27 @@ def detect_pipeline(config: Config) -> list[dict[str, Any]]:
         "detail": {"credentials_present": r2_credentials, "bucket": r2_cfg.bucket},
     }
 
+    # ⑪ 联网补充（3.0.0）：回答时由 distributor 调用联网工具；只在对话栏打开开关时运行。
+    #     这里只读配置（开着几个工具）；各工具的就绪与运行状态由工具面板读 /api/tools。
+    from kacore.adapters.tools.registry import builtin_specs
+
+    tools_cfg = config.get_tools_config()
+    tools_on = [s.name for s in builtin_specs() if tools_cfg.enabled.get(s.name, s.default_enabled)]
+    external = {
+        "id": "external",
+        "current": "on" if tools_on else "off",
+        "candidates": ["on", "off"],
+        "status": STATUS_READY if tools_on else STATUS_OFF,
+        "switchable": False,
+        "consequence": CONSEQUENCE_NONE,
+        "required_deps": [],
+        "configured": bool(tools_on),
+        "detail": {"tools_enabled": len(tools_on), "max_rounds": tools_cfg.max_rounds},
+    }
+
     return [
         zotero, ingest, embedding, vector_store, retrieval, graph, ask,
-        models_stage, providers_stage, notion, r2,
+        models_stage, providers_stage, notion, r2, external,
     ]
 
 

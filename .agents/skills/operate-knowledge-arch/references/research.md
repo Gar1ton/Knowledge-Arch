@@ -129,3 +129,28 @@ When troubleshooting via the low-level `search` command, hits carry raw `title` 
 - Keep quotations short; prefer paraphrase and synthesis.
 - If local evidence is insufficient, say what was searched and what evidence is missing. Ask before using
   external web sources unless the user already requested them.
+
+## External literature
+
+Use this only after the user agreed to external sources for the current question (see SKILL.md).
+Each external function of Knowledge Arch is a tool with a name, a description and an input schema,
+like an MCP tool. You choose the tools and the arguments; Knowledge Arch only runs them, records every
+call and checks citations. It calls no model.
+
+```
+KA tools
+KA tool-call crossref_search --arguments '{"query": "keyword phrase"}' --question "original user question" --user-approved
+KA tool-call read_open_pdf --arguments '{"url": "...", "query": "..."}' --capture c_... --user-approved
+KA tool-cite --capture c_... --call c1 --title "..." --creator "Family, Given" --year 2025 --passage "..."
+```
+
+- `tools` lists every tool with `ready` and `missing` settings; call only ready tools.
+- The first `tool-call` returns a `capture_id`; pass it as `--capture` to later calls for the same
+  question so that `tool-cite` can see all of them. Each result starts with its call id (`c1`, `c2`…).
+- Query with English keyword phrases of 3-8 words that target the gap you named. Keep names and
+  technical terms verbatim.
+- `tool-cite` checks word for word that the passage is in the named call and that every field you
+  give is in some call of the capture. Copy them exactly; leave out what you cannot copy. A rejected
+  citation must not be used. An accepted one returns `harvard_in_text` and `harvard_reference`; cite
+  with those and mark the source as external in your answer.
+- Every call and citation is recorded in the app's ledger; the user sees it in the app.

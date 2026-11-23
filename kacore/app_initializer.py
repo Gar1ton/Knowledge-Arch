@@ -622,6 +622,27 @@ class AppInitializer:
         )
         self.api.attach_zotero_pipeline(self.zotero_sync_pipeline)
 
+        # 5.52) 联网补充（3.0.0）：每个联网功能是一个工具，distributor 用 research 角色的模型
+        #       按问题挑着调用；只在对话栏开关打开时运行。设置与 key 每次现读（换设置不用重启）。
+        from kacore.adapters.tools.base import ToolEnv
+        from kacore.adapters.tools.read_open_pdf import cache_dir_for
+        from kacore.adapters.tools.registry import ToolBox
+        from kacore.managers.tool_distributor import ToolDistributor
+
+        self.toolbox = ToolBox(
+            config_provider=self._config.get_tools_config,
+            read_secret=self.secret_store.get_secret,
+            env=ToolEnv(cache_dir=cache_dir_for(self._data_dir), reranker=self.reranker),
+        )
+        self.tool_distributor = ToolDistributor(
+            toolbox=self.toolbox,
+            store=self.source_store,
+            client=self.model_router.client_for("research"),
+            config_provider=self._config.get_tools_config,
+            llm=research_llm_adapter,
+        )
+        self.api.attach_tool_distributor(self.tool_distributor)
+
         # 5.55) Notion 单向推送管线（文章两表增量 + QA 暂存箱补推）。
         from kacore.pipelines.notion_sync_pipeline import NotionSyncPipeline
 

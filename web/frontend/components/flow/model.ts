@@ -14,7 +14,8 @@ export type FlowStageId =
   | "models"
   | "providers"
   | "notion"
-  | "r2";
+  | "r2"
+  | "external";
 
 export type FlowEdge = {
   from: FlowStageId;
@@ -29,7 +30,7 @@ export type FlowStageMeta = {
   titleKey: I18nKey;
   descKey: I18nKey;
   roleKey: I18nKey;
-  icon: "doc" | "spark" | "db" | "layers" | "graph" | "chat" | "cloud" | "book" | "chip" | "plug" | "notion";
+  icon: "doc" | "spark" | "db" | "layers" | "graph" | "chat" | "cloud" | "book" | "chip" | "plug" | "notion" | "globe";
   kind: "pipe" | "dest" | "source";
   link?: { labelKey: I18nKey; href: string; primary?: boolean };
 };
@@ -124,6 +125,15 @@ export const STAGE_META: Record<FlowStageId, FlowStageMeta> = {
     icon: "cloud",
     kind: "dest",
   },
+  // 3.0.0 联网补充：回答时引用外部文献；只在对话栏打开开关时运行。
+  external: {
+    idx: 11,
+    titleKey: "flow_stage_external",
+    descKey: "flow_stage_external_desc",
+    roleKey: "flow_role_optional_source",
+    icon: "globe",
+    kind: "source",
+  },
 };
 
 export const FIELD_LABEL_KEYS: Partial<Record<FlowStageId, I18nKey>> = {
@@ -134,6 +144,7 @@ export const FIELD_LABEL_KEYS: Partial<Record<FlowStageId, I18nKey>> = {
   graph: "flow_field_enabled",
   notion: "flow_field_enabled",
   r2: "flow_field_enabled",
+  external: "flow_field_enabled",
   models: "flow_field_chat_model",
   providers: "flow_field_connections",
 };
@@ -166,10 +177,12 @@ export const STAGE_HOME: Partial<Record<FlowStageId, string>> = {
   models: "flow.models",
   notion: "flow.notion",
   r2: "flow.r2",
+  external: "flow.external",
 };
 
 // 主干一行（row 2）：Zotero → 导入 → 向量化 → 向量库 → 检索/图谱 → 问答。
-// 旁路：R2 备份在导入上方，Notion 在问答上方；模型分配与模型供应商自下而上接入问答。
+// 旁路：R2 备份在导入上方，Notion 在问答上方；模型分配与模型供应商自下而上接入问答；
+// 联网补充在图谱下方，只在对话栏开关打开时接入问答（虚线）。
 export const GRID: Record<FlowStageId, { col: number; row: number }> = {
   zotero: { col: 1, row: 2 },
   r2: { col: 2, row: 1 },
@@ -182,6 +195,7 @@ export const GRID: Record<FlowStageId, { col: number; row: number }> = {
   ask: { col: 6, row: 2 },
   models: { col: 6, row: 3 },
   providers: { col: 6, row: 4 },
+  external: { col: 5, row: 4 },
 };
 
 export const EDGES: FlowEdge[] = [
@@ -196,6 +210,7 @@ export const EDGES: FlowEdge[] = [
   { from: "ask", to: "notion", labelKey: "flow_edge_backup", dashed: true, vertical: true },
   { from: "models", to: "ask", labelKey: "flow_edge_llm", vertical: true },
   { from: "providers", to: "models", vertical: true },
+  { from: "external", to: "ask", labelKey: "flow_edge_external", dashed: true },
 ];
 
 const BACKEND_LABEL_ZH: Record<string, string> = {
@@ -285,6 +300,9 @@ export function buildDetailParts(stage: PipelineStage, lang: Lang, flowEnginesLa
       parts.push(lang === "zh" ? `Rerank ${backendLabel(rerankStatus, lang)}` : `Rerank ${backendLabel(rerankStatus, lang)}`);
     }
     if (typeof rerankModel === "string" && rerankModel) parts.push(rerankModel);
+  }
+  if (stage.id === "external" && typeof stage.detail.tools_enabled === "number") {
+    parts.push(lang === "zh" ? `${stage.detail.tools_enabled} 个工具` : `${stage.detail.tools_enabled} tools`);
   }
   if (stage.id === "vector_store") {
     if (typeof docs === "number") parts.push(lang === "zh" ? `${docs} 文档` : `${docs} docs`);

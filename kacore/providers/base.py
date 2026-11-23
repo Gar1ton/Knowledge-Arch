@@ -14,7 +14,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from kacore.domain.llm_generation import GenerationResult
+    from kacore.domain.tool_calls import ToolSpec, ToolTurn, Turn
 
 KIND_OPENAI_COMPATIBLE = "openai_compatible"
 KIND_ANTHROPIC = "anthropic"
@@ -40,6 +43,7 @@ ERROR_SERVER = "server_error"  # 5xx
 ERROR_BAD_RESPONSE = "bad_response"  # 2xx 但响应形状不可用
 ERROR_NO_KEY = "missing_api_key"  # 连接需要密钥但尚未填写
 ERROR_NO_IMAGE_INPUT = "no_image_input"  # 模型或端点不收图片
+ERROR_NO_TOOLS = "no_tool_calls"  # 模型或端点不接受工具调用（tools）
 
 
 def api_key_ref_for(provider_id: str) -> str:
@@ -131,6 +135,7 @@ class ProviderClient(ABC):
       `ProviderError`；allow_mock=True 时失败返回 status!=ok 的结果。每次真实尝试都记一次用量账。
     - `list_models`：返回模型名列表；端点不支持时抛 `ProviderError(code=not_found)`。
     - `ping`：用最小请求（max_tokens=1）验证地址、密钥与模型可用。
+    - `generate_with_tools`：带工具的一轮生成（可选能力，默认不支持）。
     """
 
     @abstractmethod
@@ -150,6 +155,14 @@ class ProviderClient(ABC):
         """看一张图（PNG / JPEG）并按 prompt 作答（识图角色）。失败抛 `ProviderError`；
         端点不收图片时为 `ERROR_NO_IMAGE_INPUT`。默认实现：不支持图片。"""
         raise ProviderError(ERROR_NO_IMAGE_INPUT, "This connection does not accept image input")
+
+    async def generate_with_tools(
+        self, turns: Sequence[Turn], tools: Sequence[ToolSpec], system_prompt: str = ""
+    ) -> ToolTurn:
+        """带工具的一次生成（联网补充的 distributor 用）：turns 是到目前为止的对话，tools 是可调用的
+        工具声明。返回模型这一轮的文本与要调用的工具；失败抛 `ProviderError`，端点或模型不接受工具时
+        为 `ERROR_NO_TOOLS`。默认实现：不支持。"""
+        raise ProviderError(ERROR_NO_TOOLS, "This connection does not support tool calls")
 
     @abstractmethod
     async def list_models(self) -> list[str]: ...

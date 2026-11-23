@@ -282,6 +282,23 @@ def build_reference_list(refs: Iterable[CitationRef]) -> list[str]:
     return lines
 
 
+def cited_numbers(answer: str) -> set[int]:
+    """正文里出现过的引用编号（与 rewrite_citations 用同一套标记规则与保护区）。"""
+    found: set[int] = set()
+    in_fence = False
+    for line in (answer or "").splitlines():
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence or _LINK_DEF_RE.match(line):
+            continue
+        protected = _protected_spans(line)
+        for match in _MARKER_RE.finditer(line):
+            if not _is_protected(match.span(), protected):
+                found.update(_parse_numbers(match.group(1)))
+    return found
+
+
 def annotate_sources(sources: Sequence[MutableMapping[str, Any]]) -> dict[int, CitationRef]:
     """就地给每个 source 补 `harvard_in_text` / `harvard_reference`，返回 `{n: CitationRef}`。
 
@@ -323,6 +340,7 @@ def render_answer_with_references(
 
 __all__ = [
     "annotate_sources",
+    "cited_numbers",
     "build_citation_refs",
     "build_reference_list",
     "render_answer_with_references",

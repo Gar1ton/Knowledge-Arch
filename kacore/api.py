@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from kacore.api_answer import AnswerPromptMixin
 from kacore.api_capabilities import CapabilitiesApiMixin
+from kacore.api_external import ExternalApiMixin
 from kacore.api_legacy_import import LegacyImportApiMixin
 from kacore.api_runtime_models import RuntimeModelsApiMixin
 from kacore.api_settings import SettingsApiMixin
@@ -381,6 +382,16 @@ _GENERATION_STATUS_NOTICE_EN: dict[str, str] = {
 GENERATION_LLM_UNAVAILABLE = "llm_unavailable"
 
 
+
+def _cited_external_ords(answer: str, sources: list[dict[str, Any]]) -> set[int]:
+    """回答正文里真正引用到的外部来源（按 [n] 对回 source），供账本标记 cited。"""
+    from kacore.pipelines.citation_rendering import cited_numbers
+
+    numbers = cited_numbers(answer) if answer else set()
+    return {int(s["ord"]) for s in sources
+            if s.get("origin") == "external" and s.get("n") in numbers and "ord" in s}
+
+
 def _excerpt_answer(sources: list[dict], answer_language: str, question: str) -> str:
     """LLM 不可用的降级排版：引导行说明「未合成」+ 每条摘录带标题/页码、按句边界截断。
 
@@ -710,6 +721,7 @@ def _extract_raw_doc_text(doc: SourceDocument) -> str | None:
 class KnowledgeRepositoryApi(
     AnswerPromptMixin,
     CapabilitiesApiMixin,
+    ExternalApiMixin,
     LegacyImportApiMixin,
     RuntimeModelsApiMixin,
     SettingsApiMixin,
@@ -829,10 +841,79 @@ class KnowledgeRepositoryApi(
         self._pending_zotero_account_change: dict[str, Any] | None = None
         # Milvus 自动重建调度器（组合根在 api 构造后注入；为空表示当轮不自动重建）。
         self._auto_reindex: Any | None = None
+        self._tool_distributor: Any | None = None
 
     def attach_zotero_pipeline(self, pipeline: Any) -> None:
         """组合根注入 ZoteroSyncPipeline（其回调引用本 api 的索引/LRAG 助手）。"""
         self._zotero_pipeline = pipeline
+
+    def attach_tool_distributor(self, distributor: Any) -> None:
+        """组合根注入 ToolDistributor（联网补充，3.0.0）。未注入时 external=True 的提问照常回答、
+        结果里标明联网补充不可用。"""
+        self._tool_distributor = distributor
+
+    async def _collect_external(
+        self,
+        question: str,
+        conv_id: str,
+        sources: list[dict[str, Any]],
+        chunks: list[DocumentChunk],
+        context_parts: list[str],
+        progress: Callable[..., None],
+    ) -> tuple[Any, dict[str, Any]]:
+        """联网补充：distributor 挑工具调用并登记引用，通过核验的引用就地追加到 sources / chunks /
+        context_parts（编号续接）。失败不影响回答：返回 (None, 摘要)，status 为
+        unavailable / error。"""
+        from kacore.api_external import doi_key, external_chunk, external_source_entry
+        from kacore.managers.tool_distributor import ExternalUnavailable
+
+        if self._tool_distributor is None:
+            return None, {"status": "unavailable", "reason": "no_tools",
+                          "error": "external tools are not configured"}
+        progress("external", 70)
+        excerpts = [(str(s.get("title") or ""), str(s.get("text") or "")) for s in sources[:8]]
+        try:
+            session = await self._tool_distributor.run(
+                question, excerpts, conv_id=conv_id, progress=lambda stage: progress(stage, 72)
+            )
+        except ExternalUnavailable as exc:
+            return None, {"status": "unavailable", "reason": exc.reason, "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001 - 联网补充失败时照常用库内证据回答
+            logger.warning("External tools failed, answering from the library only: %s", exc)
+            return None, {"status": "error", "error": str(exc)}
+        # 已在库的文献（按 DOI 对上）不作外部证据：库内全文更可靠，检索时已能召回。
+        in_library = await self._library_dois()
+        used = 0
+        for citation in session.citations:
+            if doi_key(str(citation.fields.get("identifier") or "")) in in_library:
+                continue
+            n = len(sources) + 1
+            entry = external_source_entry(session, citation, n)
+            sources.append(entry)
+            chunks.append(external_chunk(citation))
+            where = f" (Page {citation.page})" if citation.page is not None else ""
+            context_parts.append(f"[{n}] {entry['title']}{where} [external]\n{citation.passage}")
+            used += 1
+        return session, {
+            "status": "ok",
+            "capture_id": session.capture.capture_id,
+            "calls": sum(1 for c in session.calls.values() if c.tool != "cite"),
+            "registered": len(session.citations),
+            "rejected": session.rejected,
+            "used": used,
+            "in_library": len(session.citations) - used,
+            "cited": 0,
+        }
+
+    async def _finish_external(self, cid: str, session: Any, cited: set[int]) -> None:
+        """回答写进聊天记录后：在账本里写上回答序号并标出正文用到的引用。失败只记日志。"""
+        try:
+            msg_idx = len(await self._source_store.get_chat_messages(cid)) - 1
+            await self._source_store.finish_capture(
+                session.capture.capture_id, max(msg_idx, 0), cited
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to finish external capture for %s: %s", cid, exc)
 
     def attach_auto_reindex_scheduler(self, scheduler: Any) -> None:
         """组合根注入 AutoReindexScheduler（本 api 只负责在标记待重建时给它打信号）。"""
@@ -2812,8 +2893,14 @@ class KnowledgeRepositoryApi(
         doc_id: str | None = None,
         confirmed: bool = False,
         model_thinking: bool = True,
+        external: bool = False,
     ) -> dict:
         """Retrieve evidence and generate one final answer.
+
+        external=True（3.0.0 联网补充，对话栏开关）：库内检索之后再去学术索引找外部文献，核验后作为
+        追加证据一起合成，编号接在库内来源后面；结果与聊天记录带 `external` 摘要，出处写进账本。
+        全文模式与 graph_only 不走联网补充：两者在联网那一步之前就返回，开关被忽略，
+        结果里没有 `external`。
 
         candidate_k / use_reranker：研究路径用——候选池宽召回 + cross-encoder 重排再取 top_k
         （仅 default 模式生效；默认 answer top_k 不变）。reranker 为 passthrough 时自动退回 RRF。
@@ -3178,11 +3265,23 @@ class KnowledgeRepositoryApi(
                 page_info = f" (Page {chunk.metadata['page_number']})" if has_page else ""
                 context_parts.append(f"[{n}] {source['title']}{page_info}\n{chunk.text}")
 
+            # 3.0.0 联网补充：外部证据追加在库内来源之后（编号续接）。deep / enhanced 的草稿只用了
+            # 库内证据，有外部证据时作废，由下方「deep 风格合成」用库内 + 外部重写一稿。
+            external_session: Any = None
+            external_summary: dict[str, Any] | None = None
+            if external:
+                external_session, external_summary = await self._collect_external(
+                    question, cid, sources, chunks, context_parts, _progress
+                )
+            has_external = bool(external_summary and external_summary.get("used"))
+
             _progress("llm_generate", 80)
             t_llm = time.monotonic()
 
             has_evidence = bool(context_parts or lightrag_context)
-            deep_answer = deep_outcome.answer if deep_outcome is not None else None
+            deep_answer = (
+                deep_outcome.answer if deep_outcome is not None and not has_external else None
+            )
             generation_status = (
                 deep_outcome.answer_generation_status if deep_outcome is not None else ""
             )
@@ -3280,6 +3379,11 @@ class KnowledgeRepositoryApi(
             # v1.1.0：把 LLM 写的 [n] 确定性改写为 Harvard in-text 短引（带页码）并追加参考
             # 文献表。放在这里是唯一应用点——所有分支的 answer 都已定稿，且 sources 已就地补上
             # harvard_* 字段供前端还原点击态。引用由代码而非模型生成，杜绝编造作者与年份。
+            cited_external: set[int] = set()
+            if external_session is not None:        # 联网补充关着时这里什么都不做（与 2.2.0 一致）
+                cited_external = _cited_external_ords(answer if citable else "", sources)
+                if external_summary is not None:
+                    external_summary["cited"] = len(cited_external)
             references: list[str] = []
             if citable and sources:
                 answer, references = render_answer_with_references(
@@ -3352,10 +3456,13 @@ class KnowledgeRepositoryApi(
                             if deep_outcome
                             else {}
                         ),
+                        **({"external": external_summary} if external_summary else {}),
                     },
                 )
             except Exception as exc:
                 logger.warning("Failed to persist chat history: %s", exc)
+            if external_session is not None:
+                await self._finish_external(cid, external_session, cited_external)
 
             self._runtime_events.finish(
                 operation_id=cid,
@@ -3385,6 +3492,8 @@ class KnowledgeRepositoryApi(
                 "thinking_trace": _serialize_deep_thinking(deep_outcome) if deep_outcome else None,
                 # 生成状态：length / content_filter / reasoning_only / llm_unavailable，正常为空。
                 "generation_status": generation_status,
+                # 只有打开联网补充的提问才带这个键；关着时返回的形状与 2.2.0 完全一样。
+                **({"external": external_summary} if external else {}),
             }
 
         def _finish(result: dict) -> dict:

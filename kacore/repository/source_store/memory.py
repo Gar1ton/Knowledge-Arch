@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from kacore.domain.models import DocumentLifecycle
 from kacore.repository.source_store.base import SourceDocumentStore
+from kacore.repository.source_store.external_memory import InMemoryToolLedgerMixin
 from kacore.repository.source_store.figures_memory import InMemoryFigureMixin
 
 
@@ -42,7 +43,9 @@ if TYPE_CHECKING:
     )
 
 
-class InMemorySourceDocumentStore(InMemoryFigureMixin, SourceDocumentStore):
+class InMemorySourceDocumentStore(
+    InMemoryFigureMixin, InMemoryToolLedgerMixin, SourceDocumentStore
+):
     """纯内存的 SourceDocumentStore，确定性、无网络/磁盘。"""
 
     def __init__(self) -> None:
@@ -51,6 +54,9 @@ class InMemorySourceDocumentStore(InMemoryFigureMixin, SourceDocumentStore):
         self._documents: dict[str, SourceDocument] = {}
         self._chunks: dict[str, list[DocumentChunk]] = {}
         self._figures: dict[str, list[DocumentFigure]] = {}
+        self._web_captures: dict = {}
+        self._web_calls: dict = {}
+        self._web_citations: dict = {}
         self._sync_records: dict[tuple[str, SyncTargetKind], SyncRecord] = {}
         self._notion_entities: dict[tuple[str, str], NotionEntityRecord] = {}
         self._notion_outbox: dict[str, NotionOutboxItem] = {}

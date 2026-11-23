@@ -14,6 +14,8 @@ from __future__ import annotations
 import base64
 import logging
 import time
+from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any
 
 import anthropic
@@ -26,6 +28,14 @@ from kacore.domain.llm_generation import (
     STATUS_OK,
     STATUS_REASONING_ONLY,
     GenerationResult,
+)
+from kacore.domain.tool_calls import (
+    AssistantTurn,
+    ToolCallRequest,
+    ToolSpec,
+    ToolTurn,
+    Turn,
+    UserTurn,
 )
 from kacore.providers.base import (
     ERROR_AUTH,
@@ -80,6 +90,40 @@ def classify_anthropic_error(exc: BaseException) -> ProviderError:
     if isinstance(exc, anthropic.APIConnectionError):
         return ProviderError(ERROR_UNREACHABLE, "Connection refused or address unreachable")
     return ProviderError(ERROR_BAD_RESPONSE, f"Response unavailable: {type(exc).__name__}")
+
+
+def _anthropic_messages(turns: Sequence[Turn]) -> list[dict[str, Any]]:
+    """供应商中立的轮次 → Messages API 的 messages；相邻的工具结果合进同一条 user 消息，
+    紧跟工具结果的用户文字（distributor 最后一轮的提示）也并进这条消息、排在工具结果之后。"""
+    out: list[dict[str, Any]] = []
+    for turn in turns:
+        if isinstance(turn, UserTurn):
+            last = out[-1] if out else None
+            if last and last["role"] == "user" and isinstance(last["content"], list):
+                last["content"].append({"type": "text", "text": turn.text})
+            else:
+                out.append({"role": "user", "content": turn.text})
+        elif isinstance(turn, AssistantTurn):
+            content: list[Any] = list(turn.raw) if isinstance(turn.raw, list) else [
+                *([{"type": "text", "text": turn.text}] if turn.text else []),
+                *({"type": "tool_use", "id": c.id, "name": c.name, "input": c.arguments}
+                  for c in turn.calls),
+            ]
+            out.append({"role": "assistant", "content": content})
+        else:
+            block = {"type": "tool_result", "tool_use_id": turn.call_id, "content": turn.text,
+                     **({"is_error": True} if turn.is_error else {})}
+            last = out[-1] if out else None
+            if last and last["role"] == "user" and isinstance(last["content"], list):
+                last["content"].append(block)
+            else:
+                out.append({"role": "user", "content": [block]})
+    return out
+
+
+def _turns_text(turns: Sequence[Turn]) -> str:
+    """用量估算用的输入文本（响应没报 token 数时按它计）。"""
+    return "\n".join(getattr(t, "text", "") for t in turns)
 
 
 class AnthropicChat(ProviderClient):
@@ -149,6 +193,48 @@ class AnthropicChat(ProviderClient):
                     self._model,
                 )
         return await self._generate_once(prompt, system_prompt, kwargs, allow_mock=allow_mock)
+
+    async def generate_with_tools(
+        self, turns: Sequence[Turn], tools: Sequence[ToolSpec], system_prompt: str = ""
+    ) -> ToolTurn:
+        """Messages API 的 tools / tool_use / tool_result。助手内容块（含思考块与签名）原样留在 raw
+        里回放：带工具的多轮对话要求把思考块交回。"""
+        kwargs: dict[str, Any] = {
+            "max_tokens": _MAX_TOKENS,
+            "tools": [{"name": t.name, "description": t.description,
+                       "input_schema": t.input_schema} for t in tools],
+        }
+        if system_prompt:
+            kwargs["system"] = system_prompt
+        messages = _anthropic_messages(turns)
+        thinking_off = anthropic_thinking_off(self._model) if thinking_disabled() else {}
+        started = time.monotonic()
+        result: GenerationResult | None = None
+        try:
+            try:
+                response = await self._create(self._model, messages, **kwargs, **thinking_off)
+            except Exception as exc:
+                if not thinking_off or classify_anthropic_error(exc).status != 400:
+                    raise
+                response = await self._create(self._model, messages, **kwargs)
+            result = self._build_result(response)
+            blocks = list(getattr(response, "content", None) or [])
+            calls = tuple(
+                ToolCallRequest(str(b.id), str(b.name), dict(b.input or {}))
+                for b in blocks if getattr(b, "type", "") == "tool_use"
+            )
+            if calls:
+                result = replace(result, status=STATUS_OK)
+            raw = [b.model_dump(exclude_none=True) if hasattr(b, "model_dump") else b
+                   for b in blocks]
+            return ToolTurn(result, calls, raw)
+        except Exception as exc:
+            error = classify_anthropic_error(exc)
+            logger.warning("Anthropic tool call failed model=%s code=%s", self._model, error.code)
+            raise error from None
+        finally:
+            record_llm_usage(result, system_prompt, _turns_text(turns), self._provider_id,
+                             started, result.status if result else STATUS_ERROR)
 
     async def describe_image(
         self,

@@ -310,6 +310,28 @@ export interface AskSource {
   // 前端据它还原「点击引用 → 跳来源卡片」。
   harvard_in_text?: string;
   harvard_reference?: string;
+  // 3.0.0 联网补充：外部引用的来源条目带 origin="external"；source_id 是来源栏编号 E1、E2…，
+  // tool 是给出这段原文的工具。
+  origin?: string;
+  source_id?: string;
+  capture_id?: string;
+  tool?: string;
+  locator?: string;
+}
+
+/** 一次联网补充的摘要（随回答返回、存进聊天记录 meta.external）。 */
+export interface ExternalSummary {
+  status: "ok" | "unavailable" | "error";
+  /** unavailable 的原因：no_tools / no_model / unsupported（研究模型不支持工具调用）。 */
+  reason?: string;
+  capture_id?: string;
+  calls?: number;
+  registered?: number;
+  rejected?: number;
+  used?: number;
+  cited?: number;
+  in_library?: number;
+  error?: string;
 }
 
 export interface ThinkingChecklistItem {
@@ -349,6 +371,7 @@ export interface AskResult {
   // Harvard 参考文献表（已去重排序）。答案正文尾部已含同一份，此字段供非 Web 调用方使用。
   references?: string[];
   sources: AskSource[];
+  external?: ExternalSummary | null;
   requested_retrieval_mode:
     | "default"
     | "enhanced"
@@ -725,7 +748,12 @@ export interface ChatMessage {
   locked_at?: string | null;
   updated_at?: string | null;
   /** 回答时一并存下的思考过程、改写后的问题与所属范围（旧记录为空对象）。 */
-  meta?: { thinking_trace?: ThinkingTrace | null; standalone_question?: string; scope?: AnswerScope };
+  meta?: {
+    thinking_trace?: ThinkingTrace | null;
+    standalone_question?: string;
+    scope?: AnswerScope;
+    external?: ExternalSummary;
+  };
 }
 
 export async function getChatHistory(conversationId: string): Promise<ChatMessage[]> {
@@ -1024,6 +1052,8 @@ export async function ask(opts: {
   answer_language?: "auto" | "zh" | "en";
   /** 全文检索确认门：正文超阈值时后端返回 409，用户同意后带 true 重发同一请求。 */
   confirmed?: boolean;
+  /** 3.0.0 联网补充：对话栏开关打开时为 true。 */
+  external?: boolean;
   /** 清空聊天时中止这次请求（后端任务由 DELETE /api/chat/history 一并取消）。 */
   signal?: AbortSignal;
 }): Promise<AskResult> {
@@ -1043,6 +1073,8 @@ export async function ask(opts: {
       use_english_retrieval: opts.use_english_retrieval ?? false,
       use_context: opts.use_context ?? false,
       model_thinking: opts.model_thinking ?? true,
+      // 联网补充只在打开时带上；关着时请求与 2.2.0 完全一样（用户 11-23）。
+      ...(opts.external ? { external: true } : {}),
       answer_language: opts.answer_language ?? "auto",
       confirmed: opts.confirmed ?? false,
     }),
@@ -1129,11 +1161,26 @@ export async function waitForLateAskAnswer(
 export interface SystemInfo {
   cwd: string; data_dir: string; db_file: string; docs_dir: string;
   python_version: string; platform: string;
+  /** 应用版本（ka_server 的 APP_VERSION）；开发时直接起的后端为空串。 */
+  app_version: string;
 }
 export interface LocalModel { name: string; dir_name: string; size_bytes: number; last_modified: string | null; }
 
 export async function getSystemInfo(): Promise<SystemInfo> {
   return apiFetch<SystemInfo>("/api/system/info");
+}
+
+/** 手动检查更新的结果：与 GitHub 上最新的正式 Release 比较（`web/update_routes.py`）。 */
+export interface UpdateCheck {
+  current_version: string;
+  latest_version: string;
+  newer: boolean;
+  published_at: string;
+  download_page: string;
+}
+
+export async function checkForUpdate(): Promise<UpdateCheck> {
+  return apiFetch<UpdateCheck>("/api/update/check");
 }
 
 export interface FsBrowseResult {

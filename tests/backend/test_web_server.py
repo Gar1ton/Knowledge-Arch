@@ -107,6 +107,22 @@ async def test_cleaning_maintenance_requires_auth_and_defaults_to_preview(tmp_pa
         await client.close()
 
 
+async def test_system_info_carries_the_app_version(tmp_path):
+    """偏好设置的「软件更新」一打开就显示当前版本，取自这里。"""
+    from types import SimpleNamespace
+
+    api = SimpleNamespace(get_system_info=lambda: {"platform": "linux"})
+    app = build_app(api=api, upload_dir=tmp_path, token=TOKEN, app_version="3.0.0")
+    client = TestClient(TestServer(app), headers=AUTH)
+    await client.start_server()
+    try:
+        response = await client.get("/api/system/info")
+        assert response.status == 200
+        assert await response.json() == {"platform": "linux", "app_version": "3.0.0"}
+    finally:
+        await client.close()
+
+
 # ── 配置校验 ────────────────────────────────────────────────────
 
 
@@ -1637,7 +1653,7 @@ async def test_capabilities_route_returns_pipeline_and_dependencies(tmp_path: Pa
         stage_ids = [s["id"] for s in data["pipeline"]]
         assert stage_ids == [
             "zotero", "ingest", "embedding", "vector_store", "retrieval", "graph", "ask",
-            "models", "providers", "notion", "r2",
+            "models", "providers", "notion", "r2", "external",
         ]
         assert {d["key"] for d in data["dependencies"]} == {
             "local_embedding",

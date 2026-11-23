@@ -23,6 +23,9 @@ from kacore.providers.base import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from kacore.domain.tool_calls import ToolSpec, ToolTurn, Turn
     from kacore.providers.registry import ProviderRegistry
     from kacore.settings.store import SettingsStore
 
@@ -115,6 +118,14 @@ class RoleClient:
                 raise ProviderError(ERROR_NOT_FOUND, f"No model is assigned to “{self._role}” yet")
             return GenerationResult(text="", status=STATUS_EMPTY)
         return await client.generate_result(prompt, system_prompt, allow_mock=allow_mock)
+
+    async def generate_with_tools(
+        self, turns: Sequence[Turn], tools: Sequence[ToolSpec], system_prompt: str = ""
+    ) -> ToolTurn:
+        client = self._client()
+        if client is None:
+            raise ProviderError(ERROR_NOT_FOUND, f"No model is assigned to “{self._role}” yet")
+        return await client.generate_with_tools(turns, tools, system_prompt)
 
     async def describe_image(
         self,

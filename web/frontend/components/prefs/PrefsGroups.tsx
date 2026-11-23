@@ -13,22 +13,22 @@ import { TerminalPanel } from "@/components/ui/terminal/TerminalPanel";
 import { useToast } from "@/components/ui/Toast";
 import { formatBytes } from "@/components/flow/SyncActions";
 import {
+  checkForUpdate,
   deleteLocalModel,
   getSystemInfo,
   listLocalModels,
   restartService as requestServiceRestart,
   type LocalModel,
   type SystemInfo,
+  type UpdateCheck,
 } from "@/lib/api";
 import {
-  checkUpdate,
   getShellPrefs,
   inDesktopShell,
-  installUpdate,
+  openDownloadPage,
   openLogDir,
   pickFolder,
   setShellPref,
-  type UpdateInfo,
 } from "@/lib/backend";
 import { useI18n, type Lang } from "@/lib/i18n";
 import { useTheme } from "@/lib/theme";
@@ -47,37 +47,52 @@ import { WipeDataField } from "./WipeDataField";
 
 // ─── 通用 ──────────────────────────────────────────────────────
 
+/** 软件更新：当前版本一打开就显示；点「检查更新」才去查 GitHub 上最新的正式版（不在后台自动检查），
+ *  有新版本时给出下载页，由用户自己下载安装。 */
 function UpdateField() {
   const { t } = useI18n();
   const { toast } = useToast();
-  const [info, setInfo] = useState<UpdateInfo | null>(null);
+  const [version, setVersion] = useState("");
+  const [result, setResult] = useState<UpdateCheck | null>(null);
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    getSystemInfo()
+      .then((s) => { if (alive) setVersion(s.app_version || ""); })
+      .catch(() => { /* 取不到版本时只是不显示这一行 */ });
+    return () => { alive = false; };
+  }, []);
   const check = async () => {
     setBusy(true);
     try {
-      const result = await checkUpdate();
-      setInfo(result);
-      if (result && result.enabled && !result.available) toast(t("update_latest"), "ok");
+      const found = await checkForUpdate();
+      setResult(found);
+      if (!found.newer) toast(t("update_latest"), "ok");
     } catch (err) {
       toast(err instanceof Error ? err.message : String(err), "error");
     } finally {
       setBusy(false);
     }
   };
-  const hint = !info
-    ? ""
-    : !info.enabled
-      ? t("update_disabled")
-      : info.available
-        ? t("update_available", { version: info.version ?? "" })
-        : t("update_latest");
+  const open = async (url: string) => {
+    try {
+      await openDownloadPage(url);
+    } catch {
+      toast(t("update_open_failed", { url }), "error");
+    }
+  };
+  const current = result?.current_version || version;
+  const status = !result ? "" : result.newer
+    ? t("update_available", { version: result.latest_version })
+    : t("update_latest");
+  const hint = [current ? t("update_current", { version: current }) : "", status].filter(Boolean).join(" · ");
   return (
-    <Field label={t("update_title")} hint={info ? `${t("update_current", { version: info.current_version })} · ${hint}` : undefined}>
+    <Field label={t("update_title")} hint={hint || undefined}>
       <div style={{ display: "flex", gap: 6 }}>
         <Button size="sm" variant="outline" loading={busy} onClick={() => void check()}>{t("update_check")}</Button>
-        {info?.available && (
-          <Button size="sm" variant="primary" onClick={() => void installUpdate().catch((err) => toast(String(err), "error"))}>
-            {t("update_install")}
+        {result?.newer && (
+          <Button size="sm" variant="primary" onClick={() => void open(result.download_page)}>
+            {t("update_open_page")}
           </Button>
         )}
       </div>
@@ -99,9 +114,8 @@ export function GeneralGroup() {
       />
       <AgentPrefsField />
       <TourReplayField />
-      {inDesktopShell() ? (
-        <UpdateField />
-      ) : (
+      <UpdateField />
+      {!inDesktopShell() && (
         <div style={{ fontSize: 11, color: "var(--fg-subtle)", paddingTop: 8 }}>{t("prefs_shell_only_hint")}</div>
       )}
     </Card>

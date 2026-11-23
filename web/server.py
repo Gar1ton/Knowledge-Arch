@@ -51,6 +51,7 @@ _UPLOAD_DIR_KEY = web.AppKey("upload_dir", Path)
 _TOKEN_KEY = web.AppKey("token", str)
 _ORIGINS_KEY = web.AppKey("allowed_origins", frozenset)
 _SHUTDOWN_KEY = web.AppKey("shutdown_callback", object)
+_APP_VERSION_KEY = web.AppKey("app_version", str)
 _CORS_ALLOW_HEADERS = "Authorization, Content-Type"
 _CORS_ALLOW_METHODS = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
 _LOG_HANDLER_KEY = web.AppKey("log_handler", object)
@@ -1378,9 +1379,10 @@ async def handle_console_scope_state_upsert(request: web.Request) -> web.Respons
 
 
 async def handle_system_info(request: web.Request) -> web.Response:
-    """GET /api/system/info — 返回后端运行环境信息（调试面板用）。"""
+    """GET /api/system/info — 返回后端运行环境信息与应用版本（调试面板、偏好设置的版本行用）。"""
     try:
-        return web.json_response(_api(request).get_system_info())
+        info = _api(request).get_system_info()
+        return web.json_response({**info, "app_version": request.app[_APP_VERSION_KEY]})
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
 
@@ -1601,6 +1603,7 @@ async def handle_ask(request: web.Request) -> web.Response:
             answer_language=answer_language,
             doc_id=doc_id,
             confirmed=confirmed,
+            external=body.get("external") is True,
             scope_type=str(body.get("scope_type") or ""),
             scope_key=str(body.get("scope_key") or ""),
             scope_library_id=str(body.get("scope_library_id") or ""),
@@ -1706,6 +1709,115 @@ async def handle_ask_evidence(request: web.Request) -> web.Response:
         return web.json_response({"status": "error", "message": str(exc)}, status=400)
     except RuntimeError as exc:
         return web.json_response({"status": "unavailable", "message": str(exc)}, status=503)
+    return web.json_response(result)
+
+
+async def _json_body(request: web.Request) -> dict[str, Any] | None:
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return None
+    return body if isinstance(body, dict) else None
+
+
+async def handle_tools_list(request: web.Request) -> web.Response:
+    """GET /api/tools — 联网工具的声明、开关、是否就绪与最近状态（工具面板与 AI 助手用）。"""
+    try:
+        return web.json_response({"tools": _api(request).list_tools()})
+    except RuntimeError as exc:
+        return web.json_response({"status": "unavailable", "message": str(exc)}, status=503)
+
+
+async def handle_tools_recent_calls(request: web.Request) -> web.Response:
+    """GET /api/tools/calls?limit=50 — 最近的工具调用（跨运行，新的在前）。"""
+    try:
+        limit = int(request.query.get("limit", "50"))
+    except ValueError:
+        limit = 50
+    calls = await _api(request).recent_tool_calls(min(max(limit, 1), 200))
+    return web.json_response({"calls": calls})
+
+
+async def handle_tool_call(request: web.Request) -> web.Response:
+    """POST /api/tools/{name}/call {arguments, capture_id?, question?, conversation_id?, actor?}
+
+    必须带 user_approved=true：AI 助手先问过用户才能联网（skill 的「先问再查」）；工具面板的
+    试调用由用户按「调用」发起，同样带上。
+    """
+    body = await _json_body(request)
+    if body is None:
+        return web.json_response({"error": "JSON object required"}, status=400)
+    if body.get("user_approved") is not True:
+        return web.json_response(
+            {"status": "approval_required",
+             "message": "Ask the user before calling external tools."}, status=403)
+    arguments = body.get("arguments") or {}
+    if not isinstance(arguments, dict):
+        return web.json_response({"error": "arguments must be an object"}, status=400)
+    try:
+        result = await _api(request).call_tool(
+            request.match_info["name"], arguments,
+            capture_id=str(body.get("capture_id") or ""),
+            question=str(body.get("question") or ""),
+            conversation_id=str(body.get("conversation_id") or ""),
+            actor=str(body.get("actor") or "agent"),
+        )
+    except ValueError as exc:
+        return web.json_response({"status": "error", "message": str(exc)}, status=400)
+    except RuntimeError as exc:
+        return web.json_response({"status": "unavailable", "message": str(exc)}, status=503)
+    return web.json_response(result)
+
+
+async def handle_tool_cite(request: web.Request) -> web.Response:
+    """POST /api/tools/cite {capture_id, call, passage, title, ...} — 登记一条引用（逐字核对）。"""
+    body = await _json_body(request)
+    if body is None or not str(body.get("capture_id") or "").strip():
+        return web.json_response({"error": "capture_id is required"}, status=400)
+    try:
+        result = await _api(request).cite_tool(str(body["capture_id"]).strip(), body)
+    except ValueError as exc:
+        return web.json_response({"status": "error", "message": str(exc)}, status=404)
+    except RuntimeError as exc:
+        return web.json_response({"status": "unavailable", "message": str(exc)}, status=503)
+    return web.json_response(result)
+
+
+async def handle_external_capture(request: web.Request) -> web.Response:
+    """GET /api/external/captures/{capture_id} — 回答「来源」栏的详情。"""
+    try:
+        result = await _api(request).get_external_capture(request.match_info["capture_id"])
+    except ValueError as exc:
+        return web.json_response({"status": "error", "message": str(exc)}, status=404)
+    return web.json_response(result)
+
+
+async def handle_external_capture_placement(request: web.Request) -> web.Response:
+    """POST /api/external/captures/{capture_id}/placement — 按用户集合树归类。
+
+    在来源栏第一次打开「体系」时才调用；已归类的文献不再调用模型。
+    """
+    try:
+        result = await _api(request).place_external_capture(request.match_info["capture_id"])
+    except ValueError as exc:
+        return web.json_response({"status": "error", "message": str(exc)}, status=404)
+    return web.json_response(result)
+
+
+async def handle_external_capture_export(request: web.Request) -> web.Response:
+    """POST /api/external/captures/{capture_id}/export {folder} — 导出 CSV + JSON 到所选文件夹。"""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    folder = str((body or {}).get("folder") or "").strip()
+    if not folder:
+        return web.json_response({"error": "folder is required"}, status=400)
+    try:
+        result = await _api(request).export_external_capture(
+            request.match_info["capture_id"], folder)
+    except ValueError as exc:
+        return web.json_response({"status": "error", "message": str(exc)}, status=400)
     return web.json_response(result)
 
 
@@ -1868,6 +1980,7 @@ def build_app(
     app[_TOKEN_KEY] = token
     app[_ORIGINS_KEY] = frozenset(allowed_origins)
     app[_SHUTDOWN_KEY] = shutdown_callback
+    app[_APP_VERSION_KEY] = app_version
 
     from kacore.log_capture import install as _install_log_handler
 
@@ -1971,6 +2084,15 @@ def build_app(
     app.router.add_get("/api/logs", handle_logs)
     app.router.add_post("/api/logs/events", handle_log_event)
     app.router.add_post("/api/ask/evidence", handle_ask_evidence)
+    app.router.add_get("/api/tools", handle_tools_list)
+    app.router.add_get("/api/tools/calls", handle_tools_recent_calls)
+    app.router.add_post("/api/tools/cite", handle_tool_cite)
+    app.router.add_post("/api/tools/{name}/call", handle_tool_call)
+    app.router.add_get("/api/external/captures/{capture_id}", handle_external_capture)
+    app.router.add_post("/api/external/captures/{capture_id}/placement",
+                        handle_external_capture_placement)
+    app.router.add_post("/api/external/captures/{capture_id}/export",
+                        handle_external_capture_export)
     app.router.add_post("/api/ask", handle_ask)
     app.router.add_get("/api/console/scope-state", handle_console_scope_state_get)
     app.router.add_put("/api/console/scope-state", handle_console_scope_state_upsert)
@@ -1986,6 +2108,10 @@ def build_app(
     from web.desktop_routes import register_desktop_routes
 
     register_desktop_routes(app, _api)
+
+    from web.update_routes import register_update_routes
+
+    register_update_routes(app, app_version)
 
     from web.agent_routes import register_agent_routes
 

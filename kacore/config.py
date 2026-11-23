@@ -101,6 +101,25 @@ class SourceStoreConfig:
     ocr_enabled: bool = False
 
 
+TOOLS_SECTION = "external_tools"
+
+
+@dataclass
+class ToolsConfig:
+    """联网工具（3.0.0）：每个联网功能一个工具，distributor 按问题挑着调用（「联网补充」打开时）。
+
+    本类不认识任何具体工具：enabled 与 values 的键是工具名，由工具自己的声明
+    （`kacore/adapters/tools`）决定；机密设置不在这里，工具装配时从加密库现取。
+    max_rounds：一次回答最多调用研究模型几轮（用户 11-22 定默认 4：检索、读全文、登记引用、重试一次
+    被拒引用，假设值）；max_result_chars：每次工具结果交给模型的最大字数（控制上下文长度的假设值）。
+    """
+
+    max_rounds: int = 4
+    max_result_chars: int = 6000
+    enabled: dict[str, bool] = field(default_factory=dict)
+    values: dict[str, dict[str, object]] = field(default_factory=dict)
+
+
 @dataclass
 class VisionConfig:
     """识图（2.1.0）：给 PDF 图表空位写描述。模型在「模型分配」的 vision 角色里选。
@@ -649,6 +668,28 @@ class Config:
             ),
             sync_mode=sync_mode,
             # rate_limit_rps 固定为平台上限，不从配置读取。
+        )
+
+    def get_tools_config(self) -> ToolsConfig:
+        """原始键形如 `<工具名>.enabled` / `<工具名>.<设置名>`（设置项由工具声明生成）。"""
+        s = _section(self.raw, TOOLS_SECTION)
+        d = ToolsConfig
+        enabled: dict[str, bool] = {}
+        values: dict[str, dict[str, object]] = {}
+        for key, value in s.items():
+            tool, _, name = str(key).partition(".")
+            if not name:
+                continue
+            if name == "enabled":
+                enabled[tool] = bool(value)
+            else:
+                values.setdefault(tool, {})[name] = value
+        return ToolsConfig(
+            max_rounds=min(8, max(1, _int_or_default(s.get("max_rounds"), d.max_rounds))),
+            max_result_chars=min(20000, max(1000, _int_or_default(
+                s.get("max_result_chars"), d.max_result_chars))),
+            enabled=enabled,
+            values=values,
         )
 
     def get_vision_config(self) -> VisionConfig:

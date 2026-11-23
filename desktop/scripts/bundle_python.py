@@ -33,7 +33,7 @@ IS_WINDOWS = os.name == "nt"
 # 只带运行所需的源码（相对仓库根）；目录按 _ignore 过滤缓存与测试残留。
 SOURCES = (
     "kacore", "ka_server", "migrations",
-    "web/server.py", "web/desktop_routes.py", "web/agent_routes.py",
+    "web/server.py", "web/desktop_routes.py", "web/agent_routes.py", "web/update_routes.py",
 )
 # AI 助手 skill（kacore/agent_skill.py 在 ka/agent_skill/ 下查找）：仓库路径 → 包内路径。
 SKILL_SOURCE = (".agents/skills/operate-knowledge-arch", "agent_skill/operate-knowledge-arch")

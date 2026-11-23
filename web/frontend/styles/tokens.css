@@ -30,6 +30,18 @@
   display: flex;
   align-items: center;
 }
+/* 顶栏字标：Bitcount 的大写字母在行框里偏上 0.06em（按字体度量算出）。
+   支持 text-box 时裁到大写字母高度再居中，否则下移 0.06em。 */
+.kr-wordmark {
+  line-height: 1;
+  transform: translateY(0.06em);
+}
+@supports (text-box: trim-both cap alphabetic) {
+  .kr-wordmark {
+    transform: none;
+    text-box: trim-both cap alphabetic;
+  }
+}
 
 /* ─── 动画 keyframes ──────────────────────────────────────────── */
 @keyframes dotTwinkle {
@@ -1760,3 +1772,65 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* 联网补充节点：工具面板（components/flow/ToolsPanel.tsx） */
+.flow-tools { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 8px; }
+.flow-tool { padding: 5px 0; border-top: 1px solid var(--border); font-size: 12px; }
+.flow-tool-head { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.flow-tool-head code { font-size: 11.5px; }
+.flow-tool-state { margin-left: auto; font-size: 11px; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-tool-state.ok { color: var(--ok); }
+.flow-tool-state.warn { color: var(--warn); }
+.flow-tool-state.error { color: var(--danger); }
+.flow-tool-state.muted { color: var(--fg-subtle); }
+.flow-tool-info { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 0 22px; }
+.flow-tool-setting { display: grid; grid-template-columns: 110px minmax(0, 1fr) auto; gap: 6px; align-items: center; margin: 4px 0 0 22px; color: var(--fg-muted); }
+.flow-tool-setting input, .flow-tool-test input, .flow-tool-test select { min-width: 0; height: 24px; padding: 0 6px; border: 1px solid var(--border); border-radius: 5px; background-color: var(--surface); color: var(--fg); font-size: 11.5px; }
+.flow-tool-test { display: grid; grid-template-columns: minmax(0, 150px) minmax(0, 1fr) auto; gap: 6px; align-items: center; margin: 4px 0 6px; }
+.flow-tool-result { max-height: 180px; overflow: auto; margin: 0 0 8px; padding: 6px 8px; background: var(--bg-inset); border-radius: 6px; font: 11px/1.45 var(--font-mono); white-space: pre-wrap; word-break: break-word; }
+.flow-tool-log { display: flex; flex-direction: column; margin-bottom: 4px; }
+.flow-tool-logrow { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; gap: 8px; padding: 3px 0; border-top: 1px solid var(--border); font-size: 11px; color: var(--fg-muted); }
+.flow-tool-logrow.is-error .flow-tool-args { color: var(--danger); }
+.flow-tool-args { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-tool-empty { font-size: 11.5px; color: var(--fg-subtle); padding: 3px 0; }
+
+/* 3.0.0 回答的来源栏（components/panels/SourcesPanel.tsx） */
+.src-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.src-seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 6px; overflow: hidden; }
+.src-seg button { border: 0; background: var(--surface); padding: 3px 12px; font-size: 12px; color: var(--fg-muted); cursor: pointer; }
+.src-seg button.on { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
+.src-meta { color: var(--fg-subtle); font-size: 11.5px; }
+.src-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 340px); flex: 1; min-height: 0; }
+.src-main, .src-detail { min-width: 0; overflow: auto; }
+.src-detail { border-left: 1px solid var(--border); }
+.src-group { padding: 10px 12px 3px; font-size: 10.5px; font-weight: 700; letter-spacing: .05em; color: var(--fg-subtle); text-transform: uppercase; }
+.src-row { padding: 8px 12px; border-bottom: 1px solid var(--border); cursor: pointer; display: flex; flex-direction: column; gap: 3px; }
+.src-row:hover { background: var(--bg-subtle); }
+.src-row.on { background: var(--bg-inset); }
+.src-row-main { font-size: 12.5px; line-height: 1.45; }
+.src-row-sub { font-size: 11.5px; color: var(--fg-subtle); }
+.src-badges { display: inline-flex; gap: 4px; margin-right: 6px; vertical-align: 1px; }
+.src-note { padding: 10px 12px; color: var(--fg-subtle); font-size: 12px; }
+.src-note--error { color: var(--danger); }
+.src-link { background: none; border: 0; padding: 0; color: var(--info); cursor: pointer; font-size: 12px; }
+.src-det { padding: 12px; display: flex; flex-direction: column; gap: 10px; font-size: 12.5px; }
+.src-det h3 { margin: 0 0 3px; font-size: 14px; line-height: 1.35; }
+.src-det p { margin: 3px 0 0; color: var(--fg-muted); line-height: 1.5; }
+.src-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.src-box { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.src-h { font-size: 10.5px; font-weight: 700; letter-spacing: .04em; color: var(--fg-subtle); }
+.src-pre { margin: 4px 0 0; padding: 6px 8px; background: var(--bg-inset); border-radius: 6px; font: 11px/1.5 var(--font-mono); white-space: pre-wrap; word-break: break-word; }
+.src-pre.on { outline: 2px solid var(--info); }
+.src-quote { margin: 2px 0; padding: 2px 8px; border-left: 3px solid var(--border-strong); color: var(--fg-muted); line-height: 1.5; }
+.src-quote b { font-family: var(--font-mono); font-size: 11px; color: var(--fg); margin-right: 4px; }
+.src-tree { padding: 4px 12px 12px; }
+.src-tnode { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; }
+.src-tnode button { background: none; border: 0; padding: 0; color: var(--fg); cursor: pointer; text-align: left; font-size: 12.5px; }
+.src-tnode button:hover { text-decoration: underline; }
+.src-n { font-family: var(--font-mono); font-size: 11px; color: var(--fg-subtle); }
+.src-explain { margin-top: 12px; padding: 10px 12px; border: 1px dashed var(--border-strong); border-radius: 8px; color: var(--fg-muted); font-size: 12px; line-height: 1.55; }
+/* 图谱（components/panels/SourceGraph.tsx）：画布铺满左栏，操作手感同数据流页 */
+.chat-external-bar { margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; font-size: 11.5px; color: var(--fg-muted); }
+.chat-external-toggle { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--fg-muted); font-size: 11.5px; cursor: pointer; }
+.chat-external-toggle.on { border-color: var(--info); color: var(--info); background: var(--info-soft); font-weight: 600; }
+@media (max-width: 1100px) { .src-grid { grid-template-columns: minmax(0, 1fr); } .src-detail { border-left: 0; border-top: 1px solid var(--border); } }

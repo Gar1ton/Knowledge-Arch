@@ -716,6 +716,61 @@ def ask_evidence(
     return result
 
 
+def list_tools(client: KnowledgeArchClient) -> dict[str, Any]:
+    """List Knowledge Arch's external tools: name, description, input schema, ready or not."""
+    return _expect_dict(client.request_json("/api/tools"), "/api/tools")
+
+
+def call_tool(
+    client: KnowledgeArchClient,
+    name: str,
+    arguments_json: str,
+    *,
+    question: str,
+    capture_id: str,
+    user_approved: bool,
+) -> dict[str, Any]:
+    """Call one external tool through Knowledge Arch (only after the user agreed).
+
+    Calls of one question share a capture: pass the capture_id from the first result so that
+    tool-cite can check citations against all of them.
+    """
+    if not user_approved:
+        raise UsageError(
+            "Ask the user first. Rerun with --user-approved only after the user agreed to "
+            "external sources for this question."
+        )
+    try:
+        arguments = json.loads(arguments_json or "{}")
+    except json.JSONDecodeError as exc:
+        raise UsageError(f"--arguments must be a JSON object: {exc}") from exc
+    if not isinstance(arguments, dict):
+        raise UsageError("--arguments must be a JSON object")
+    path = f"/api/tools/{quote(name.strip(), safe='')}/call"
+    payload = client.request_json(path, method="POST", body={
+        "arguments": arguments, "question": question.strip(),
+        "capture_id": capture_id.strip(), "user_approved": True,
+    })
+    return _expect_dict(payload, path)
+
+
+def cite_tool(
+    client: KnowledgeArchClient,
+    capture_id: str,
+    call: str,
+    passage: str,
+    fields: dict[str, Any],
+) -> dict[str, Any]:
+    """Register one source: Knowledge Arch checks the passage and fields word for word against
+    the recorded tool results and returns a Harvard citation when they match."""
+    if not capture_id.strip() or not call.strip() or not passage.strip():
+        raise UsageError("--capture, --call and --passage are required")
+    body = {"capture_id": capture_id.strip(), "call": call.strip(), "passage": passage,
+            **{k: v for k, v in fields.items() if v}}
+    return _expect_dict(client.request_json("/api/tools/cite", method="POST", body=body),
+                        "/api/tools/cite")
+
+
 def read_document(
     client: KnowledgeArchClient,
     doc_id: str,
@@ -1275,6 +1330,28 @@ def build_parser() -> argparse.ArgumentParser:
     ask_scope.add_argument("--collection")
     ask_scope.add_argument("--all", dest="all_collections", action="store_true")
 
+    subparsers.add_parser("tools", help="List Knowledge Arch's external tools")
+    tool_call_parser = subparsers.add_parser(
+        "tool-call", help="Call one external tool (only after the user agreed)"
+    )
+    tool_call_parser.add_argument("name")
+    tool_call_parser.add_argument("--arguments", default="{}", help="JSON object")
+    tool_call_parser.add_argument("--question", default="")
+    tool_call_parser.add_argument("--capture", default="", help="capture_id of earlier calls")
+    tool_call_parser.add_argument("--user-approved", action="store_true")
+    tool_cite_parser = subparsers.add_parser(
+        "tool-cite", help="Register a source; Knowledge Arch checks it word for word"
+    )
+    tool_cite_parser.add_argument("--capture", required=True)
+    tool_cite_parser.add_argument("--call", required=True, help="Call id such as c1")
+    tool_cite_parser.add_argument("--passage", required=True)
+    tool_cite_parser.add_argument("--title", required=True)
+    tool_cite_parser.add_argument("--creator", action="append", default=[])
+    tool_cite_parser.add_argument("--year", default="")
+    tool_cite_parser.add_argument("--venue", default="")
+    tool_cite_parser.add_argument("--identifier", default="")
+    tool_cite_parser.add_argument("--url", default="")
+
     read_parser = subparsers.add_parser("read", help="Read one page of document Markdown")
     read_parser.add_argument("--doc-id", required=True)
     read_parser.add_argument("--start", type=int, default=0)
@@ -1402,6 +1479,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                     mode=args.mode,
                     round_number=args.round,
                 )
+            elif args.command == "tools":
+                result = list_tools(client)
+            elif args.command == "tool-call":
+                result = call_tool(client, args.name, args.arguments, question=args.question,
+                                   capture_id=args.capture, user_approved=args.user_approved)
+            elif args.command == "tool-cite":
+                result = cite_tool(client, args.capture, args.call, args.passage, {
+                    "title": args.title, "creators": list(args.creator), "year": args.year,
+                    "venue": args.venue, "identifier": args.identifier, "url": args.url,
+                })
             elif args.command == "read":
                 result = read_document(
                     client,
