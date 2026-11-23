@@ -6,6 +6,13 @@
 
 ### 修复 (Fixed)
 
+- **联网补充关着时，问答与 2.2.0 逐项一致（用户 11-23 重申：本地调用和原来一样；关掉时正常功能完全不变）。**
+  对照 v2.2.0 逐文件核对后，关着时只剩两处差别，都已去掉：`kacore/api.py` 的返回结果总带 `"external": None`
+  （现在只有打开时才带这个键），每次回答都会算一遍外部引用编号（现在只在有联网补充时算）；
+  `web/frontend/lib/api.ts` 提问请求总带 `external: false`（现在只在打开时带 `external: true`）。
+  测试 `tests/backend/test_ask_external.py`：装了 distributor 但没打开，与根本没装时提示词、返回结果、聊天记录逐项相同，
+  不发工具调用、不写账本。
+
 - **联网补充在真实模型上一条引用也登记不上（P33 P3c T6，真实模型冒烟发现）。** 用户库副本 + arc:chat（经 hub）+ 真实
   Crossref / OpenAlex / arXiv / Open Library：三个问题各调用 8 次工具、登记 0 条。
   - `kacore/managers/tool_distributor.py`：最后一轮只开放 `cite`，但模型照调检索工具、原先照样执行；现在本轮没开放的

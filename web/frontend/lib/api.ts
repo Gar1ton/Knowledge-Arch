@@ -1073,7 +1073,8 @@ export async function ask(opts: {
       use_english_retrieval: opts.use_english_retrieval ?? false,
       use_context: opts.use_context ?? false,
       model_thinking: opts.model_thinking ?? true,
-      external: opts.external ?? false,
+      // 联网补充只在打开时带上；关着时请求与 2.2.0 完全一样（用户 11-23）。
+      ...(opts.external ? { external: true } : {}),
       answer_language: opts.answer_language ?? "auto",
       confirmed: opts.confirmed ?? false,
     }),

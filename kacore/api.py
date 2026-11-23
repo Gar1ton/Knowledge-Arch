@@ -3378,9 +3378,11 @@ class KnowledgeRepositoryApi(
             # v1.1.0：把 LLM 写的 [n] 确定性改写为 Harvard in-text 短引（带页码）并追加参考
             # 文献表。放在这里是唯一应用点——所有分支的 answer 都已定稿，且 sources 已就地补上
             # harvard_* 字段供前端还原点击态。引用由代码而非模型生成，杜绝编造作者与年份。
-            cited_external = _cited_external_ords(answer if citable else "", sources)
-            if external_summary is not None and external_session is not None:
-                external_summary["cited"] = len(cited_external)
+            cited_external: set[int] = set()
+            if external_session is not None:        # 联网补充关着时这里什么都不做（与 2.2.0 一致）
+                cited_external = _cited_external_ords(answer if citable else "", sources)
+                if external_summary is not None:
+                    external_summary["cited"] = len(cited_external)
             references: list[str] = []
             if citable and sources:
                 answer, references = render_answer_with_references(
@@ -3489,7 +3491,8 @@ class KnowledgeRepositoryApi(
                 "thinking_trace": _serialize_deep_thinking(deep_outcome) if deep_outcome else None,
                 # 生成状态：length / content_filter / reasoning_only / llm_unavailable，正常为空。
                 "generation_status": generation_status,
-                "external": external_summary,
+                # 只有打开联网补充的提问才带这个键；关着时返回的形状与 2.2.0 完全一样。
+                **({"external": external_summary} if external else {}),
             }
 
         def _finish(result: dict) -> dict:

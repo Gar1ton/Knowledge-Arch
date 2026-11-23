@@ -789,6 +789,12 @@
       Anthropic 连接把这条提示并进工具结果那条 user 消息；`normalize_text` 统一弯 / 直引号、去强调星号（被拒引用的主因）。
       修后三题各登记 6 条，正文用到 6 / 5 / 5 条。未处理：库里已有、但没有 DOI 的书（Massumi《Parables for the Virtual》）
       仍会作为外部来源重复出现——已在库只按 DOI 判断。
+    - [x] T7 关着时与 2.2.0 一致（用户 11-23 重申四条：本地调用不变；联网 = MCP 式 distributor 协助检索；
+      关掉时正常功能完全不变；skill 一并兼容）。逐文件对照 v2.2.0：问答路径的新代码都在 `if external` 之后；
+      迁移 029 只新建三张账本表（DROP 的表 2.2.0 与用户库里都没有）；连接层 `_complete` 默认路径不变；新增 mixin 与
+      已有方法无重名；新 CSS 只挂在新类名上；skill 原有命令不变、只加 tools / tool-call / tool-cite。去掉关着时仅剩的两处
+      差别（返回结果的 `external` 键、请求里的 `external: false`）。始终可见的新增：数据流页「联网补充」节点（工具开关所在）、
+      `/api/capabilities` 多一个节点、设置里多 `flow.external` 分区。
     - 验证（11-22）：新增 `test_tools.py` 11 项、`test_tool_distributor.py` 5 项、`test_provider_tools.py` 3 项，重写
       `test_ask_external.py` 6 项、`test_external_ledger_store.py` 9 项；删除只测已删规则的 6 个测试文件；全量 pytest
       1657 passed / 4 skipped；ruff；mypy；前端 tsc / lint / build。真后端 + next dev + Playwright：临时数据目录写入示例

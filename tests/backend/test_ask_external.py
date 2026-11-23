@@ -102,12 +102,26 @@ async def test_without_tools_the_answer_still_comes_from_the_library() -> None:
     assert [s["n"] for s in result["sources"]] == [1] and result["answer"]
 
 
-async def test_external_is_off_by_default() -> None:
-    store = InMemorySourceDocumentStore()
-    api = await _api(store, _SynthLLM())
-    api.attach_tool_distributor(_distributor(store))
-    result = await api.ask(question="alpha", collection="c1")
-    assert result["external"] is None and await store.list_recent_tool_calls(5) == []
+async def test_with_external_off_the_answer_is_exactly_as_without_the_feature() -> None:
+    """用户 11-23：关掉联网时正常功能完全不变。装了 distributor 但没打开开关，与根本没装时
+    提示词、返回结果、聊天记录逐项相同，也不发任何工具调用、不写账本。"""
+    results, prompts, metas = [], [], []
+    for attach in (False, True):
+        store = InMemorySourceDocumentStore()
+        llm = _SynthLLM()
+        api = await _api(store, llm)
+        if attach:
+            api.attach_tool_distributor(_distributor(store))
+        result = await api.ask(question="alpha", collection="c1", conversation_id="conv")
+        assert "external" not in result
+        assert await store.list_recent_tool_calls(5) == []
+        messages = await store.get_chat_messages("conv")
+        assert "external" not in (messages[-1].get("meta") or {})
+        results.append(result)
+        prompts.append(llm.prompts)
+        metas.append(messages[-1].get("meta"))
+    assert prompts[0] == prompts[1] and metas[0] == metas[1]
+    assert results[0] == results[1]
 
 
 async def test_a_citation_already_in_the_library_is_not_used_as_external() -> None:
