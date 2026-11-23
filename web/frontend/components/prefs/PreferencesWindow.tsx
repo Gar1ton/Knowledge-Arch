@@ -1,6 +1,6 @@
 "use client";
 /**
- * 偏好设置窗口（替代旧的设置弹窗）：六个分组，菜单 Preferences…（⌘, / Ctrl+,）打开。
+ * 偏好设置窗口（替代旧的设置弹窗）：七个分组，菜单 Preferences…（⌘, / Ctrl+,）打开。
  * 数据流节点的设置不在这里，在主窗口「数据流」页的各节点上。
  */
 import React, { useCallback } from "react";
@@ -19,11 +19,13 @@ import {
   StorageGroup,
   restartService,
 } from "./PrefsGroups";
+import { BackupGroup } from "./BackupGroup";
 
 const GROUPS: { id: PrefsGroup; labelKey: I18nKey; icon: string }[] = [
   { id: "general", labelKey: "prefs_group_general", icon: "settings" },
   { id: "appearance", labelKey: "prefs_group_appearance", icon: "sun" },
   { id: "storage", labelKey: "prefs_group_storage", icon: "db" },
+  { id: "backup", labelKey: "prefs_group_backup", icon: "download" },
   { id: "local_models", labelKey: "prefs_group_local_models", icon: "chip" },
   { id: "components", labelKey: "prefs_group_components", icon: "layers" },
   { id: "diagnostics", labelKey: "prefs_group_diagnostics", icon: "terminal" },
@@ -73,6 +75,7 @@ export function PreferencesWindow() {
           {prefsGroup === "general" && <GeneralGroup />}
           {prefsGroup === "appearance" && <AppearanceGroup onSaveSetting={saveQuietly} />}
           {prefsGroup === "storage" && <StorageGroup />}
+          {prefsGroup === "backup" && <BackupGroup />}
           {prefsGroup === "local_models" && <LocalModelsGroup />}
           {prefsGroup === "components" && <ComponentsGroup onRestart={() => void restart()} />}
           {prefsGroup === "diagnostics" && <DiagnosticsGroup onRestart={() => void restart()} />}

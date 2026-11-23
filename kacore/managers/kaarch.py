@@ -225,7 +225,9 @@ class KaarchManager:
             "created_at": manifest.get("created_at", ""), "parts": manifest["parts"],
             "counts": manifest.get("counts") or {}, "secret_count": manifest.get("secret_count", 0),
             "settings_diff": settings_diff,
-            "embedding_same": bool(fingerprint) and fingerprint == self._fingerprint,
+            # 任一边没有 Embedding 指纹（没配模型）时为 None：不知道，不说「不同」。
+            "embedding_same": (fingerprint == self._fingerprint)
+            if fingerprint and self._fingerprint else None,
             "local_documents": local_docs, "local_empty": local_docs == 0,
         }
 

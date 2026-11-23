@@ -76,6 +76,13 @@
   - 接口 `POST /api/kaarch/export|inspect|import`、`GET /api/kaarch/job`（`kacore/api_library_io.py`、
     `web/library_io_routes.py`）；不进 AI 助手白名单。
   - 测试 `tests/backend/test_kaarch.py`（4 项）。
+- **`.kaarch` 导出导入（P33 P6b，界面）。** 偏好设置新分组「备份与迁移」（`web/frontend/components/prefs/BackupGroup.tsx`，
+  `PreferencesWindow.tsx`、`lib/ConsoleContext.tsx`）：导出勾选设置 / 密钥（填口令）/ 集合与构筑、选文件夹，
+  进度条与导出结果；导入先只读清单（设置与本机差几项、密钥几条、文档 / 集合 / 笔记数、Embedding 是否一致——
+  任一边没配模型时不显示，`kacore/managers/kaarch.py` 返回 null），本机库不空时选「合并 / 完全覆盖」并列出各自后果，
+  完全覆盖在页内再确认一次，没填口令时提示密钥不会导入。桌面壳新增 `pick_file` 命令按扩展名选文件
+  （`desktop/src-tauri/src/lib.rs`、`web/frontend/lib/backend.ts` 的 `pickFile`），浏览器开发模式下手填路径。
+  接口封装 `web/frontend/lib/kaarchApi.ts`，文案 `bk_*` / `prefs_group_backup`（中英），样式 `.bk-*` / `.imp-opt`。
 
 ## [v3.0.0-preview.1] — 2026-11-23
 

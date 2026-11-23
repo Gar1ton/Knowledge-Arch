@@ -842,7 +842,7 @@
       目录、占位 key，未按「推送」——那会请求 api.zotero.org）：推送框显示的目标文件夹与 path 正确（跟着集合里
       已有附件所在的文件夹，根目录由已有附件推出）。
       - [ ] 真实写入测试（用户 11-23 选「做」）：需要用户提供有写权限的 key；临时集合 + 测试附件，验完删除。
-  - [ ] P6 导出导入：
+  - 🚧 P6 导出导入：
     - [x] P6a 后端：`utils/passphrase_box.py`（scrypt n=2^17 + AES-GCM）、打包函数从 R2 抽出共用
       （`managers/data_inventory.py`，R2 输出不变）、`managers/kaarch.py`（后台导出、读清单、完全覆盖 = 解进
       R2 暂存 + 待恢复标记 + 重启，密钥当场写入且原密钥文件另存）、`managers/kaarch_merge.py`（按路径对集合、
@@ -850,7 +850,12 @@
       设置与密钥只补本机没有的）、机密库 `list_names`、接口 `/api/kaarch/export|inspect|import|job`（不进
       AI 助手白名单）。验证（11-23）：新增 `test_kaarch.py` 4 项（导出内容、口令、读清单、覆盖后经 R2 恢复
       换库、合并只加缺的）；全量 pytest 1691 passed / 4 skipped；ruff；mypy。
-    - [ ] P6b 界面：偏好设置「备份与迁移」；壳加选文件命令。
+    - [x] P6b 界面：偏好设置新分组「备份与迁移」（`components/prefs/BackupGroup.tsx`：导出勾选设置 / 密钥（口令）/
+      集合与构筑、选文件夹、进度条与结果；导入先读清单——设置差几项、密钥几条、文档 / 集合 / 笔记数、Embedding
+      是否一致（任一边没配模型时不显示）——本机库不空时选合并 / 完全覆盖，覆盖在页内再确认一次）；壳新增
+      `pick_file` 命令（`desktop/src-tauri/src/lib.rs`，按扩展名过滤），浏览器开发模式下手填路径。
+      验证（11-23）：tsc / lint / build；rustfmt（clippy 与 cargo test 由 developer CI 跑）；真后端 + next dev +
+      Playwright：导出（11 个文件、设置 + 密钥 + 库）、读清单、合并（2 篇已在、0 新增）结果显示正确。
   - [ ] 用户 11-23 追加（三项做完后处理）：
     - [ ] Bug：数据流「联网补充」节点的工具面板里填 OpenAlex 等 key 后点保存会卡住，也没有「已配置好」的提示。
     - [ ] 工具面板那块界面不够好看，修 bug 时一起重做。

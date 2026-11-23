@@ -140,6 +140,12 @@ export async function pickFolder(title?: string): Promise<string | null> {
   return invokeShell<string | null>("pick_folder", { title: title ?? null });
 }
 
+/** 原生选择文件对话框（extensions 如 ["kaarch"]）；不在壳里返回 null（调用方让用户手填路径）。 */
+export async function pickFile(title?: string, extensions?: string[]): Promise<string | null> {
+  if (!inDesktopShell()) return null;
+  return invokeShell<string | null>("pick_file", { title: title ?? null, extensions: extensions ?? null });
+}
+
 /** 打开日志目录（系统文件管理器）。 */
 export async function openLogDir(): Promise<void> {
   if (!inDesktopShell()) return;
