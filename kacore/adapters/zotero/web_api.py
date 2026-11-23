@@ -1,4 +1,8 @@
-"""Read-only Zotero Web API v3 client and personal-library snapshot reader."""
+"""Zotero Web API v3 client and personal-library snapshot reader.
+
+Reads build the pull snapshot. The only writes (3.0.0 push) create standalone linked_file
+attachments in the user's own library and, for the push write test, delete one by key.
+"""
 from __future__ import annotations
 
 import json
@@ -41,7 +45,7 @@ class ZoteroWebApiError(RuntimeError):
 
 
 class ZoteroWebApiClient:
-    """Minimal GET-only Zotero Web API client."""
+    """Minimal Zotero Web API client: GET for the pull, plus item create / delete for the push."""
 
     def __init__(
         self,
@@ -77,6 +81,45 @@ class ZoteroWebApiClient:
         target_path.write_bytes(raw)
         return target_path
 
+    # ── writes (3.0.0 push) ──────────────────────────────────────
+
+    def item_template(self, link_mode: str) -> dict[str, Any]:
+        """GET items/new?itemType=attachment&linkMode=…: the fields Zotero accepts for that kind."""
+        payload, _ = self._request_json(
+            "items/new", {"itemType": "attachment", "linkMode": link_mode})
+        if not isinstance(payload, dict):
+            raise ZoteroWebApiError("Expected item template JSON")
+        return payload
+
+    def create_items(
+        self, user_id: str, items: list[dict[str, Any]], write_token: str
+    ) -> dict[str, Any]:
+        """POST users/{id}/items with a Zotero-Write-Token. Returns the first created item's
+        {"key", "version"}; raises ZoteroWebApiError with Zotero's reason when it failed."""
+        raw, _ = self._request_bytes(
+            f"users/{user_id}/items", method="POST",
+            body=json.dumps(items).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Zotero-Write-Token": write_token},
+        )
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ZoteroWebApiError(f"Invalid Zotero JSON: {exc}") from exc
+        failed = (payload.get("failed") or {}).get("0")
+        if failed:
+            raise ZoteroWebApiError(str(failed.get("message") or failed),
+                                    status=int(failed.get("code") or 0) or None)
+        created = (payload.get("successful") or {}).get("0") or {}
+        key = str(created.get("key") or (payload.get("success") or {}).get("0") or "")
+        if not key:
+            raise ZoteroWebApiError("Zotero did not return the new item key")
+        return {"key": key, "version": int(created.get("version") or 0)}
+
+    def delete_item(self, user_id: str, key: str, version: int) -> None:
+        """DELETE users/{id}/items/{key} (only used to remove the push write-test item)."""
+        self._request_bytes(f"users/{user_id}/items/{key}", method="DELETE",
+                            headers={"If-Unmodified-Since-Version": str(version)})
+
     def _paginate_json(self, path: str, params: dict[str, str | int]) -> list[dict[str, Any]]:
         url_or_path: str = path
         current_params: dict[str, str | int] | None = params
@@ -107,15 +150,21 @@ class ZoteroWebApiClient:
         self,
         path_or_url: str,
         params: dict[str, str | int] | None = None,
+        *,
+        method: str = "GET",
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
     ) -> tuple[bytes, dict[str, str]]:
         url = self._build_url(path_or_url, params)
         request = urllib.request.Request(  # noqa: S310
             url,
+            data=body,
             headers={
                 "Zotero-API-Version": API_VERSION,
                 "Zotero-API-Key": self.api_key,
+                **(headers or {}),
             },
-            method="GET",
+            method=method,
         )
         try:
             with self._opener(request, timeout=self.timeout) as resp:

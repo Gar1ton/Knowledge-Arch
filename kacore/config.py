@@ -406,6 +406,9 @@ class ZoteroSyncConfig:
     storage_mode: str = ZOTERO_STORAGE_MANAGED
     linked_root: str = ""  # storage_mode=linked 时的 Zotero storage 根目录
     zotmoov_root: str = ""  # storage_mode=zotmoov 时 ZotMoov 已移动附件的目录根
+    # 3.0.0 推送：Zotero「链接附件根目录」（附件 path 的 attachments: 相对于它）；
+    # 空 = 从已有附件推出。
+    base_dir: str = ""
     sync_mode: str = ZOTERO_SYNC_CONSERVATIVE
     auto_sync_enabled: bool = False
     auto_sync_interval_sec: int = 3600
@@ -766,6 +769,7 @@ class Config:
             storage_mode=storage_mode,
             linked_root=str(s.get("linked_root", ZoteroSyncConfig.linked_root)),
             zotmoov_root=str(s.get("zotmoov_root", ZoteroSyncConfig.zotmoov_root)),
+            base_dir=str(s.get("base_dir", ZoteroSyncConfig.base_dir)),
             sync_mode=sync_mode,
             auto_sync_enabled=bool(s.get("auto_sync_enabled", ZoteroSyncConfig.auto_sync_enabled)),
             auto_sync_interval_sec=max(

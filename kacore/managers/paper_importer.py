@@ -15,7 +15,8 @@
 
 契约：
 - `import_citation` 对同一条引用（capture_id + ord）只建一条记录：已入库且文档还在时原样返回；
-  待补 PDF 时重试下载。目标集合必须是本地、可写的集合。
+  待补 PDF 时重试下载。目标是本地可写集合；配了推送（P5）时也可以是 Zotero 集合：
+  入库后立刻推送，文件只放一次。
 - 下载失败不抛给调用方，记成待补 PDF（tried 里写原因）；
   记录、集合不存在等参数错误抛 ValueError。
 """
@@ -48,6 +49,7 @@ if TYPE_CHECKING:
     from kacore.config import PaperImportConfig
     from kacore.domain.models import Collection
     from kacore.domain.tool_calls import Capture, Citation, ToolCall
+    from kacore.managers.zotero_pusher import ZoteroPusher
     from kacore.repository.source_store.base import SourceDocumentStore
 
 logger = logging.getLogger("PaperImporter")
@@ -66,8 +68,10 @@ class PaperImporter:
         register: RegisterFn,
         staging_dir: Path,
         config_provider: Callable[[], PaperImportConfig],
+        pusher: ZoteroPusher | None = None,
     ) -> None:
         self._store = store
+        self._pusher = pusher
         self._toolbox = toolbox
         self._register = register
         self._staging = staging_dir
@@ -165,7 +169,20 @@ class PaperImporter:
         record.pdf_url, record.pdf_sha256, record.updated_at = pdf_url, sha, _now()
         await self._store.save_import(record)
         logger.info("Imported %s as %s (%s)", record.import_id, doc_id, record.filename)
+        if collection.origin is DocumentOrigin.ZOTERO and self._pusher is not None:
+            await self._push(doc_id, collection.coll_key, record.filename)
         return record
+
+    async def _push(self, doc_id: str, coll_key: str, filename: str) -> None:
+        """入库到 Zotero 集合 = 入库后立刻推送（文件只放一次）。
+        推送失败记在推送账本里，入库照样算成功。"""
+        from kacore.managers.zotero_pusher import PushError
+
+        assert self._pusher is not None
+        try:
+            await self._pusher.push(doc_id, coll_key, filename=filename)
+        except PushError as exc:
+            logger.warning("Imported %s but could not push it: %s", doc_id, exc)
 
     async def _write_biblio(self, doc_id: str, fields: dict[str, Any]) -> None:
         """书目字段写进 local_meta（与文档界面手填的同名同形）；
@@ -204,9 +221,12 @@ class PaperImporter:
         return rows[0] if rows else None
 
     async def _require_target(self, coll_key: str) -> Collection:
+        """本地可写集合；配了推送时也可以是 Zotero 集合（推送的前提一并检查）。"""
         collection = await self._store.get_collection(coll_key) if coll_key else None
         if collection is None:
             raise ValueError(f"collection not found: {coll_key}")
+        if collection.origin is DocumentOrigin.ZOTERO and self._pusher is not None:
+            return await self._pusher.check_target(coll_key)
         if collection.origin is not DocumentOrigin.LOCAL or collection.read_only:
             raise ValueError("papers can only be imported into a local collection")
         return collection

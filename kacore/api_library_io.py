@@ -21,7 +21,9 @@ from kacore.domain.paper_import import (
 )
 
 if TYPE_CHECKING:
+    from kacore.domain.paper_import import PushRecord
     from kacore.managers.paper_importer import PaperImporter
+    from kacore.managers.zotero_pusher import ZoteroPusher
     from kacore.repository.source_store.base import SourceDocumentStore
 
 
@@ -30,10 +32,15 @@ class LibraryIoApiMixin:
 
     _source_store: SourceDocumentStore
     _paper_importer: PaperImporter | None = None
+    _zotero_pusher: ZoteroPusher | None = None
 
     def attach_paper_importer(self, importer: PaperImporter) -> None:
         """组合根注入 PaperImporter（依赖 api.register_document，故在 api 构造后注入）。"""
         self._paper_importer = importer
+
+    def attach_zotero_pusher(self, pusher: ZoteroPusher) -> None:
+        """组合根注入 ZoteroPusher（3.0.0 推送）。"""
+        self._zotero_pusher = pusher
 
     def _importer(self) -> PaperImporter:
         if self._paper_importer is None:
@@ -57,6 +64,7 @@ class LibraryIoApiMixin:
             **preview,
             "candidates": len(preview["candidates"]),
             "targets": await self._local_targets(),
+            "zotero_targets": await self._zotero_targets(),
             "existing": await self._import_json(existing) if existing else None,
             "in_library": in_library,
         }
@@ -65,7 +73,41 @@ class LibraryIoApiMixin:
                                      filename: str = "") -> dict[str, Any]:
         record = await self._importer().import_citation(
             capture_id, ord_, coll_key=collection_key, filename=filename)
-        return await self._import_json(record)
+        out = await self._import_json(record)
+        out["push"] = await self.document_push(record.doc_id) if record.doc_id else None
+        return out
+
+    # ── Zotero 推送 ─────────────────────────────────────────
+
+    async def push_preview(self, doc_id: str, collection_key: str = "") -> dict[str, Any]:
+        """推送框：可选的 Zotero 集合、这篇的推送记录；选了集合时给出文件会移到哪、附件 path。
+        前提不满足时 problem 写原因（不抛），界面据此提示。"""
+        from kacore.managers.zotero_pusher import PushError
+
+        out: dict[str, Any] = {"targets": await self._zotero_targets(),
+                               "push": await self.document_push(doc_id), "plan": None,
+                               "problem": ""}
+        if self._zotero_pusher is None:
+            out["problem"] = "Zotero push is not configured"
+        elif collection_key:
+            try:
+                plan = await self._zotero_pusher.plan(doc_id, collection_key)
+                out["plan"] = {"dest": str(plan.dest), "folder": str(plan.folder),
+                               "path": plan.path, "filename": plan.dest.name}
+            except PushError as exc:
+                out["problem"] = str(exc)
+        return out
+
+    async def push_document(self, doc_id: str, collection_key: str,
+                            filename: str = "") -> dict[str, Any]:
+        if self._zotero_pusher is None:
+            raise RuntimeError("Zotero push is not configured")
+        record = await self._zotero_pusher.push(doc_id, collection_key, filename=filename)
+        return _push_json(record)
+
+    async def document_push(self, doc_id: str) -> dict[str, Any] | None:
+        record = await self._source_store.get_push(doc_id)
+        return _push_json(record) if record else None
 
     # ── 待补 PDF ────────────────────────────────────────────
 
@@ -115,6 +157,25 @@ class LibraryIoApiMixin:
                 if c.origin is DocumentOrigin.LOCAL and not c.read_only]
         return sorted(rows, key=lambda r: r["path"].casefold())
 
+    async def _zotero_targets(self) -> list[dict[str, str]]:
+        """可推送的集合：Zotero 同步来的集合（不含「未归档」合成集合）；配了推送时才列。"""
+        if self._zotero_pusher is None:
+            return []
+        collections = await self._source_store.list_collections()
+        by_key = {c.coll_key: c for c in collections}
+
+        def path_of(key: str) -> str:
+            names, seen = [], set()
+            while key and key in by_key and key not in seen:
+                seen.add(key)
+                names.append(by_key[key].name)
+                key = by_key[key].parent_key
+            return " › ".join(reversed(names))
+
+        rows = [{"coll_key": c.coll_key, "path": path_of(c.coll_key)} for c in collections
+                if c.origin is DocumentOrigin.ZOTERO and c.zotero_collection_key]
+        return sorted(rows, key=lambda r: r["path"].casefold())
+
     async def _import_json(self, record: ImportRecord) -> dict[str, Any]:
         target = await self._source_store.get_collection(record.target)
         return {
@@ -127,6 +188,13 @@ class LibraryIoApiMixin:
             if record.status == IMPORT_PENDING_PDF else [],
             "created_at": record.created_at, "updated_at": record.updated_at,
         }
+
+
+def _push_json(record: PushRecord) -> dict[str, Any]:
+    return {"doc_id": record.doc_id, "status": record.status, "library_id": record.library_id,
+            "collection_key": record.collection_key, "attachment_key": record.attachment_key,
+            "path": record.path, "file_path": record.file_path, "message": record.message,
+            "pushed_at": record.pushed_at, "claimed_at": record.claimed_at}
 
 
 __all__ = ["LibraryIoApiMixin"]

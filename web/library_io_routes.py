@@ -1,4 +1,4 @@
-"""3.0.0 新增的 HTTP 路由：外部论文入库（来源栏入库框、待补 PDF 清单、文档出处）。
+"""3.0.0 新增的 HTTP 路由：外部论文入库（来源栏入库框、待补 PDF 清单、文档出处）与 Zotero 推送。
 
 与 `server.py` 同样只做 HTTP↔`kacore/api` 的翻译；拆成独立模块是因为 server.py 已超出文件大小红线。
 补 PDF 的上传沿用 `POST /api/documents`（multipart 多带 import_id），见 server.py。
@@ -93,11 +93,36 @@ def register_library_io_routes(app: web.Application, api_of: ApiOf) -> None:
         return web.json_response(
             await api_of(request).document_import_origin(request.match_info["doc_id"]))
 
+    async def push_preview(request: web.Request) -> web.Response:
+        """GET /api/documents/{doc_id}/zotero-push?collection_key=
+        推送框：可选集合、文件会移到哪、这篇的推送记录。"""
+        result = await api_of(request).push_preview(
+            request.match_info["doc_id"], request.query.get("collection_key") or "")
+        return web.json_response(result)
+
+    async def push(request: web.Request) -> web.Response:
+        """POST /api/documents/{doc_id}/zotero-push {collection_key, filename}
+        推送（移交）一篇；Zotero 写入失败时返回 failed 记录，文件已移回。"""
+        body = await _json_body(request)
+        key = str(body.get("collection_key") or "").strip()
+        if not key:
+            return _error("collection_key is required", 400)
+        try:
+            result = await api_of(request).push_document(
+                request.match_info["doc_id"], key, str(body.get("filename") or ""))
+        except ValueError as exc:
+            return _error(str(exc), 400)
+        except RuntimeError as exc:
+            return _error(str(exc), 503)
+        return web.json_response(result)
+
     app.router.add_get("/api/external/captures/{capture_id}/sources/{ord}/import", import_preview)
     app.router.add_post("/api/external/captures/{capture_id}/sources/{ord}/import", import_source)
     app.router.add_get("/api/imports", imports_list)
     app.router.add_post("/api/imports/{import_id}/dismiss", import_dismiss)
     app.router.add_get("/api/documents/{doc_id}/import-origin", import_origin)
+    app.router.add_get("/api/documents/{doc_id}/zotero-push", push_preview)
+    app.router.add_post("/api/documents/{doc_id}/zotero-push", push)
 
 
 __all__ = ["register_library_io_routes"]

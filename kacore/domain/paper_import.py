@@ -33,6 +33,10 @@ IMPORT_IMPORTED = "imported"
 IMPORT_DISMISSED = "dismissed"
 IMPORT_STATUSES = (IMPORT_PENDING_PDF, IMPORT_IMPORTED, IMPORT_DISMISSED)
 
+PUSH_PUSHED = "pushed"
+PUSH_CLAIMED = "claimed"
+PUSH_FAILED = "failed"
+
 _DOI_PREFIXES = ("https://doi.org/", "http://doi.org/", "https://dx.doi.org/",
                  "http://dx.doi.org/", "doi:")
 _URL_RE = re.compile(r"https?://[^\s<>\"'\[\]{}|\\^`]+")
@@ -64,6 +68,27 @@ class ImportRecord:
     tried: list[dict[str, str]] = field(default_factory=list)
     created_at: str = ""
     updated_at: str = ""
+
+
+@dataclass
+class PushRecord:
+    """一篇本地文档推送到 Zotero（迁移 030 的 zotero_pushes）。
+
+    推送 = 移交：文件移进 ZotMoov 的目录，Zotero 里建一条独立 linked_file 附件（attachment_key）；
+    下次拉取按 attachment_key 认领原文档（status 从 pushed 变 claimed），不按新编号重建。
+    失败时 message 写原因，文件已移回原处。"""
+
+    doc_id: str
+    library_id: str
+    collection_key: str
+    write_token: str
+    status: str = PUSH_PUSHED
+    attachment_key: str = ""
+    path: str = ""
+    file_path: str = ""
+    message: str = ""
+    pushed_at: str = ""
+    claimed_at: str | None = None
 
 
 # ── 标识 ────────────────────────────────────────────────────
@@ -199,7 +224,11 @@ __all__ = [
     "IMPORT_PENDING_PDF",
     "IMPORT_STATUSES",
     "MAX_PDF_TRIES",
+    "PUSH_CLAIMED",
+    "PUSH_FAILED",
+    "PUSH_PUSHED",
     "ImportRecord",
+    "PushRecord",
     "browser_links",
     "clean_filename",
     "doi_key",

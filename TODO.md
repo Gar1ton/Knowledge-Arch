@@ -813,7 +813,7 @@
     入库只试本次运行账本里记下的链接、不调模型；文件名 = 设置项模板（默认 `{authors} ({year}) - {title}`，
     入库框里可逐篇改）；做一次真实 Zotero 写入测试（临时集合 + 测试附件，验完删除）；合并时带文档笔记、不带对话。
     用户评论：找不到 PDF 时给出能在浏览器打开的链接（DOI 链接、原文页、试过的链接），让用户自己下载后补进来。
-  - [ ] P4 入库：
+  - [x] P4 入库：
     - [x] P4a 后端：迁移 `030_paper_imports.sql`（入库记录 + 推送账本）、`domain/paper_import.py`（记录类型、
       文件名模板、PDF 候选链接、浏览器链接；`doi_key` 从 api_external 挪来）、仓储 `source_store/imports*.py`、
       `Tool.fetch_file` / `ToolBox.fetch_file`（只有 read_open_pdf 实现）、`managers/paper_importer.py`、
@@ -828,8 +828,14 @@
       本机 HTTP 服务提供 PDF，不发外部请求）：入库下到 PDF、E1 标「已入库」、E2 无 PDF 进待补并列出 DOI 链接与原文页、
       清单里选文件补上、新文档的信息栏显示出处与 PDF 链接。
   - [ ] P5 Zotero 推送：
-    - [ ] P5a 后端：Web API 写方法、`managers/zotero_pusher.py`（目标文件夹、移动、建独立 linked_file 附件、失败移回）、
-      拉取认领（`zotero_sync_pipeline.py` 一处）、设置 `flow.zotero.base_dir`、离线测试。
+    - [x] P5a 后端：Web API 写方法（`item_template` / `create_items` 带 Zotero-Write-Token / `delete_item`）、
+      `managers/zotero_pusher.py`（目标文件夹：集合里已有附件同在一个文件夹就用它，否则 ZotMoov 目录 / 集合路径；
+      根目录取 `flow.zotero.base_dir`，空着时从已有附件推出；按 Zotero 给的模板建独立 linked_file 附件，
+      title = 文件名、有 DOI 时 url = DOI 链接；写入失败移回）、拉取认领（`pipelines/zotero_push_claims.py`，
+      `zotero_sync_pipeline.py` 只接三处）——严格镜像的删除判断用同一张表，否则认领后的文档会被当成已删除；
+      入库目标可选 Zotero 集合（入库后立刻推送）；`api_library_io` 推送接口与路由。
+      验证（11-23）：新增 `test_zotero_push.py` 7 项、`test_zotero_sync.py` 认领 2 项；全量 pytest 1687 passed /
+      4 skipped；ruff；mypy。
     - [ ] P5b 界面：推送框、入库框的 Zotero 目标、状态标记；真实写入测试。
   - [ ] P6 导出导入：
     - [ ] P6a 后端：`utils/passphrase_box.py`、打包函数从 R2 抽出共用（`managers/data_inventory.py`）、

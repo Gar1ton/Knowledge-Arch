@@ -143,6 +143,7 @@ CONFIG_POLICIES: dict[str, dict[str, str]] = {
         "api_port": "restart",
         "auto_sync_enabled": "restart",
         "auto_sync_interval_sec": "restart",
+        "base_dir": "none",
         "enabled": "restart",
         "linked_root": "rebuild",
         "storage_mode": "rebuild",

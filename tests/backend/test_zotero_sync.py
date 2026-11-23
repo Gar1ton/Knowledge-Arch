@@ -856,3 +856,66 @@ def test_probe_local_read_server_mode_is_skipped(tmp_path: Path) -> None:
     probe = pipeline.probe_local_read()
     assert probe["available"] is False
     assert "local mode" in str(probe["reason"])
+
+
+# ── 3.0.0 推送认领 ───────────────────────────────────────────────
+
+
+async def _pushed_local_doc(store, tmp_path: Path, att_key: str, status: str = "pushed"):
+    """一篇已推送的本地文档：文件已在 ZotMoov 目录，账本记着 Zotero 附件 key。"""
+    from kacore.domain.models import DocumentChunk, SourceDocument
+    from kacore.domain.paper_import import PushRecord
+
+    doc = SourceDocument(
+        doc_id="LOCAL_PUSHED_DOC", title="Pushed", file_path=str(tmp_path / "zotmoov" / "p.pdf"),
+        content_type="application/pdf", size_bytes=1, content_hash="h", collection="Mine")
+    await store.add_document(doc)
+    await store.replace_chunks(doc.doc_id, [DocumentChunk("k1", doc.doc_id, 0, "kept", "h")])
+    await store.save_push(PushRecord(doc.doc_id, LIB, "COLLAAAA", "tok", status=status,
+                                     attachment_key=att_key, pushed_at="2026-11-23T10:00:00"))
+    return doc
+
+
+async def test_pull_claims_a_pushed_document_instead_of_ingesting_it_again(
+        tmp_path: Path) -> None:
+    data_dir = tmp_path / "Zotero"
+    data_dir.mkdir()
+    zroot = tmp_path / "zotmoov"
+    _make_pdf(zroot / "sub" / "paper2.pdf")
+    _build_zotero_db(data_dir, with_attachment=False,
+                     linked_attachments=[("ATTLNK01", "attachments:sub/paper2.pdf")])
+    store, pipeline, indexed, removed = _pipeline(
+        tmp_path, data_dir, "strict_mirror", storage_mode="zotmoov",
+        extra={"zotmoov_root": str(zroot)})
+    doc = await _pushed_local_doc(store, tmp_path, "ATTLNK01")
+
+    result = await pipeline.pull()
+
+    assert result.new_document_ids == [] and result.removed_document_ids == []
+    assert await store.get_document(make_document_id(LIB, ITEM, "ATTLNK01")) is None
+    claimed = await store.get_document(doc.doc_id)
+    assert claimed.origin is DocumentOrigin.ZOTERO and claimed.read_only
+    assert (claimed.library_id, claimed.attachment_key) == (LIB, "ATTLNK01")
+    assert [c.text for c in await store.list_chunks(doc.doc_id)] == ["kept"]
+    assert indexed == [] and removed == []
+    assert (await store.get_push(doc.doc_id)).status == "claimed"
+    assert claimed.collection_keys == [f"{LIB}:COLLAAAA"]
+
+    again = await pipeline.pull()
+    assert again.removed_document_ids == [] and await store.get_document(doc.doc_id) is not None
+
+
+async def test_pull_without_pushes_is_unchanged_and_a_deleted_attachment_still_goes(
+        tmp_path: Path) -> None:
+    data_dir = tmp_path / "Zotero"
+    data_dir.mkdir()
+    _build_zotero_db(data_dir)
+    store, pipeline, _indexed, _removed = _pipeline(tmp_path, data_dir, "strict_mirror")
+    doc = await _pushed_local_doc(store, tmp_path, "GONE0001", status="claimed")
+    doc.origin, doc.library_id = DocumentOrigin.ZOTERO, LIB
+    await store.update_document(doc)
+
+    result = await pipeline.pull()
+
+    assert result.new_document_ids == [DOC_ID]
+    assert result.removed_document_ids == [doc.doc_id]

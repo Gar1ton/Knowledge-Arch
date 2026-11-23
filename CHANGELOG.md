@@ -34,6 +34,25 @@
   外链统一经 `openExternalUrl`（`web/frontend/lib/backend.ts`）用系统浏览器打开，壳的 opener 权限从只放行
   下载页改为放行 http / https 链接（`desktop/src-tauri/capabilities/default.json`）。文案 `imp_*`（中英）、
   样式 `.imp-*`（`styles/tokens.css`）。
+- **Zotero 推送（P33 P5a，后端）。** 本地文档可以推送到 Zotero 集合（用户 11-20 定：只走「KA 放文件 + Web API」，
+  建独立 linked_file 附件、不建父条目，推送 = 移交）。
+  - `kacore/managers/zotero_pusher.py`：文件移进 ZotMoov 的目录——这个集合里已有的附件都在同一个文件夹就放那里，
+    否则 ZotMoov 目录 / 集合路径（与 ZotMoov 按集合建子目录一致）；附件 path 写 `attachments:` 相对路径，
+    根目录取新设置 `flow.zotero.base_dir`，空着时从已有附件推出（文件绝对路径去掉它的 attachments: 部分）。
+    按 Zotero 给的模板（`items/new`）只填模板里有的键：title = 文件名、path、contentType、所在集合、有 DOI 时
+    url = DOI 链接。重名加「 (2)」，不覆盖。写入失败把文件移回原处，账本记 failed 与原因；key 没有写权限、
+    没配 ZotMoov 目录、文档不是本地的等前提不满足时什么都不动。
+  - `kacore/adapters/zotero/web_api.py`：客户端加 `item_template` / `create_items`（带 Zotero-Write-Token）/
+    `delete_item`（只给写入测试删测试附件），读取路径不变。
+  - 拉取认领（`kacore/pipelines/zotero_push_claims.py`，`zotero_sync_pipeline.py` 只接三处）：附件 key 在推送账本
+    里的，把原文档改成这条附件的镜像，文档编号、切块、向量不变，不再新建一篇；严格镜像的删除判断用同一张表
+    （否则认领后的文档会被当成已删除——用户现在用的就是严格镜像）。没有推送过时拉取行为不变（有测试锁定）。
+  - 入库框的目标可以选 Zotero 集合：入库后立刻推送，文件只放一次（`kacore/managers/paper_importer.py`）。
+  - 接口 `GET/POST /api/documents/{id}/zotero-push`（`kacore/api_library_io.py`、`web/library_io_routes.py`）；
+    设置 `flow.zotero.base_dir` 与中英标签，skill 客户端的可写配置表同步加一项。
+  - 测试 `tests/backend/test_zotero_push.py`（7 项）、`tests/backend/test_zotero_sync.py`（认领 2 项）。
+  - 未处理：认领后旧切块元数据里没有 Zotero 链接（「在 Zotero 中打开」要等下次全量拉取重新处理才有）；
+    本地 LOCAL 镜像行留着不删（不影响检索与列表）。
 
 ## [v3.0.0-preview.1] — 2026-11-23
 

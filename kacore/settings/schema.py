@@ -215,6 +215,11 @@ SPECS: tuple[SettingSpec, ...] = (
         "flow.zotero.zotmoov_root", "path", ZoteroSyncConfig.zotmoov_root, "flow.zotero",
         consequence=_B, target=_t("zotero_sync", "zotmoov_root"), portable=False,
     ),
+    # 3.0.0 推送：Zotero 的链接附件根目录（空 = 从已有附件推出）；只影响推送，不影响拉取。
+    SettingSpec(
+        "flow.zotero.base_dir", "path", ZoteroSyncConfig.base_dir, "flow.zotero",
+        target=_t("zotero_sync", "base_dir"), portable=False,
+    ),
     SettingSpec(
         "flow.zotero.sync_mode", "enum", ZoteroSyncConfig.sync_mode, "flow.zotero",
         consequence=_B, options=(ZOTERO_SYNC_STRICT, ZOTERO_SYNC_CONSERVATIVE, ZOTERO_SYNC_ARCHIVE),

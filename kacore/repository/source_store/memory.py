@@ -59,6 +59,7 @@ class InMemorySourceDocumentStore(
         self._web_calls: dict = {}
         self._web_citations: dict = {}
         self._paper_imports: dict = {}
+        self._zotero_pushes: dict = {}
         self._sync_records: dict[tuple[str, SyncTargetKind], SyncRecord] = {}
         self._notion_entities: dict[tuple[str, str], NotionEntityRecord] = {}
         self._notion_outbox: dict[str, NotionOutboxItem] = {}
