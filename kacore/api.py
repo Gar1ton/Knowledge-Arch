@@ -24,6 +24,7 @@ from kacore.api_answer import AnswerPromptMixin
 from kacore.api_capabilities import CapabilitiesApiMixin
 from kacore.api_external import ExternalApiMixin
 from kacore.api_legacy_import import LegacyImportApiMixin
+from kacore.api_library_io import LibraryIoApiMixin
 from kacore.api_runtime_models import RuntimeModelsApiMixin
 from kacore.api_settings import SettingsApiMixin
 from kacore.api_vision import VisionApiMixin
@@ -723,6 +724,7 @@ class KnowledgeRepositoryApi(
     CapabilitiesApiMixin,
     ExternalApiMixin,
     LegacyImportApiMixin,
+    LibraryIoApiMixin,
     RuntimeModelsApiMixin,
     SettingsApiMixin,
     VisionApiMixin,

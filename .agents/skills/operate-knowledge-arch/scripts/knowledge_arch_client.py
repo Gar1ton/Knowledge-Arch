@@ -105,6 +105,9 @@ CONFIG_POLICIES: dict[str, dict[str, str]] = {
         "qa_database_id": "none",
         "sync_mode": "none",
     },
+    "paper_import": {
+        "filename_template": "none",
+    },
     "r2_sync": {
         "account_id": "restart",
         "backup_interval_sec": "restart",

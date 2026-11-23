@@ -8,6 +8,8 @@
 - `call(arguments)`：只取数据，不判断相关性或真伪；失败抛异常即可，由 `ToolBox.call` 统一转成
   is_error 的结果交给模型。返回的块是给模型读的纯文本，每块一条记录或一段原文。
 - `status()`：工具面板显示的运行信息（如额度）；键值都由工具自己定，核心只显示不解释。
+- `fetch_file(url)`（可选）：能把一个链接下载成本地全文文件的工具覆盖它（入库用，3.0.0）；
+  返回文件路径，不是全文或下载失败抛 ToolError。默认不支持，返回 None。
 
 HTTP 一律同步 urllib，放进线程执行；请求函数可注入，便于离线测试。
 """
@@ -71,6 +73,10 @@ class Tool(ABC):
 
     def status(self) -> dict[str, str]:
         return {}
+
+    async def fetch_file(self, url: str) -> Path | None:
+        """把 url 下载成本地全文文件；默认不支持（None）。"""
+        return None
 
 
 # ── HTTP ────────────────────────────────────────────────────

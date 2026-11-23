@@ -4,6 +4,28 @@
 
 ## [Unreleased]
 
+### 新增 (Added)
+
+- **外部论文入库（P33 P4a，后端）。** 来源栏的外部论文可以入库到本地集合（用户 11-23 批准计划
+  `data/ka_v3/ka_v3_rest_plan.html`，四个决策按默认）。
+  - 找 PDF 只试这次运行账本里已经记下的链接（段落所在调用的参数 → 引用的 url → 本次原文里提到这篇的块中的链接，
+    最多 6 个，`kacore/domain/paper_import.py` 的 `pdf_candidates`），不再调用模型；下载交给开着的、实现了
+    `Tool.fetch_file` 的工具（目前只有 `read_open_pdf`，`kacore/adapters/tools/base.py` / `registry.py` /
+    `read_open_pdf.py`），核心不写工具名。
+  - 找到 PDF：按模板起文件名（设置项 `flow.external.import_filename`，默认 `{authors} ({year}) - {title}`；
+    1 位作者写姓、2 位「A and B」、3 位及以上「A et al.」，冒号写成逗号；姓氏只按「姓, 名」的逗号切），
+    走现有上传管线入库（切块、向量、图谱待建与手动上传相同），书目写进文档的 local_meta
+    （`kacore/managers/paper_importer.py`）。
+  - 找不到 PDF：记成「待补 PDF」，给出能在浏览器打开的链接（DOI 链接、原文页、试过的链接，用户 11-23 评论）；
+    用户下载后经 `POST /api/documents` 多带 `import_id` 补上，按同一个文件名入库（`web/server.py` 只多这一个分支）。
+  - 账本：迁移 `migrations/030_paper_imports.sql`（`paper_imports` 入库记录，含出处；`zotero_pushes` 推送账本，
+    P5 用），仓储 `kacore/repository/source_store/imports.py` / `imports_sqlite.py` / `imports_memory.py`。
+  - 接口：`kacore/api_library_io.py`（入库框内容、可选本地集合、按 DOI 提示「库里已有」、待补清单、文档出处）、
+    `web/library_io_routes.py`；来源栏详情每条来源多一个 `import` 状态（`kacore/api_external.py`，
+    `doi_key` 挪到 domain）。skill 客户端的可写配置表加 `paper_import.filename_template`，命令不变。
+  - 测试 `tests/backend/test_paper_import.py`（14 项：文件名、链接顺序、账本内存 / SQLite、入库 / 待补 / 补文件 /
+    删掉、目标集合规则、工具箱下载接口、补 PDF 路由）。
+
 ## [v3.0.0-preview.1] — 2026-11-23
 
 - **外部文献（联网补充）预览。** 对话栏「联网补充」开关（按对话分开记，默认关）打开时，本地检索之后由研究模型用原生工具调用

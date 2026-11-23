@@ -643,6 +643,17 @@ class AppInitializer:
         )
         self.api.attach_tool_distributor(self.tool_distributor)
 
+        # 5.53) 外部论文入库（3.0.0）：找 PDF 只试账本里的链接，入库走现有上传管线。
+        from kacore.managers.paper_importer import PaperImporter
+
+        self.api.attach_paper_importer(PaperImporter(
+            store=self.source_store,
+            toolbox=self.toolbox,
+            register=self.api.register_document,
+            staging_dir=self._data_dir / "uploads" / "paper_imports",
+            config_provider=self._config.get_paper_import_config,
+        ))
+
         # 5.55) Notion 单向推送管线（文章两表增量 + QA 暂存箱补推）。
         from kacore.pipelines.notion_sync_pipeline import NotionSyncPipeline
 

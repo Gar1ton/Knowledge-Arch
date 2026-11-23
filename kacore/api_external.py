@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from kacore.domain.models import DocumentChunk
+from kacore.domain.paper_import import doi_key
 from kacore.domain.tool_calls import ACTOR_AGENT, ACTOR_TEST, CITE_TOOL, Citation, ToolCall
 
 if TYPE_CHECKING:
@@ -36,18 +37,6 @@ SCRAPER_COLUMNS = (
     "description", "favicon",
 )
 KA_COLUMNS = ("tool", "call_id", "block", "locator", "passage", "cited")
-_DOI_PREFIXES = ("https://doi.org/", "http://doi.org/", "https://dx.doi.org/",
-                 "http://dx.doi.org/", "doi:")
-
-
-def doi_key(text: str) -> str:
-    """DOI 比较用的格式规整：去解析前缀、小写。不是 10. 开头的返回空串。"""
-    value = (text or "").strip().lower()
-    for prefix in _DOI_PREFIXES:
-        if value.startswith(prefix):
-            value = value[len(prefix):]
-            break
-    return value if value.startswith("10.") else ""
 
 
 def source_id_of(citation: Citation) -> str:
@@ -117,6 +106,7 @@ class ExternalApiMixin:
             raise ValueError(f"capture not found: {capture_id}")
         calls = await store.list_tool_calls(capture_id)
         by_id = {c.call_id: c for c in calls}
+        imports = await self.capture_imports(capture_id)  # type: ignore[attr-defined]
         sources = []
         for citation in await store.list_citations(capture_id):
             call = by_id.get(citation.call_id)
@@ -126,7 +116,7 @@ class ExternalApiMixin:
                 "locator": citation.locator, "page": citation.page, "cited": citation.cited,
                 "placement": citation.placement, "call_id": citation.call_id,
                 "call_label": f"c{call.ord}" if call else "", "tool": call.tool if call else "",
-                "block": citation.block,
+                "block": citation.block, "import": imports.get(citation.ord),
             })
         return {
             "capture": {"capture_id": capture.capture_id, "conversation_id": capture.conv_id,

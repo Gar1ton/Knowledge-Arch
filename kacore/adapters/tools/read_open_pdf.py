@@ -100,6 +100,10 @@ class ReadOpenPdf(Tool):
         return ToolResult([Block(s.chunk.text, f"page {page}", page)
                            for s, page in zip(scored, pages)])
 
+    async def fetch_file(self, url: str) -> Path:
+        """入库用：下载这个链接（必须是 PDF）进缓存，返回路径。"""
+        return await asyncio.to_thread(self.fetch, url)
+
     def fetch(self, url: str) -> Path:
         """下载一个 PDF 进缓存并返回路径；不是 PDF、超过上限或网络失败抛 ToolError。"""
         if not url.startswith(("https://", "http://")):

@@ -809,7 +809,25 @@
     Semantic Scholar、skill 工具命令、面板试调用、关思考时的联网补充都还没在真实环境验证。
     同批修复（11-23）：顶栏字标对齐（`.kr-wordmark`）；偏好设置显示当前版本；「检查更新」改为手动检查 GitHub 最新正式版
     + 打开下载页（用户：不要自动检测），去掉自动检查设置项与新版本提示条。
-  - [ ] P4 入库：`PaperImporter`、入库框（本地 / Zotero 集合）、待补 PDF。
-  - [ ] P5 Zotero 推送：Web API 写入、文件移交、推送账本、拉取认领。
-  - [ ] P6 导出导入：`.kaarch`、口令加密、偏好设置「备份与迁移」、覆盖 / 合并。
+  - 🚧 P4–P6 计划（11-23 用户批准，计划页 `data/ka_v3/ka_v3_rest_plan.html`，未入库）：四个决策全按默认——
+    入库只试本次运行账本里记下的链接、不调模型；文件名 = 设置项模板（默认 `{authors} ({year}) - {title}`，
+    入库框里可逐篇改）；做一次真实 Zotero 写入测试（临时集合 + 测试附件，验完删除）；合并时带文档笔记、不带对话。
+    用户评论：找不到 PDF 时给出能在浏览器打开的链接（DOI 链接、原文页、试过的链接），让用户自己下载后补进来。
+  - [ ] P4 入库：
+    - [x] P4a 后端：迁移 `030_paper_imports.sql`（入库记录 + 推送账本）、`domain/paper_import.py`（记录类型、
+      文件名模板、PDF 候选链接、浏览器链接；`doi_key` 从 api_external 挪来）、仓储 `source_store/imports*.py`、
+      `Tool.fetch_file` / `ToolBox.fetch_file`（只有 read_open_pdf 实现）、`managers/paper_importer.py`、
+      `api_library_io.py`、`web/library_io_routes.py`、补 PDF 沿用 `POST /api/documents`（多带 import_id）、
+      设置 `flow.external.import_filename`（skill 客户端的可写配置表同步加一项）。出处存在入库记录里
+      （不写进 local_meta：文档界面改书目时 `update_document_meta` 会整体替换 local_meta）。
+      验证（11-23）：新增 `test_paper_import.py` 14 项；全量 pytest 1678 passed / 4 skipped；ruff；mypy。
+    - [ ] P4b 界面：入库框、文档栏「待补 PDF」清单（含浏览器链接与补文件）、文档信息栏出处。
+  - [ ] P5 Zotero 推送：
+    - [ ] P5a 后端：Web API 写方法、`managers/zotero_pusher.py`（目标文件夹、移动、建独立 linked_file 附件、失败移回）、
+      拉取认领（`zotero_sync_pipeline.py` 一处）、设置 `flow.zotero.base_dir`、离线测试。
+    - [ ] P5b 界面：推送框、入库框的 Zotero 目标、状态标记；真实写入测试。
+  - [ ] P6 导出导入：
+    - [ ] P6a 后端：`utils/passphrase_box.py`、打包函数从 R2 抽出共用（`managers/data_inventory.py`）、
+      `managers/kaarch.py`（导出、读清单、完全覆盖、合并）、测试。
+    - [ ] P6b 界面：偏好设置「备份与迁移」；壳加选文件命令。
   - [ ] P7 收尾：版本 3.0.0、README 中英、CHANGELOG、全量 pytest / ruff / mypy / 前端三项、真后端 + Playwright 走查。

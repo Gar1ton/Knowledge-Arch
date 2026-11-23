@@ -44,6 +44,7 @@ from kacore.repository.source_store.base import (
 )
 from kacore.repository.source_store.external_sqlite import SQLiteToolLedgerMixin
 from kacore.repository.source_store.figures_sqlite import SQLiteFigureMixin
+from kacore.repository.source_store.imports_sqlite import SQLiteImportLedgerMixin
 from kacore.repository.source_store.search_index import index_chunks
 
 if TYPE_CHECKING:
@@ -273,7 +274,9 @@ def _locked_write(fn: Callable[..., Awaitable[_T]]) -> Callable[..., Awaitable[_
     return wrapper
 
 
-class SQLiteSourceDocumentStore(SQLiteFigureMixin, SQLiteToolLedgerMixin, SourceDocumentStore):
+class SQLiteSourceDocumentStore(
+    SQLiteFigureMixin, SQLiteToolLedgerMixin, SQLiteImportLedgerMixin, SourceDocumentStore
+):
     """基于 SQLite/aiosqlite 的生产 SourceDocumentStore 实现。"""
 
     def __init__(self, db: aiosqlite.Connection) -> None:

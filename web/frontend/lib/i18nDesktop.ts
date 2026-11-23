@@ -337,6 +337,7 @@ export const DESKTOP_ZH = {
   set_prefs_diagnostics_log_keep_days: "日志保留天数",
   set_prefs_general_agent_access: "允许 AI 助手连接",
   set_flow_external_max_rounds: "每次回答最多几轮工具调用（每轮调用一次研究模型）",
+  set_flow_external_import_filename: "入库文件名模板（可用 {authors} {year} {title}）",
   // ── 欢迎页：语言 / AI 助手配置 ──
   welcome_lang_title: "选择语言 · Choose your language",
   welcome_lang_body: "之后可以在偏好设置里随时更改。",
@@ -740,6 +741,7 @@ export const DESKTOP_EN: Record<keyof typeof DESKTOP_ZH, string> = {
   set_prefs_diagnostics_log_keep_days: "Keep logs (days)",
   set_prefs_general_agent_access: "Allow AI assistants to connect",
   set_flow_external_max_rounds: "Tool-call rounds per answer (each round is one research-model call)",
+  set_flow_external_import_filename: "File name for imported papers (use {authors} {year} {title})",
   welcome_lang_title: "Choose your language · 选择语言",
   welcome_lang_body: "You can change it any time in Preferences.",
   welcome_next: "Next: set up the data flow",

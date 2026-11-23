@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from kacore.adapters.tools.arxiv import ArxivSearch
-from kacore.adapters.tools.base import Tool, ToolEnv
+from kacore.adapters.tools.base import Tool, ToolEnv, ToolError
 from kacore.adapters.tools.crossref import CrossrefSearch
 from kacore.adapters.tools.openalex import OpenAlexSearch
 from kacore.adapters.tools.openlibrary import OpenLibrarySearch
@@ -29,6 +29,8 @@ from kacore.adapters.tools.semantic_scholar import SemanticScholarSearch
 from kacore.domain.tool_calls import SETTING_SECRET, ToolResult, ToolSpec, clip_blocks
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from kacore.config import ToolsConfig
 
 logger = logging.getLogger("ToolBox")
@@ -136,6 +138,25 @@ class ToolBox:
         else:
             health.last_ok_at = _now()
         return ToolResult(clip_blocks(result.blocks, cfg.max_result_chars), result.is_error)
+
+    async def fetch_file(self, url: str) -> tuple[Path, str]:
+        """入库用：交给开着的、实现了 `Tool.fetch_file` 的工具下载，返回 (文件路径, 工具名)。
+        没有这样的工具或都下载失败时抛 ToolError（带最后一个失败原因）。"""
+        cfg = self._config()
+        error = "no enabled tool can download files"
+        for name, cls in self._classes.items():
+            if cls.fetch_file is Tool.fetch_file:
+                continue
+            if not self._enabled(cls.spec, cfg) or self._missing(cls.spec, cfg):
+                continue
+            try:
+                path = await self._tool(cls, cfg).fetch_file(url)
+            except Exception as exc:  # noqa: BLE001 - 换下一个工具，最后统一报错
+                error = str(exc)
+                continue
+            if path is not None:
+                return path, name
+        raise ToolError(error)
 
     # ── 内部 ────────────────────────────────────────────────
 
