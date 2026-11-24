@@ -16,6 +16,8 @@
     （`web/frontend/lib/sourceBlocks.ts`，不是这种格式的块按正文显示），摘要单独成段；被引用的块默认展开、句子高亮，其余收起，
     「看原文」用于逐字核对；DOI 与链接可点。
   - 列表与详情之间可拖动（`web/frontend/components/ds/ResizeHandle.tsx`，样式同工作台分栏把手），宽度记在本机，双击还原。
+  - 对话栏回答下的「查看 ›」改成显眼的「查看来源」按钮（联网补充同色的胶囊按钮，`chat-external-open`），它是这条回答的
+    主要后续操作，以前是一个不起眼的文字链接（用户 11-24）。
   - 概况里的调用数只数检索，与对话栏「N 次工具调用」一致。文案 `src_*` 中英重写（删去不再用的旧键），样式 `.src-*` 重写
     （`styles/tokens.css`，共用的 `.src-link` / `.src-note` / `.src-meta` 保留）。
 

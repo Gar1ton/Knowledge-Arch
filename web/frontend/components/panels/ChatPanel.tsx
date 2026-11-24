@@ -662,8 +662,12 @@ function MessageBubble({
               calls: msg.external.calls ?? 0,
             })}</span>
             <span style={{ flex: 1 }} />
-            <button type="button" className="src-link"
-              onClick={() => onOpenSources?.(msg.external!.capture_id!)}>{t("chat_external_view")}</button>
+            {/* 进入来源栏是这条回答的主要后续操作：做成实心按钮，不用文字链接。 */}
+            <button type="button" className="chat-external-open"
+              onClick={() => onOpenSources?.(msg.external!.capture_id!)}>
+              {t("chat_external_view")}
+              <Icon name="chevR" size={12} />
+            </button>
           </div>
         )}
         {msg.external && msg.external.status !== "ok" && (

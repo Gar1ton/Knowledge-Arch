@@ -1905,6 +1905,9 @@ button.src-kv-v { color: var(--info); }
 .src-raw-toggle { margin-top: 8px; font-size: 11.5px; }
 /* 对话栏回答下的联网补充条与开关（components/panels/ChatPanel.tsx） */
 .chat-external-bar { margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; font-size: 11.5px; color: var(--fg-muted); }
+.chat-external-open { flex: none; display: inline-flex; align-items: center; gap: 3px; height: 26px; padding: 0 8px 0 11px; border: 1px solid color-mix(in srgb, var(--info) 45%, var(--border)); border-radius: var(--radius-pill); background: var(--info-soft); color: var(--info); font-size: 12px; font-weight: 600; cursor: pointer; transition: background .15s, border-color .15s; }
+.chat-external-open:hover { background: color-mix(in srgb, var(--info) 20%, var(--surface)); border-color: var(--info); }
+.chat-external-open:focus-visible { outline: 2px solid color-mix(in srgb, var(--info) 60%, transparent); outline-offset: 1px; }
 .chat-external-toggle { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--fg-muted); font-size: 11.5px; cursor: pointer; }
 .chat-external-toggle.on { border-color: var(--info); color: var(--info); background: var(--info-soft); font-weight: 600; }
 .chat-external-toggle.is-skipped { opacity: 0.55; border-style: dashed; }
