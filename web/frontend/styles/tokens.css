@@ -1904,7 +1904,24 @@ button.src-kv-v { color: var(--info); }
 .src-raw { margin: 10px 0 0; padding: 8px 10px; border-radius: var(--radius-md); background: var(--bg-inset); font: 11px/1.55 var(--font-mono); white-space: pre-wrap; word-break: break-word; color: var(--fg-muted); }
 .src-raw-toggle { margin-top: 8px; font-size: 11.5px; }
 /* 对话栏回答下的联网补充条与开关（components/panels/ChatPanel.tsx） */
-.chat-external-bar { margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; font-size: 11.5px; color: var(--fg-muted); }
+/* 回答卡片底部的几行（联网补充、引用来源、思考过程）共用一套格式：16px 图标栏 + 文字 + 右侧槽，
+   都和第一行对齐（26px 一行）；文字分段不从中间断开，放不下时整段换行。 */
+.ans-row { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--border); }
+.ans-row-head { display: flex; align-items: flex-start; gap: 8px; width: 100%; padding: 0; border: 0; background: transparent; text-align: left; font-size: 11.5px; color: var(--fg-muted); }
+button.ans-row-head { cursor: pointer; }
+button.ans-row-head:hover .ans-row-label { color: var(--fg); }
+.ans-row-icon { flex: none; width: 16px; height: 26px; display: inline-flex; align-items: center; justify-content: center; color: var(--fg-subtle); }
+.ans-row-label { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; column-gap: 10px; padding: 4px 0; line-height: 18px; }
+.ans-row-label > span { white-space: nowrap; }
+.ans-row-label > .ans-row-wrap { white-space: normal; }
+.ans-row-sub { color: var(--fg-subtle); }
+.ans-row-warn { color: var(--warn); }
+.ans-row-end { flex: none; height: 26px; display: inline-flex; align-items: center; }
+.ans-row-chev { display: inline-block; width: 16px; text-align: center; font-size: 11px; color: var(--fg-subtle); transition: transform .15s; }
+.ans-row-chev.is-open { transform: rotate(90deg); }
+.ans-row.is-warn .ans-row-head, .ans-row.is-warn .ans-row-icon { color: var(--warn); }
+.ans-row-body { padding-left: 24px; }
+.ans-row-hint { margin: 2px 0 4px; font-size: 11px; color: var(--fg-subtle); }
 .chat-external-open { flex: none; display: inline-flex; align-items: center; gap: 3px; height: 26px; padding: 0 8px 0 11px; border: 1px solid color-mix(in srgb, var(--info) 45%, var(--border)); border-radius: var(--radius-pill); background: var(--info-soft); color: var(--info); font-size: 12px; font-weight: 600; cursor: pointer; transition: background .15s, border-color .15s; }
 .chat-external-open:hover { background: color-mix(in srgb, var(--info) 20%, var(--surface)); border-color: var(--info); }
 .chat-external-open:focus-visible { outline: 2px solid color-mix(in srgb, var(--info) 60%, transparent); outline-offset: 1px; }

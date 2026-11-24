@@ -181,54 +181,19 @@ function SourcesSection({
 }) {
   const [open, setOpen] = useState(false);
   return (
-    <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border)" }}>
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          width: "100%",
-          background: "transparent",
-          border: "none",
-          padding: 0,
-          cursor: "pointer",
-          textAlign: "left",
-        }}
-      >
-        <Icon name="quote" size={11} />
-        <span
-          style={{
-            fontSize: 9.5,
-            fontWeight: 700,
-            letterSpacing: ".06em",
-            textTransform: "uppercase",
-            color: "var(--fg-subtle)",
-          }}
-        >
-          {t("chat_sources_title", { n: sources.length })}
-        </span>
-        <span
-          style={{
-            marginLeft: "auto",
-            fontSize: 11,
-            color: "var(--fg-subtle)",
-            transform: open ? "rotate(90deg)" : "none",
-            transition: "transform .15s",
-          }}
-        >
-          ▸
-        </span>
+    <div className="ans-row">
+      <button type="button" className="ans-row-head" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        <span className="ans-row-icon"><Icon name="quote" size={13} /></span>
+        <span className="ans-row-label"><span>{t("chat_sources_title", { n: sources.length })}</span></span>
+        <span className="ans-row-end"><span className={`ans-row-chev ${open ? "is-open" : ""}`}>▸</span></span>
       </button>
       {open && (
-        <>
-          <div style={{ fontSize: 10, color: "var(--fg-subtle)", marginTop: 4 }}>{t("chat_sources_open")}</div>
+        <div className="ans-row-body">
+          <div className="ans-row-hint">{t("chat_sources_open")}</div>
           {sources.map((s) => (
             <SourceMini key={s.n} s={s} onClick={() => onCite(s.n)} />
           ))}
-        </>
+        </div>
       )}
     </div>
   );
@@ -248,53 +213,19 @@ function ThinkingTraceView({
       ? t("chat_thinking_verified")
       : t("chat_thinking_unverified");
   return (
-    <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border)" }}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          width: "100%",
-          background: "transparent",
-          border: "none",
-          padding: 0,
-          cursor: "pointer",
-          textAlign: "left",
-        }}
-      >
-        <Icon name="sparkle" size={11} />
-        <span
-          style={{
-            fontSize: 9.5,
-            fontWeight: 700,
-            letterSpacing: ".06em",
-            textTransform: "uppercase",
-            color: "var(--fg-subtle)",
-          }}
-        >
-          {t("chat_thinking_title")}
-        </span>
-        <Badge tone={trace.degraded ? "warn" : trace.verified ? "ok" : "neutral"}>
-          {statusLabel}
-        </Badge>
-        {!trace.verified && trace.verify_missing.length > 0 && (
-          <span style={{ fontSize: 9.5, color: "var(--warn)" }}>
-            {t("chat_thinking_gap_count", { n: trace.verify_missing.length })}
+    <div className="ans-row">
+      <button type="button" className="ans-row-head" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        <span className="ans-row-icon"><Icon name="sparkle" size={13} /></span>
+        <span className="ans-row-label">
+          <span>{t("chat_thinking_title")}</span>
+          <span>
+            <Badge tone={trace.degraded ? "warn" : trace.verified ? "ok" : "neutral"}>{statusLabel}</Badge>
           </span>
-        )}
-        <span
-          style={{
-            marginLeft: "auto",
-            fontSize: 11,
-            color: "var(--fg-subtle)",
-            transform: open ? "rotate(90deg)" : "none",
-            transition: "transform .15s",
-          }}
-        >
-          ▸
+          {!trace.verified && trace.verify_missing.length > 0 && (
+            <span className="ans-row-warn">{t("chat_thinking_gap_count", { n: trace.verify_missing.length })}</span>
+          )}
         </span>
+        <span className="ans-row-end"><span className={`ans-row-chev ${open ? "is-open" : ""}`}>▸</span></span>
       </button>
       {trace.degraded && trace.degraded_reason && (
         <div
@@ -655,24 +586,33 @@ function MessageBubble({
           </div>
         )}
         {msg.external && msg.external.status === "ok" && msg.external.capture_id && (
-          <div className="chat-external-bar">
-            <Icon name="globe" size={12} />
-            <span>{t("chat_external_bar", {
-              used: msg.external.used ?? 0, cited: msg.external.cited ?? 0,
-              calls: msg.external.calls ?? 0,
-            })}</span>
-            <span style={{ flex: 1 }} />
-            {/* 进入来源栏是这条回答的主要后续操作：做成实心按钮，不用文字链接。 */}
-            <button type="button" className="chat-external-open"
-              onClick={() => onOpenSources?.(msg.external!.capture_id!)}>
-              {t("chat_external_view")}
-              <Icon name="chevR" size={12} />
-            </button>
+          <div className="ans-row">
+            <div className="ans-row-head">
+              <span className="ans-row-icon"><Icon name="globe" size={13} /></span>
+              {/* 两段各自不断开：放不下时第二段整段换行，不会把「工具调用」从中间断开。 */}
+              <span className="ans-row-label">
+                <span>{t("chat_external_bar", { used: msg.external.used ?? 0, cited: msg.external.cited ?? 0 })}</span>
+                <span className="ans-row-sub">{t("chat_external_bar_calls", { calls: msg.external.calls ?? 0 })}</span>
+              </span>
+              {/* 进入来源栏是这条回答的主要后续操作：做成实心按钮，不用文字链接。 */}
+              <span className="ans-row-end">
+                <button type="button" className="chat-external-open"
+                  onClick={() => onOpenSources?.(msg.external!.capture_id!)}>
+                  {t("chat_external_view")}
+                  <Icon name="chevR" size={12} />
+                </button>
+              </span>
+            </div>
           </div>
         )}
         {msg.external && msg.external.status !== "ok" && (
-          <div className="chat-external-bar" style={{ color: "var(--warn)" }}>
-            {t("chat_external_unavailable", { reason: externalReason(msg.external, t) })}
+          <div className="ans-row is-warn">
+            <div className="ans-row-head">
+              <span className="ans-row-icon"><Icon name="globe" size={13} /></span>
+              <span className="ans-row-label">
+                <span className="ans-row-wrap">{t("chat_external_unavailable", { reason: externalReason(msg.external, t) })}</span>
+              </span>
+            </div>
           </div>
         )}
         {msg.sources && msg.sources.length > 0 && (
