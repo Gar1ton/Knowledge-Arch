@@ -2023,7 +2023,7 @@ dependencies = [
 
 [[package]]
 name = "knowledge-arch"
-version = "3.1.0"
+version = "3.0.0"
 dependencies = [
  "dirs 6.0.0",
  "getrandom 0.2.17",
