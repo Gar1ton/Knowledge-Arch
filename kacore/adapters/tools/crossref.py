@@ -5,8 +5,6 @@ Crossref 是 DOI 的登记机构之一，作者带结构化的 family / given，
 """
 from __future__ import annotations
 
-import html
-import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -28,7 +26,6 @@ SELECT = ",".join([
     "DOI", "title", "author", "issued", "type", "container-title", "abstract",
     "is-referenced-by-count", "updated-by", "URL", "ISBN",
 ])
-_TAG_RE = re.compile(r"<[^>]+>")
 
 
 class CrossrefSearch(Tool):
@@ -56,31 +53,25 @@ class CrossrefSearch(Tool):
         return ToolResult([to_block(i) for i in items]) if items else no_results(query)
 
 
-def _plain(value: object) -> str:
-    """Crossref 的文字字段夹着出版商的标记：`<i>…</i>`、`<jats:p>` 与 `&amp;` 之类的转义。
-    先去标签再还原转义，得到读者看到的文字；核验比对的就是这块文字，模型照抄 `&` 才能通过。"""
-    return html.unescape(_TAG_RE.sub(" ", str(value or "")))
-
-
 def to_block(item: dict[str, Any]) -> Block:
     """一条 Crossref work → 一块文本（纯映射）。"""
-    authors = [_plain(f"{a['family']}, {a.get('given', '')}").strip().rstrip(",")
+    authors = [f"{a['family']}, {a.get('given', '')}".strip().rstrip(",")
                for a in item.get("author") or [] if a.get("family")]
     parts = ((item.get("issued") or {}).get("date-parts") or [[None]])[0]
     retracted = any((u.get("type") or "").lower() == "retraction"
                     for u in item.get("updated-by") or [])
     return record_block([
-        ("Title", _plain((item.get("title") or [""])[0])),
+        ("Title", (item.get("title") or [""])[0]),
         ("Authors", authors),
         ("Year", year_of(parts[0] if parts else "")),
-        ("Venue", _plain((item.get("container-title") or [""])[0])),
+        ("Venue", (item.get("container-title") or [""])[0]),
         ("Type", item.get("type") or ""),
         ("DOI", item.get("DOI") or ""),
         ("ISBN", item.get("ISBN") or []),
         ("URL", item.get("URL") or ""),
         ("Cited by", item.get("is-referenced-by-count") or ""),
         ("Retracted", "yes" if retracted else ""),
-        ("Abstract", _plain(item.get("abstract"))),
+        ("Abstract", item.get("abstract") or ""),
     ])
 
 

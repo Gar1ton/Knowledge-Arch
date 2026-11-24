@@ -11,6 +11,7 @@ import { Z } from "@/lib/zLayers";
 import { useConsole } from "@/lib/ConsoleContext";
 import { useToast } from "@/components/ui/Toast";
 import { useI18n, type I18nKey, type TFunc } from "@/lib/i18n";
+import { useAskModes } from "@/lib/askModes";
 import { notifyAskSent } from "@/lib/tour";
 import { AnswerMarkdown } from "@/components/panels/AnswerMarkdown";
 import { FullTextConfirmDialog } from "@/components/panels/FullTextConfirmDialog";
@@ -65,6 +66,7 @@ interface GraphBuildDialogState {
 
 interface FullTextConfirmDialogState {
   question: string;
+  mode: RetrievalMode;
   info: FullTextConfirmation;
   running?: boolean;
 }
@@ -1068,9 +1070,9 @@ export function ChatPanel({ width }: { width?: number }) {
       alive = false;
     };
   }, [chatCollection, showSettings]);
-  // 单篇文档范围下图谱档位不可用（图谱按集合建，无法只取一篇）。
-  const graphReady = Boolean(
-    !pinnedDoc && chatCollection && graphReadiness?.collection === chatCollection && graphReadiness.ready,
+  // 这个集合的图谱已确认就绪（选项置灰用它；自动切回默认用下面的「确认没就绪」）。
+  const graphConfirmedReady = Boolean(
+    chatCollection && graphReadiness?.collection === chatCollection && graphReadiness.ready,
   );
   const graphKnownNotReady = Boolean(
     chatCollection && graphReadiness?.collection === chatCollection && !graphReadiness.ready,
@@ -1078,13 +1080,31 @@ export function ChatPanel({ width }: { width?: number }) {
   // 全文模式读的文档：钉住的那篇优先，否则是中间正在打开的。
   const fulltextDocId = pinnedDoc?.id ?? selectedDocId;
 
+  // 各模式能做什么来自后端能力表（lib/askModes，后端 retrieval_modes.MODES）：这里只照表判断，
+  // 不按模式名写规则。表还没取到时 askModes 为空：不自动改用户的选择，选项里除默认档位外先置灰。
+  const askModes = useAskModes();
+  const needsDoc = (m: RetrievalMode) => askModes[m]?.needs_doc === true;
+  const modeBlocked = useCallback(
+    (m: RetrievalMode, graphOk: boolean) => {
+      const spec = askModes[m];
+      if (!spec) return false;
+      return (
+        (spec.needs_doc && !fulltextDocId) ||
+        (!spec.single_doc && Boolean(pinnedDoc)) ||
+        (spec.needs_collection && !chatCollection) ||
+        (spec.uses_graph && !graphOk)
+      );
+    },
+    [askModes, fulltextDocId, pinnedDoc, chatCollection],
+  );
+
   useEffect(() => {
     if (loading) return; // 进行中的那一轮已锁定范围与模式
-    const graphMode = retrievalMode === "graph_mixed" || retrievalMode === "graph_only";
-    if (!fulltextDocId && retrievalMode === "fulltext") setRetrievalMode(DEFAULT_MODE);
-    // 图谱档位必须绑定集合且不能限定单篇；其余档位全局或限定范围都可用。
-    if ((!chatCollection || graphKnownNotReady || pinnedDoc) && graphMode) setRetrievalMode(DEFAULT_MODE);
-  }, [fulltextDocId, pinnedDoc, chatCollection, retrievalMode, loading, graphKnownNotReady]);
+    // 当前模式在现在的范围下用不了（全文没有文档、图谱钉了单篇或没选集合、图谱确认没建好）：切回默认档位。
+    if (retrievalMode !== DEFAULT_MODE && modeBlocked(retrievalMode, !graphKnownNotReady)) {
+      setRetrievalMode(DEFAULT_MODE);
+    }
+  }, [retrievalMode, loading, graphKnownNotReady, modeBlocked]);
 
   // 范围选择器打开时现取集合列表（改名 / 新建后不必刷新页面）。
   useEffect(() => {
@@ -1105,7 +1125,7 @@ export function ChatPanel({ width }: { width?: number }) {
     setPinnedDoc(null);
     setChatCollection(name);
     // 全文模式的范围是文档；选了集合就是要按集合问，切回默认档位。
-    if (retrievalMode === "fulltext") setRetrievalMode(DEFAULT_MODE);
+    if (needsDoc(retrievalMode)) setRetrievalMode(DEFAULT_MODE);
   }
 
   // 钉住这一刻中间打开的文档（标题未取到时按「当前文档」显示）。
@@ -1236,7 +1256,7 @@ export function ChatPanel({ width }: { width?: number }) {
     scopeOverride?: AnswerScope,
   ) {
     if (loading) return;
-    if (mode === "fulltext" && !fulltextDocId) {
+    if (needsDoc(mode) && !fulltextDocId) {
       toast(t("chat_fulltext_requires_doc"), "info");
       return;
     }
@@ -1246,7 +1266,7 @@ export function ChatPanel({ width }: { width?: number }) {
       scopeOverride ??
       (pinnedDoc
         ? { collection: "", doc_id: pinnedDoc.id, doc_title: pinnedDoc.title }
-        : mode === "fulltext" && selectedDocId
+        : needsDoc(mode) && selectedDocId
           ? { collection: chatCollection ?? "", doc_id: selectedDocId, doc_title: docTitle }
           : { collection: chatCollection ?? "" });
     if (appendUser) {
@@ -1321,8 +1341,8 @@ export function ChatPanel({ width }: { width?: number }) {
       if (abort.signal.aborted || (err instanceof ApiError && err.body?.status === "ask_cancelled")) {
         return;
       }
+      // 按后端返回的状态处理，不再按模式名判断。
       if (
-        (mode === "graph_mixed" || mode === "graph_only") &&
         err instanceof ApiError &&
         (err.body?.status === "lightrag_not_ready" || err.body?.status === "graph_mixed_failed" || err.body?.status === "graph_only_failed") &&
         scope.collection
@@ -1334,7 +1354,6 @@ export function ChatPanel({ width }: { width?: number }) {
         }
         setGraphBuildDialog({ question, collection: scope.collection, scope, reason: err.message, estimate, canBuild });
       } else if (
-        mode === "fulltext" &&
         err instanceof ApiError &&
         err.body?.status === "fulltext_confirmation_required"
       ) {
@@ -1342,6 +1361,7 @@ export function ChatPanel({ width }: { width?: number }) {
         // 也没写任何 chat_history，用户确认后原样重发即可，不是续跑。
         setFullTextDialog({
           question,
+          mode,
           info: err.body as unknown as FullTextConfirmation,
         });
       } else if (err instanceof AskTaskTimeoutError || (err instanceof ApiError && err.timedOut)) {
@@ -1415,14 +1435,15 @@ export function ChatPanel({ width }: { width?: number }) {
 
   // 范围标签显示的就是这次提问实际用的范围：进行中显示锁定的那一轮；空闲时是钉住的文档，
   // 或全文模式下的当前文档（标题，不是内部 ID），其余是聊天自己选的集合。
-  const isGraphMode = retrievalMode === "graph_only" || retrievalMode === "graph_mixed";
-  const externalSkipped = retrievalMode === "fulltext" || retrievalMode === "graph_only";
+  const isGraphMode = askModes[retrievalMode]?.uses_graph === true;
+  // 这个模式不联网补充（能力表 supports_external=False）：开关变暗并说明，后端也会在回答下写明原因。
+  const externalSkipped = askModes[retrievalMode]?.supports_external === false;
   const shownScope: AnswerScope =
     loading && pendingScope
       ? pendingScope
       : pinnedDoc
         ? { collection: "", doc_id: pinnedDoc.id, doc_title: pinnedDoc.title }
-        : retrievalMode === "fulltext" && selectedDocId
+        : needsDoc(retrievalMode) && selectedDocId
           ? { collection: chatCollection ?? "", doc_id: selectedDocId, doc_title: docTitle }
           : { collection: chatCollection ?? "" };
   const contextTone = shownScope.doc_id ? "info" : isGraphMode ? "violet" : "accent";
@@ -1464,7 +1485,7 @@ export function ChatPanel({ width }: { width?: number }) {
           running={fullTextDialog.running}
           onConfirm={() => {
             setFullTextDialog((prev) => (prev ? { ...prev, running: true } : prev));
-            void submitQuestion(fullTextDialog.question, "fulltext", false, true);
+            void submitQuestion(fullTextDialog.question, fullTextDialog.mode, false, true);
           }}
           onCancel={() => setFullTextDialog(null)}
         />
@@ -1624,7 +1645,7 @@ export function ChatPanel({ width }: { width?: number }) {
                 overflow: "auto",
               }}
             >
-              {retrievalMode === "fulltext" && !pinnedDoc && (
+              {needsDoc(retrievalMode) && !pinnedDoc && (
                 <div style={{ fontSize: 10.5, lineHeight: 1.5, color: "var(--fg-subtle)", padding: "4px 8px 6px" }}>
                   {t("chat_scope_fulltext_hint")}
                 </div>
@@ -1653,7 +1674,7 @@ export function ChatPanel({ width }: { width?: number }) {
                 </div>
               )}
               {[{ name: null as string | null, depth: 0 }, ...scopeCollections].map(({ name, depth }) => {
-                const selected = !pinnedDoc && retrievalMode !== "fulltext" && chatCollection === name;
+                const selected = !pinnedDoc && !needsDoc(retrievalMode) && chatCollection === name;
                 return (
                   <button
                     key={name ?? "__all__"}
@@ -1767,14 +1788,17 @@ export function ChatPanel({ width }: { width?: number }) {
                     <div style={{ padding: "4px 8px 6px" }}>
                       {(
                         [
-                          { value: "default" as RetrievalMode,        label: t("chat_retrieval_semantic"), desc: t("chat_retrieval_semantic_desc"), disabled: false },
-                          { value: "enhanced" as RetrievalMode,       label: t("chat_retrieval_enhanced"), desc: t("chat_retrieval_enhanced_desc"), disabled: false },
-                          { value: "graph_only" as RetrievalMode,     label: t("chat_retrieval_graph"),    desc: t("chat_retrieval_graph_desc"),    disabled: !graphReady, hint: graphHint },
-                          { value: "graph_mixed" as RetrievalMode, label: t("chat_retrieval_graph_mixed"), desc: t("chat_retrieval_graph_mixed_desc"), disabled: !graphReady, hint: graphHint },
-                          { value: "deep_thinking" as RetrievalMode,  label: t("chat_retrieval_deep"),     desc: t("chat_retrieval_deep_desc"),     disabled: false },
-                          { value: "fulltext" as RetrievalMode,       label: t("chat_retrieval_fulltext"), desc: t("chat_retrieval_fulltext_desc"), disabled: !fulltextDocId },
-                        ] as { value: RetrievalMode; label: string; desc: string; disabled: boolean; hint?: string }[]
-                      ).map(({ value, label, desc, disabled, hint }) => {
+                          { value: "default" as RetrievalMode,        label: t("chat_retrieval_semantic"), desc: t("chat_retrieval_semantic_desc") },
+                          { value: "enhanced" as RetrievalMode,       label: t("chat_retrieval_enhanced"), desc: t("chat_retrieval_enhanced_desc") },
+                          { value: "graph_only" as RetrievalMode,     label: t("chat_retrieval_graph"),    desc: t("chat_retrieval_graph_desc") },
+                          { value: "graph_mixed" as RetrievalMode, label: t("chat_retrieval_graph_mixed"), desc: t("chat_retrieval_graph_mixed_desc") },
+                          { value: "deep_thinking" as RetrievalMode,  label: t("chat_retrieval_deep"),     desc: t("chat_retrieval_deep_desc") },
+                          { value: "fulltext" as RetrievalMode,       label: t("chat_retrieval_fulltext"), desc: t("chat_retrieval_fulltext_desc") },
+                        ] as { value: RetrievalMode; label: string; desc: string }[]
+                      ).map(({ value, label, desc }) => {
+                        // 能不能选照能力表：表还没取到时除默认档位外先置灰。
+                        const disabled = value !== DEFAULT_MODE && (!askModes[value] || modeBlocked(value, graphConfirmedReady));
+                        const hint = askModes[value]?.uses_graph ? graphHint : undefined;
                         const selected = retrievalMode === value;
                         return (
                           <button

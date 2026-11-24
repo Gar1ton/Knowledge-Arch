@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from kacore.adapters.tools.arxiv import ArxivSearch
-from kacore.adapters.tools.base import Tool, ToolEnv, ToolError
+from kacore.adapters.tools.base import Tool, ToolEnv, ToolError, decode_entities
 from kacore.adapters.tools.crossref import CrossrefSearch
 from kacore.adapters.tools.openalex import OpenAlexSearch
 from kacore.adapters.tools.openlibrary import OpenLibrarySearch
@@ -137,7 +137,9 @@ class ToolBox:
             health.last_error, health.last_error_at = result.blocks[0].text[:300], _now()
         else:
             health.last_ok_at = _now()
-        return ToolResult(clip_blocks(result.blocks, cfg.max_result_chars), result.is_error)
+        # 出口统一还原 HTML 转义：不管哪个工具，账本与核验看到的都是读者看到的文字。
+        blocks = decode_entities(result.blocks)
+        return ToolResult(clip_blocks(blocks, cfg.max_result_chars), result.is_error)
 
     async def fetch_file(self, url: str) -> tuple[Path, str]:
         """入库用：交给开着的、实现了 `Tool.fetch_file` 的工具下载，返回 (文件路径, 工具名)。

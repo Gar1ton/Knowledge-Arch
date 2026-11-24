@@ -367,9 +367,12 @@ async def test_books_in_zotero_or_imported_earlier_count_as_already_in_the_libra
     await store.save_import(ImportRecord("imp_2", "c_1", 2, {"identifier": "9780199253807"},
                                          "y.pdf", "L1", status=IMPORT_IMPORTED, doc_id="gone"))
 
-    api = KnowledgeRepositoryApi(source_store=store)
-    assert await api._in_library("0822347768") == "z_web"
-    assert await api._in_library("ISBN 978-0-262-01153-2") == "z_local"
-    assert await api._in_library("080442957X") == "imp"
-    assert await api._in_library("9780199253807") is None
-    assert await api._in_library("arXiv:2401.01234") is None
+    from kacore.managers.library_identity import LibraryIdentity
+
+    identity = LibraryIdentity(store)
+    assert await identity.match("0822347768") == "z_web"
+    assert await identity.match("ISBN 978-0-262-01153-2") == "z_local"
+    assert await identity.match("080442957X") == "imp"
+    assert await identity.match("9780199253807") is None
+    assert await identity.match("arXiv:2401.01234") is None
+    assert LibraryIdentity.contains(await identity.table(), "978-0-8223-4776-7")

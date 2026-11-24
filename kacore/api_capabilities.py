@@ -26,6 +26,7 @@ from kacore.milvus_build import (
     MILVUS_BUILD_STAGE_FINALIZING,
     MILVUS_BUILD_STAGE_INDEXING,
 )
+from kacore.retrieval_modes import MODES
 
 if TYPE_CHECKING:
     from kacore.config import Config
@@ -62,6 +63,8 @@ class CapabilitiesApiMixin:
         if self._config is None:
             raise NotImplementedError("get_capabilities: config unavailable")
         data = detect_capabilities(self._config)
+        # 检索模式能力表（retrieval_modes.MODES）：对话栏据此决定可选项与联网补充是否适用。
+        data["ask_modes"] = [spec.public() for spec in MODES.values()]
         await self._overlay_milvus_runtime_health(data)
         self._overlay_zotero_config_state(data)
         self._overlay_reranker_runtime_status(data)
@@ -98,6 +101,8 @@ class CapabilitiesApiMixin:
         if self._config is None:
             return {"dependencies": dependency_statuses()}
         data = detect_capabilities(self._config)
+        # 检索模式能力表（retrieval_modes.MODES）：对话栏据此决定可选项与联网补充是否适用。
+        data["ask_modes"] = [spec.public() for spec in MODES.values()]
         await self._overlay_milvus_runtime_health(data)
         self._overlay_zotero_config_state(data)
         self._overlay_reranker_runtime_status(data)

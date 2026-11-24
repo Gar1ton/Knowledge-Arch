@@ -18,6 +18,7 @@ from kacore.domain.paper_import import (
     ImportRecord,
     browser_links,
 )
+from kacore.managers.library_identity import LibraryIdentity
 
 if TYPE_CHECKING:
     from kacore.domain.paper_import import PushRecord
@@ -28,7 +29,9 @@ if TYPE_CHECKING:
 
 
 class LibraryIoApiMixin:
-    """组合进 KnowledgeRepositoryApi。依赖：_source_store、_paper_importer、_in_library()。"""
+    """组合进 KnowledgeRepositoryApi。依赖：_source_store、_paper_importer。
+
+    「库里已有」由 managers.library_identity.LibraryIdentity 判断。"""
 
     _source_store: SourceDocumentStore
     _paper_importer: PaperImporter | None = None
@@ -80,7 +83,7 @@ class LibraryIoApiMixin:
         preview = await self._importer().preview(capture_id, ord_)
         existing: ImportRecord | None = preview.pop("existing")
         in_library = None
-        doc_id = await self._in_library(  # type: ignore[attr-defined]
+        doc_id = await LibraryIdentity(self._source_store).match(
             str(preview["fields"].get("identifier") or ""))
         doc = await self._source_store.get_document(doc_id) if doc_id else None
         if doc is not None:

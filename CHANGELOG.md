@@ -129,6 +129,28 @@
   「适应画布」不居中、滚轮缩放的锚点漂移、首次使用引导聚焦偏到一边（90% 时最右一列节点偏 150px）。改为外层只平移、
   内层只缩放，`view.x / view.y` 在各引擎都是屏幕像素；节点测量与连线在缩放层内，坐标系不变。
 
+### 变更 (Changed)
+
+- **问答链路重构（P34，用户 11-24：从数据流上改，不打补丁）。** 3.0.0-preview.1 的三个已知问题都出在「前提变了、旧代码没跟上」：
+  `ask()` 一个函数 682 行，全文 / 只用图谱 / 其他模式三条路各写一遍收尾，新功能只接在主干上；前端又照抄了一份模式规则。
+  - 每种模式走同一组阶段：入口校验 → 准备 → 取证据 → 补充证据 → 合成 → 收尾（`kacore/api_answer.py` 的 `AskApiMixin`）。
+    模式之间的差别只在「取证据」与「合成」（`kacore/api_answer_modes.py`，每个模式交同一种 `Evidence`），收尾只写一处；
+    数据结构与回答文字在 `kacore/pipelines/answer_flow.py`，异常在 `kacore/answer_errors.py`（`kacore.api` 照旧再导出）。
+    `kacore/api.py` 由 6401 行减到 5224 行。
+  - 模式能力表 `kacore/retrieval_modes.py` 的 `MODES`（要不要集合 / 文档、能否限定单篇、要不要图谱、是否翻译检索词、能否
+    联网补充）是唯一真相源：入口校验、「这个模式不联网」都从表里读；`/api/capabilities` 新增 `ask_modes`，对话栏
+    （`web/frontend/components/panels/ChatPanel.tsx`，`lib/askModes.ts`）照表决定可选项、范围显示与联网开关，不再按模式名判断；
+    图谱建图与全文确认按后端返回的状态处理。
+  - 工具输出出口：`ToolBox.call`（`kacore/adapters/tools/registry.py`）对所有工具统一还原一次 HTML 转义；书目字段的标签由
+    `record_block` 统一去掉（`kacore/adapters/tools/base.py` 的 `strip_markup`，只认「< 紧跟字母的标签名」，摘要里的
+    `p < 0.05`、`n<k and m>2` 不受影响），Crossref 不再自己处理。
+  - 「库里已有」只在 `kacore/managers/library_identity.py` 判断（每次现算、不缓存），回答与入库框共用。
+  - 返回结果只增不减：只用图谱模式补上 `answer_notice` / `references` / `thinking_trace` / `generation_status`，全文模式补上
+    `generation_status`，两者的「Ask finished」运行事件补上 `fallback_reason`；各模式结构一致。其余行为不变。
+  - 测试：基准 `tests/backend/test_ask_golden.py`（17 个场景 × 联网开 / 关，录提示词、返回、聊天记录、事件、进度、工具调用数，
+    重构前在旧代码上录、连录三次逐字节相同；重构后除上一条列出的新增字段外全部相同），能力表与入口校验、工具输出约束
+    （每个内置检索工具喂带标记的样例，出口后不许残留 `<i>` / `&amp;`，新增工具不补样例会失败）。
+
 ## [v3.0.0-preview.1] — 2026-11-23
 
 - **外部文献（联网补充）预览。** 对话栏「联网补充」开关（按对话分开记，默认关）打开时，本地检索之后由研究模型用原生工具调用

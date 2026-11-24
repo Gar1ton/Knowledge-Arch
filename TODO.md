@@ -890,3 +890,19 @@
         `&amp;` / `<i>`。真后端（经 hub 的 arc:chat）+ next dev + Playwright：全文模式下开关变虚线、提示正确，打开开关提问后
         回答下显示「联网补充没有运行：全文模式和只用图谱模式不支持」，聊天记录 meta 里有该原因。只用图谱模式的界面没有走查
         （测试库没建图谱），由后端测试覆盖。
+- [x] P34 · 问答链路重构。用户 11-24：三个已知问题都出在「前提变了、旧代码没跟上」，要从数据流上改而不是打补丁；
+  先重构再发 3.1.0。计划在对话里批准，四个决策按推荐：① 只用图谱的返回补齐 `answer_notice` / `references` /
+  `thinking_trace` / `generation_status`（只增不减）；② 工具文字在 `ToolBox.call` 出口统一还原转义、各工具去标签，再加约束测试；
+  ③ 库内标识每次现算不缓存；④ 前端读后端的模式能力表。不改功能，release notes 不变。
+  - [x] P0 基准：`tests/backend/test_ask_golden.py` + `tests/backend/golden/ask_modes.json`，17 个场景 × 联网开 / 关 = 34 条，
+    录提示词、返回结果、聊天记录、运行事件、进度、工具调用数；在旧代码上录，连录三次逐字节相同。
+  - [x] P1 模式能力表（`kacore/retrieval_modes.py` 的 `ModeSpec`），入口校验与 `EXTERNAL_SKIPPED_MODES` 从表里读。
+  - [x] P2 拆成五个阶段（准备 → 取证据 → 补充证据 → 合成 → 收尾），`kacore/pipelines/answer_*.py`；`api.ask()` 只留校验、超时、取消。
+  - [x] P3 工具输出出口：`ToolBox.call` 统一还原转义，`_plain` 进 `base.py`，约束测试覆盖全部内置工具。
+  - [x] P4 库内标识移到 `kacore/managers/library_identity.py`。
+  - [x] P5 `/api/capabilities` 加 `ask_modes`，对话栏照它显示。
+  - [x] P6 验证（11-24）：全量 pytest 1737 passed / 4 skipped；ruff；mypy；前端 lint / tsc / build。真后端（hub 的 arc:chat）+
+    next dev + Playwright：能力表取到后图谱两档在没建图谱时置灰、全文在打开文档时可选；默认与全文模式经界面提问 200，全文开着
+    联网时开关变暗。深度思考、默认 + 联网补充在界面上被 next dev 代理 30 秒断开（socket hang up，开发代理的限制，桌面版直连
+    后端不经这层），后端都正常跑完；直接调后端复核：默认 + 联网 1 条库内 + 5 条外部、5 条被正文引用，深度思考退到词法并带提示，
+    增强召回正常。没走查：只用图谱 / 图谱混合的界面（测试库没建图谱），由基准与后端测试覆盖。然后回到 3.1.0 发版。

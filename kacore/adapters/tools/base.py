@@ -16,7 +16,9 @@ HTTP 一律同步 urllib，放进线程执行；请求函数可注入，便于�
 from __future__ import annotations
 
 import asyncio
+import html
 import json
+import re
 import threading
 import time
 import urllib.error
@@ -183,13 +185,33 @@ def query_args(arguments: Mapping[str, Any]) -> tuple[str, int]:
     return query, min(max(limit, 1), MAX_RESULTS)
 
 
+# 出版商在书目字段里夹的标记：<i>…</i>、<jats:p>、<mml:math xmlns:mml="…"> 之类。只认「< 紧跟字母
+# 的标签名 + name="value" 形式的属性」，摘要里的数学写法（p < 0.05、n<k and m>2）不会被当成标签。
+_MARKUP_RE = re.compile(
+    r"</?[A-Za-z][A-Za-z0-9]*(?::[A-Za-z][A-Za-z0-9-]*)?"
+    r"(?:\s+[A-Za-z_:][\w:.-]*\s*=\s*(?:\"[^\"]*\"|'[^']*'))*\s*/?>"
+)
+
+
+def strip_markup(text: str) -> str:
+    """去掉书目字段里的 HTML / JATS 标签（换成空格，避免 `<i>Islands</i>of` 粘连）。
+    转义（`&amp;`）不在这里还原：工具箱出口对所有工具统一还原一次（`decode_entities`）。"""
+    return _MARKUP_RE.sub(" ", text)
+
+
+def decode_entities(blocks: Sequence[Block]) -> list[Block]:
+    """工具箱出口：把每块文字里的 HTML 转义（`&amp;` `&#39;` …）还原成字符，只做一次。
+    账本存的、模型看到的、引用核验比对的都是这份文字，模型照抄「&」才能通过核验。"""
+    return [Block(html.unescape(b.text), b.locator, b.page) for b in blocks]
+
+
 def record_block(lines: Sequence[tuple[str, object]]) -> Block:
-    """一条书目记录 → 一块「Label: value」文本；空值的行省略，列表用「; 」连接。"""
+    """一条书目记录 → 一块「Label: value」文本；空值的行省略，列表用「; 」连接，标签去掉。"""
     out = []
     for label, value in lines:
         if isinstance(value, (list, tuple)):
             value = "; ".join(str(v) for v in value if str(v).strip())
-        text = " ".join(str(value or "").split())
+        text = " ".join(strip_markup(str(value or "")).split())
         if text:
             out.append(f"{label}: {text}")
     return Block("\n".join(out))
@@ -214,10 +236,12 @@ __all__ = [
     "Tool",
     "ToolEnv",
     "ToolError",
+    "decode_entities",
     "fetch_json",
     "no_results",
     "query_args",
     "record_block",
     "search_schema",
+    "strip_markup",
     "year_of",
 ]

@@ -1268,10 +1268,22 @@ export interface DependencyStatus {
   version: string | null;
 }
 
+/** 一个检索模式的能力（后端 kacore/retrieval_modes.py 的 MODES，唯一真相源）。 */
+export interface AskModeSpec {
+  id: string;
+  needs_collection: boolean;
+  needs_doc: boolean;
+  single_doc: boolean;
+  uses_graph: boolean;
+  translates_query: boolean;
+  supports_external: boolean;
+}
+
 export interface CapabilitiesData {
   pipeline: PipelineStage[];
   dependencies: DependencyStatus[];
   diagnostics: string[];
+  ask_modes?: AskModeSpec[];
 }
 
 export interface InstallResult {
