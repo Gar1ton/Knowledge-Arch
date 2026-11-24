@@ -880,6 +880,8 @@
     1691 passed / 4 skipped；ruff；mypy；前端 lint / tsc / build。Playwright 只在各功能落地时分别走查过，发布前没有整体再走一遍。
     待：推 `v3.0.0-preview.2` 标签（须用户本轮批准），CI 出包后填 Release 正文（`data/ka_v3/release_notes_v3.0.0-preview.2.md`，
     工作区本地），发布时标为 Pre-release。
+    用户 11-24：preview.2 已作为 Pre-release 公开（Apple Silicon 一次 DMG `hdiutil Resource busy` 偶发失败，重跑通过）。
+    之后的来源栏重构（P35）、「查看来源」按钮、回答底部对齐、README 评测图作为 3.0.0-preview.3 发布（文件里版本号仍为 3.0.0）。
     - [x] 发布前修 3.0.0-preview.1 记下的三个已知问题（用户 11-24：三个都修，进 3.0.0-preview.2）。
       - [x] ① 没有 DOI 的书重复出现：「库里已有」只比 DOI。改为 DOI + ISBN（ISBN-10 换算成 13 并校验），来源为 Zotero 条目
         （`raw_zotero_json` 的 ISBN）、本地文档的 DOI、入库记录 `paper_imports` 的标识；回答跳过已在库与入库框提示两处共用。

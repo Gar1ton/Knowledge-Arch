@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [v3.0.0-preview.3] — 2026-11-24
+
 ### 变更 (Changed)
 
 - **文档：中英 README 补充评测结果小节。** 在 `README.md`（`## Benchmarks`）与 `README_ZH.md`（`## 评测结果`）中新增各检索档位的评测结果：
