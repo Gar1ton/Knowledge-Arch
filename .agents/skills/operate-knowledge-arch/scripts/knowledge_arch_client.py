@@ -105,6 +105,9 @@ CONFIG_POLICIES: dict[str, dict[str, str]] = {
         "qa_database_id": "none",
         "sync_mode": "none",
     },
+    "paper_import": {
+        "filename_template": "none",
+    },
     "r2_sync": {
         "account_id": "restart",
         "backup_interval_sec": "restart",
@@ -140,6 +143,7 @@ CONFIG_POLICIES: dict[str, dict[str, str]] = {
         "api_port": "restart",
         "auto_sync_enabled": "restart",
         "auto_sync_interval_sec": "restart",
+        "base_dir": "none",
         "enabled": "restart",
         "linked_root": "rebuild",
         "storage_mode": "rebuild",

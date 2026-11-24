@@ -415,6 +415,7 @@ async def handle_upload_document(request: web.Request) -> web.Response:
     """multipart 上传：流式暂存（增量 sha256，内存 O(chunk)）→ 摄入插件托管原件库。"""
     reader = await request.multipart()
     collection = "default"
+    import_id = ""  # 3.0.0：给「待补 PDF」的入库记录补文件（见 library_io_routes）
     tags: list[str] = []
     filename = "upload.bin"
     content_type = "application/octet-stream"
@@ -446,6 +447,8 @@ async def handle_upload_document(request: web.Request) -> web.Response:
                 collection = (await part.text()).strip() or "default"
             elif part.name == "tags":
                 tags = [t.strip() for t in (await part.text()).split(",") if t.strip()]
+            elif part.name == "import_id":
+                import_id = (await part.text()).strip()
         if size_bytes == 0:
             return web.json_response({"error": "empty file"}, status=400)
 
@@ -456,6 +459,8 @@ async def handle_upload_document(request: web.Request) -> web.Response:
     finally:
         tmp_path.unlink(missing_ok=True)
 
+    if import_id:
+        return await _attach_import_pdf(request, import_id, dest)
     try:
         doc_id = await _api(request).register_document(
             title=filename,
@@ -480,6 +485,19 @@ async def handle_upload_document(request: web.Request) -> web.Response:
     except OSError as exc:
         _mw_logger.warning("Failed to remove upload staging file %s: %s", dest, exc)
     return web.json_response(await _document_dict(_api(request), doc))
+
+
+async def _attach_import_pdf(request: web.Request, import_id: str, dest: Path) -> web.Response:
+    """补 PDF：按入库记录里的文件名与集合入库；暂存文件用完即删。"""
+    try:
+        result = await _api(request).attach_import_pdf(import_id, dest)
+    except ValueError as exc:
+        return web.json_response({"status": "error", "message": str(exc)}, status=400)
+    except RuntimeError as exc:
+        return web.json_response({"status": "error", "message": str(exc)}, status=503)
+    finally:
+        dest.unlink(missing_ok=True)
+    return web.json_response(result)
 
 
 async def handle_classify_document(request: web.Request) -> web.Response:
@@ -2108,6 +2126,10 @@ def build_app(
     from web.desktop_routes import register_desktop_routes
 
     register_desktop_routes(app, _api)
+
+    from web.library_io_routes import register_library_io_routes
+
+    register_library_io_routes(app, _api, app_version)
 
     from web.update_routes import register_update_routes
 

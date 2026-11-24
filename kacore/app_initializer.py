@@ -643,6 +643,44 @@ class AppInitializer:
         )
         self.api.attach_tool_distributor(self.tool_distributor)
 
+        # 5.53) 外部论文入库与 Zotero 推送（3.0.0）：找 PDF 只试账本里的链接，入库走现有上传管线；
+        #       推送 = KA 按 ZotMoov 目录放文件 + Web API 建独立 linked_file 附件。
+        from kacore.managers.paper_importer import PaperImporter
+        from kacore.managers.zotero_pusher import ZoteroPusher
+
+        zotero_pusher = ZoteroPusher(
+            store=self.source_store,
+            config_provider=self._config.get_zotero_sync_config,
+            api_key_provider=self.api._zotero_server_key,
+        )
+        self.api.attach_zotero_pusher(zotero_pusher)
+        self.api.attach_paper_importer(PaperImporter(
+            store=self.source_store,
+            toolbox=self.toolbox,
+            register=self.api.register_document,
+            staging_dir=self._data_dir / "uploads" / "paper_imports",
+            config_provider=self._config.get_paper_import_config,
+            pusher=zotero_pusher,
+        ))
+
+        # 5.54) 备份与迁移（3.0.0）：.kaarch 导出导入；库存布局与 R2 共用，
+        #       完全覆盖走 R2 的恢复流程。
+        from kacore.managers.kaarch import KaarchManager
+
+        kaarch = KaarchManager(
+            data_dir=self._data_dir,
+            db_path=db_path,
+            source_store=self.source_store,
+            config=self._config,
+            settings=self._settings,
+            secrets=self.secret_store,
+            embedding_fingerprint=self.embedding_fingerprint,
+            quiesce_indexes=self._quiesce_indexes_for_backup,
+            reload_callback=self.reload,
+        )
+        kaarch.attach_writer(self.api)
+        self.api.attach_kaarch(kaarch)
+
         # 5.55) Notion 单向推送管线（文章两表增量 + QA 暂存箱补推）。
         from kacore.pipelines.notion_sync_pipeline import NotionSyncPipeline
 

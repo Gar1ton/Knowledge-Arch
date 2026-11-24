@@ -5,7 +5,6 @@ Crossref 是 DOI 的登记机构之一，作者带结构化的 family / given，
 """
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -27,7 +26,6 @@ SELECT = ",".join([
     "DOI", "title", "author", "issued", "type", "container-title", "abstract",
     "is-referenced-by-count", "updated-by", "URL", "ISBN",
 ])
-_TAG_RE = re.compile(r"<[^>]+>")
 
 
 class CrossrefSearch(Tool):
@@ -73,7 +71,7 @@ def to_block(item: dict[str, Any]) -> Block:
         ("URL", item.get("URL") or ""),
         ("Cited by", item.get("is-referenced-by-count") or ""),
         ("Retracted", "yes" if retracted else ""),
-        ("Abstract", _TAG_RE.sub(" ", item.get("abstract") or "")),
+        ("Abstract", item.get("abstract") or ""),
     ])
 
 

@@ -1,9 +1,10 @@
 "use client";
 /* 主窗口「数据流」页：节点拓扑 + 每个节点的设置面板（SettingSpec 驱动）。 */
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { FlowDiagram } from "@/components/flow/FlowDiagram";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FlowDiagram, type FlowDiagramHandle } from "@/components/flow/FlowDiagram";
+import { FlowJumpBar } from "@/components/flow/FlowJumpBar";
 import { AlertIcon, CheckIcon, XIcon } from "@/components/flow/Icons";
-import { SWITCH_MAP, type FlowStageId } from "@/components/flow/model";
+import { effectiveStages, SWITCH_MAP, type FlowStageId } from "@/components/flow/model";
 import type { QuickConfigUpdate } from "@/components/flow/QuickConfigPanel";
 import { settingKeyFor } from "@/components/settings/settingValues";
 import { useToast } from "@/components/ui/Toast";
@@ -57,6 +58,11 @@ export function FlowPageContent({ onClose }: { onClose?: () => void } = {}) {
   const [restartPendingIds, setRestartPendingIds] = useState<Set<string>>(new Set());
   const [restarting, setRestarting] = useState(false);
   const [justActivatedId, setJustActivatedId] = useState<string | null>(null);
+  // 页头快捷按钮：状态与画布同一份计算；点按钮经 handle 让画布滑到节点，选中的节点回报给按钮高亮。
+  const diagramRef = useRef<FlowDiagramHandle>(null);
+  const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
+  const jumpStages = useMemo(() => (caps ? effectiveStages(caps.pipeline) : []), [caps]);
+  const handleJump = useCallback((id: FlowStageId) => diagramRef.current?.focusNode(id), []);
   // 正在编辑（有未保存改动 / 蓝色 dirty）的节点集合；非空时暂停 5s 自动刷新，避免冲掉输入。
   const [editingIds, setEditingIds] = useState<Set<string>>(new Set());
   const editingRef = useRef(false);
@@ -325,6 +331,10 @@ export function FlowPageContent({ onClose }: { onClose?: () => void } = {}) {
           </div>
         </div>
 
+        {!loading && caps && config && (
+          <FlowJumpBar stages={jumpStages} activeId={selectedStageId} t={t} onJump={handleJump} />
+        )}
+
         {banner && (
           <div className={`flow-banner ${banner.kind === "rebuild" ? "flow-banner--warn" : ""}`}>
             <span className="flow-banner-icon">{banner.kind === "rebuild" ? <AlertIcon /> : <CheckIcon />}</span>
@@ -364,6 +374,8 @@ export function FlowPageContent({ onClose }: { onClose?: () => void } = {}) {
           onRebuildIndex={handleRebuildIndex}
           onClearMilvusLock={handleMilvusLockHelp}
           onClose={onClose}
+          handleRef={diagramRef}
+          onSelectedChange={setSelectedStageId}
         />
       )}
     </div>

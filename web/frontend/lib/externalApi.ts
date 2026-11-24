@@ -45,6 +45,8 @@ export interface ExternalSourceDetail {
   call_label: string;
   tool: string;
   block: number;
+  /** 入库状态（3.0.0 P4）；没入库过为 null。 */
+  import?: { import_id: string; status: "pending_pdf" | "imported" | "dismissed"; doc_id: string } | null;
 }
 
 export interface ExternalCapture {

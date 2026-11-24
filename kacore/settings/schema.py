@@ -19,6 +19,7 @@ from kacore.adapters.tools.registry import builtin_specs, secret_ref, setting_ke
 from kacore.config import (
     NOTION_SYNC_PRESERVE,
     NOTION_SYNC_STRICT,
+    PAPER_IMPORT_SECTION,
     TOOLS_SECTION,
     VECTOR_BACKEND_LEXICAL,
     VECTOR_BACKEND_MILVUS,
@@ -36,6 +37,7 @@ from kacore.config import (
     EnhancedRecallConfig,
     GraphConfig,
     NotionSyncConfig,
+    PaperImportConfig,
     R2SyncConfig,
     RerankConfig,
     SourceStoreConfig,
@@ -212,6 +214,11 @@ SPECS: tuple[SettingSpec, ...] = (
     SettingSpec(
         "flow.zotero.zotmoov_root", "path", ZoteroSyncConfig.zotmoov_root, "flow.zotero",
         consequence=_B, target=_t("zotero_sync", "zotmoov_root"), portable=False,
+    ),
+    # 3.0.0 推送：Zotero 的链接附件根目录（空 = 从已有附件推出）；只影响推送，不影响拉取。
+    SettingSpec(
+        "flow.zotero.base_dir", "path", ZoteroSyncConfig.base_dir, "flow.zotero",
+        target=_t("zotero_sync", "base_dir"), portable=False,
     ),
     SettingSpec(
         "flow.zotero.sync_mode", "enum", ZoteroSyncConfig.sync_mode, "flow.zotero",
@@ -485,6 +492,11 @@ SPECS: tuple[SettingSpec, ...] = (
     SettingSpec(
         "flow.external.max_rounds", "int", ToolsConfig.max_rounds, "flow.external",
         bounds=(1, 8), target=_t(TOOLS_SECTION, "max_rounds"),
+    ),
+    # 入库文件名模板（用户 11-23 选设置项；默认是用户现有附件的写法）。
+    SettingSpec(
+        "flow.external.import_filename", "str", PaperImportConfig.filename_template,
+        "flow.external", target=_t(PAPER_IMPORT_SECTION, "filename_template"),
     ),
     *tool_setting_specs(),
     # ── 偏好设置：存储 / 本地模型 / 诊断 ───────────────────────────────

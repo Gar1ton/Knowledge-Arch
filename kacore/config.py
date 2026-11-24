@@ -18,6 +18,7 @@ from typing import Any
 # 依赖探测收口至能力注册表；保留模块内 _module_available 名以兼容既有测试的 monkeypatch。
 from kacore.capabilities import milvus_runtime_status
 from kacore.capabilities import module_available as _module_available
+from kacore.domain.paper_import import DEFAULT_TEMPLATE as _DEFAULT_FILENAME_TEMPLATE
 
 # ── 环境变量名（机密来源）────────────────────────────────────────
 
@@ -118,6 +119,17 @@ class ToolsConfig:
     max_result_chars: int = 6000
     enabled: dict[str, bool] = field(default_factory=dict)
     values: dict[str, dict[str, object]] = field(default_factory=dict)
+
+
+PAPER_IMPORT_SECTION = "paper_import"
+
+
+@dataclass
+class PaperImportConfig:
+    """外部论文入库（3.0.0）：文件名模板，可用 {authors} {year} {title}。用户 11-23 选「设置项」，
+    默认是用户现有附件的写法；入库框里还能逐篇改。"""
+
+    filename_template: str = _DEFAULT_FILENAME_TEMPLATE
 
 
 @dataclass
@@ -394,6 +406,9 @@ class ZoteroSyncConfig:
     storage_mode: str = ZOTERO_STORAGE_MANAGED
     linked_root: str = ""  # storage_mode=linked 时的 Zotero storage 根目录
     zotmoov_root: str = ""  # storage_mode=zotmoov 时 ZotMoov 已移动附件的目录根
+    # 3.0.0 推送：Zotero「链接附件根目录」（附件 path 的 attachments: 相对于它）；
+    # 空 = 从已有附件推出。
+    base_dir: str = ""
     sync_mode: str = ZOTERO_SYNC_CONSERVATIVE
     auto_sync_enabled: bool = False
     auto_sync_interval_sec: int = 3600
@@ -692,6 +707,11 @@ class Config:
             values=values,
         )
 
+    def get_paper_import_config(self) -> PaperImportConfig:
+        s = _section(self.raw, PAPER_IMPORT_SECTION)
+        template = str(s.get("filename_template") or "").strip()
+        return PaperImportConfig(filename_template=template or PaperImportConfig.filename_template)
+
     def get_vision_config(self) -> VisionConfig:
         s = _section(self.raw, "vision")
         return VisionConfig(
@@ -749,6 +769,7 @@ class Config:
             storage_mode=storage_mode,
             linked_root=str(s.get("linked_root", ZoteroSyncConfig.linked_root)),
             zotmoov_root=str(s.get("zotmoov_root", ZoteroSyncConfig.zotmoov_root)),
+            base_dir=str(s.get("base_dir", ZoteroSyncConfig.base_dir)),
             sync_mode=sync_mode,
             auto_sync_enabled=bool(s.get("auto_sync_enabled", ZoteroSyncConfig.auto_sync_enabled)),
             auto_sync_interval_sec=max(

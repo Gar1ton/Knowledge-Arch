@@ -49,6 +49,7 @@ from kacore.domain.models import (
     DocumentOrigin,
 )
 from kacore.managers.ingest_manager import make_document_id, resolve_filename_biblio_hint
+from kacore.pipelines.zotero_push_claims import claim_document, push_claims
 from kacore.zotero_sync_job import (
     ZOTERO_STAGE_APPLYING_REMOVALS,
     ZOTERO_STAGE_FINALIZING,
@@ -277,6 +278,7 @@ class ZoteroSyncPipeline:
             progress.items_total = len(snapshot.items)
             progress.set_stage(ZOTERO_STAGE_MIRRORING)
         await self._mirror_tables(snapshot)
+        claims = await push_claims(self._store)
         result.items_mirrored = len(snapshot.items)
         result.collections_mirrored = len(snapshot.collections)
 
@@ -292,11 +294,12 @@ class ZoteroSyncPipeline:
             result=result,
             progress=progress,
             web_fetch=web_fetch,
+            claims=claims,
         )
 
         if progress is not None:
             progress.set_stage(ZOTERO_STAGE_APPLYING_REMOVALS)
-        await self._apply_removals(cfg, snapshot, result=result)
+        await self._apply_removals(cfg, snapshot, result=result, claims=claims)
 
         if progress is not None:
             progress.set_stage(ZOTERO_STAGE_FINALIZING)
@@ -395,8 +398,10 @@ class ZoteroSyncPipeline:
         result: ZoteroSyncResult,
         progress: ZoteroSyncJob | None = None,
         web_fetch: WebFileFetcher | None = None,
+        claims: dict[str, str] | None = None,
     ) -> None:
         lib = snapshot.library.library_id
+        claims = claims or {}
         item_by_key = {i.item_key: i for i in snapshot.items}
         coll_name_by_key = {c.collection_key: c.name for c in snapshot.collections}
         # item_key → 首个集合名（KB 单值 primary，用于 R2 key/Notion/milvus tag 兜底）。
@@ -427,7 +432,12 @@ class ZoteroSyncPipeline:
             item_key = att.parent_item_key or att.attachment_key
             item = item_by_key.get(item_key)
             version = item.version if item else 0
-            document_id = make_document_id(lib, item_key, att.attachment_key)
+            # 3.0.0 推送过的附件：认领原文档（doc_id 不变），只改来源字段，切块与向量原样保留。
+            claimed = claims.get(att.attachment_key)
+            if claimed:
+                await claim_document(self._store, claimed, lib, item_key, att.attachment_key,
+                                     version)
+            document_id = claimed or make_document_id(lib, item_key, att.attachment_key)
 
             # 多归属真相源：item 的全部所属集合 coll_key；未挂集合则归入合成 unfiled home。
             coll_keys = list(dict.fromkeys(item_coll_keys.get(item_key, [])))
@@ -584,13 +594,14 @@ class ZoteroSyncPipeline:
     # ── 删除 / 脱管 ───────────────────────────────────────────
 
     async def _apply_removals(
-        self, cfg: ZoteroSyncConfig, snapshot: ZoteroSnapshot, *, result: ZoteroSyncResult
+        self, cfg: ZoteroSyncConfig, snapshot: ZoteroSnapshot, *, result: ZoteroSyncResult,
+        claims: dict[str, str] | None = None,
     ) -> None:
         if cfg.sync_mode == ZOTERO_SYNC_ARCHIVE:
             return  # 归档堆栈：只增不删。
 
         lib = snapshot.library.library_id
-        current_ids = self._current_document_ids(lib, snapshot)
+        current_ids = self._current_document_ids(lib, snapshot, claims or {})
         existing_docs = await self._store.list_documents()
         for doc in existing_docs:
             if doc.origin != DocumentOrigin.ZOTERO or doc.library_id != lib:
@@ -613,13 +624,18 @@ class ZoteroSyncPipeline:
                         await _safe(self._remove_index(doc.doc_id))
                     result.detached_document_ids.append(doc.doc_id)
 
-    def _current_document_ids(self, lib: str, snapshot: ZoteroSnapshot) -> set[str]:
+    def _current_document_ids(
+        self, lib: str, snapshot: ZoteroSnapshot, claims: dict[str, str]
+    ) -> set[str]:
+        """快照里每个 PDF 附件对应的文档编号；推送后被认领的附件用原文档编号
+        （否则严格镜像会把它删掉）。"""
         ids: set[str] = set()
         for att in snapshot.attachments:
             if not _is_pdf(att.content_type, att.filename):
                 continue
             item_key = att.parent_item_key or att.attachment_key
-            ids.add(make_document_id(lib, item_key, att.attachment_key))
+            ids.add(claims.get(att.attachment_key)
+                    or make_document_id(lib, item_key, att.attachment_key))
         return ids
 
     # ── 助手 ──────────────────────────────────────────────────

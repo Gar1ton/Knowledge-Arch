@@ -18,9 +18,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kacore.managers.data_inventory import build_inventory
 from kacore.managers.r2_backup_manifest import (
     check_sqlite_integrity,
-    create_sqlite_snapshot_file,
     hash_inventory,
     parse_entries,
     safe_payload_path,
@@ -440,55 +440,10 @@ class R2BackupManager:
         }
 
     async def _build_inventory(self, root: Path) -> None:
-        root.mkdir(parents=True, exist_ok=True)
-        await asyncio.to_thread(
-            create_sqlite_snapshot_file,
-            self._db_path,
-            root / "database" / "knowledge_repository.db",
-        )
-
-        library_target = root / "library"
-        library_source = self._data_dir / "library"
-        if library_source.exists():
-            await asyncio.to_thread(shutil.copytree, library_source, library_target)
-        else:
-            library_target.mkdir(parents=True, exist_ok=True)
-        for doc in await self._source_store.list_documents():
-            original = Path(doc.file_path)
-            portable = library_target / doc.doc_id / "original.pdf"
-            if not portable.exists() and original.is_file():
-                portable.parent.mkdir(parents=True, exist_ok=True)
-                await asyncio.to_thread(shutil.copy2, original, portable)
-
-        vector_cfg = self._config.get_vector_db_config()
-        await asyncio.to_thread(
-            _copy_optional,
-            self._data_dir / vector_cfg.db_filename,
-            root / "indexes" / "vector_store.db",
-        )
-        await asyncio.to_thread(
-            _copy_optional,
-            self._data_dir / "embedding_cache.db",
-            root / "indexes" / "embedding_cache.db",
-        )
-        await asyncio.to_thread(
-            _copy_optional,
-            self._data_dir / "index_compatibility.json",
-            root / "indexes" / "index_compatibility.json",
-        )
-
-        graph_root = Path(self._config.get_graph_config().working_dir)
-        if not graph_root.is_absolute():
-            graph_root = self._data_dir / graph_root
-        if graph_root.exists():
-            await asyncio.to_thread(shutil.copytree, graph_root, root / "lightrag")
-
-        (root / "config").mkdir(parents=True, exist_ok=True)
-        # 只带可携设置（不含机密、本机路径与 R2 自身凭据），不原样复制 settings.json。
-        _write_json_atomic(
-            root / "config" / "portable_settings.json",
-            _portable_settings(self._config, self._settings),
-        )
+        """库存布局与 `.kaarch` 导出共用（`managers/data_inventory.py`）。"""
+        await build_inventory(root, db_path=self._db_path, data_dir=self._data_dir,
+                              source_store=self._source_store, config=self._config,
+                              settings=self._settings)
 
     async def _load_latest_manifest(self) -> tuple[dict[str, Any], dict[str, Any]]:
         try:
@@ -539,18 +494,6 @@ class R2BackupManager:
         return self._job
 
 
-def _portable_settings(config: Config, settings: SettingsStore | None) -> dict[str, Any]:
-    """生产由 SettingsStore 给出；没有 SettingsStore 时从 Config 原始值翻译（测试 / 极简装配）。"""
-    if settings is not None:
-        return settings.portable_document()
-    from kacore.settings.legacy_keys import apply_translation, translate
-    from kacore.settings.store import SettingsStore as _SettingsStore
-
-    store = _SettingsStore.in_memory()
-    apply_translation(store, translate(config.raw))
-    return store.portable_document()
-
-
 def _snapshot_id() -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"{stamp}-{uuid.uuid4().hex[:8]}"
@@ -578,13 +521,6 @@ def _read_json(path: Path) -> dict[str, Any]:
         return {}
     value = json.loads(path.read_text(encoding="utf-8"))
     return value if isinstance(value, dict) else {}
-
-
-def _copy_optional(source: Path, target: Path) -> None:
-    if not source.is_file():
-        return
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, target)
 
 
 __all__ = [

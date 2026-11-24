@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "主窗口：事件订阅 + 本应用自定义命令（命令本身在 Rust 侧做校验）+ 自绘标题栏的窗口操作；检查更新的「打开下载页」只放行本项目最新 Release 这一个地址。",
+  "description": "主窗口：事件订阅 + 本应用自定义命令（命令本身在 Rust 侧做校验）+ 自绘标题栏的窗口操作；外链只放行 http / https（检查更新的下载页、来源栏的原文页、待补 PDF 的 DOI 链接，用系统浏览器打开）。",
   "windows": [
     "main"
   ],
@@ -17,7 +17,10 @@
       "identifier": "opener:allow-open-url",
       "allow": [
         {
-          "url": "https://github.com/Gar1ton/Knowledge-Arch/releases/latest"
+          "url": "https://*"
+        },
+        {
+          "url": "http://*"
         }
       ]
     }

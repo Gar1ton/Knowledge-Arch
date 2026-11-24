@@ -15,6 +15,7 @@ from kacore.domain.models import DocumentLifecycle
 from kacore.repository.source_store.base import SourceDocumentStore
 from kacore.repository.source_store.external_memory import InMemoryToolLedgerMixin
 from kacore.repository.source_store.figures_memory import InMemoryFigureMixin
+from kacore.repository.source_store.imports_memory import InMemoryImportLedgerMixin
 
 
 def _new_local_coll_key() -> str:
@@ -44,7 +45,7 @@ if TYPE_CHECKING:
 
 
 class InMemorySourceDocumentStore(
-    InMemoryFigureMixin, InMemoryToolLedgerMixin, SourceDocumentStore
+    InMemoryFigureMixin, InMemoryToolLedgerMixin, InMemoryImportLedgerMixin, SourceDocumentStore
 ):
     """纯内存的 SourceDocumentStore，确定性、无网络/磁盘。"""
 
@@ -57,6 +58,8 @@ class InMemorySourceDocumentStore(
         self._web_captures: dict = {}
         self._web_calls: dict = {}
         self._web_citations: dict = {}
+        self._paper_imports: dict = {}
+        self._zotero_pushes: dict = {}
         self._sync_records: dict[tuple[str, SyncTargetKind], SyncRecord] = {}
         self._notion_entities: dict[tuple[str, str], NotionEntityRecord] = {}
         self._notion_outbox: dict[str, NotionOutboxItem] = {}

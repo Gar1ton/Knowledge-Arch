@@ -140,6 +140,12 @@ export async function pickFolder(title?: string): Promise<string | null> {
   return invokeShell<string | null>("pick_folder", { title: title ?? null });
 }
 
+/** 原生选择文件对话框（extensions 如 ["kaarch"]）；不在壳里返回 null（调用方让用户手填路径）。 */
+export async function pickFile(title?: string, extensions?: string[]): Promise<string | null> {
+  if (!inDesktopShell()) return null;
+  return invokeShell<string | null>("pick_file", { title: title ?? null, extensions: extensions ?? null });
+}
+
 /** 打开日志目录（系统文件管理器）。 */
 export async function openLogDir(): Promise<void> {
   if (!inDesktopShell()) return;
@@ -180,6 +186,19 @@ export async function wipeDataAndQuit(): Promise<void> {
 }
 
 // ─── 手动检查更新：只打开下载页，由用户自己下载安装 ──────────────────────
+
+/**
+ * 用系统浏览器打开一个 http(s) 链接（来源栏的原文页、待补 PDF 的 DOI 链接等，用户自己去下载）。
+ * 壳里经 opener 插件（capabilities 只放行 http / https）；浏览器开发模式下开新标签页。其他协议忽略。
+ */
+export async function openExternalUrl(url: string): Promise<void> {
+  if (!/^https?:\/\//i.test(url)) return;
+  if (!inDesktopShell()) {
+    window.open(url, "_blank", "noopener");
+    return;
+  }
+  await invokeShell<void>("plugin:opener|open_url", { url });
+}
 
 /** 用系统浏览器打开下载页。壳里经 opener 插件（capabilities 只放行这一个地址），浏览器开发模式下开新标签页。 */
 export async function openDownloadPage(url: string): Promise<void> {

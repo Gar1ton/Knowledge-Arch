@@ -69,6 +69,86 @@ async def test_crossref_gives_one_block_per_work_with_authors_and_retraction() -
     assert "Abstract: Drift grows." in block.text and "DOI: 10.1/x" in block.text
 
 
+# ── 工具输出出口：没有残留标记（P34 P3）───────────────────────────
+
+
+def _box_of(*blocks: Block) -> ToolBox:
+    """工具箱里放一个返回固定块的工具：检查出口统一做的事（还原转义、截断）。"""
+
+    class _Fixed(Tool):
+        spec = ToolSpec("fixed", "Fixed blocks.", {"type": "object"})
+
+        async def call(self, arguments):
+            return ToolResult(list(blocks))
+
+    cfg = ToolsConfig()
+    return ToolBox(config_provider=lambda: cfg, read_secret=lambda _r: "",
+                   env=ToolEnv(cache_dir=Path("/nonexistent")), tools=(_Fixed,))
+
+
+# 真实 Crossref 记录里的写法：标题带 <i> 且标签紧贴后一个词，期刊名带 &amp;。
+_CROSSREF_ITEM = {
+    "DOI": "10.1177/x", "title": ["<i>Islands</i>of Detroit: Affect &amp; Whiteness"],
+    "container-title": ["Theory, Culture &amp; Society"],
+    "author": [{"family": "O&#39;Neil", "given": "Ann"}],
+    "abstract": "<jats:p>Effects hold when p < 0.05 and n<k.</jats:p>"}
+
+
+async def test_crossref_through_the_toolbox_quotes_plain_text_and_passes_the_trace_check() -> None:
+    from kacore.adapters.tools.crossref import to_block
+
+    result = await _box_of(to_block(_CROSSREF_ITEM)).call("fixed", {})
+    [block] = result.blocks
+    assert "Title: Islands of Detroit: Affect & Whiteness" in block.text
+    assert "Venue: Theory, Culture & Society" in block.text and "Authors: O'Neil, Ann" in block.text
+    # 摘要里的数学写法不是标签，原样保留。
+    assert "Abstract: Effects hold when p < 0.05 and n<k." in block.text
+    call = ToolCall("r.1", "r", 1, "crossref_search", {}, result.blocks)
+    check = trace_check(CiteRequest("c1", "Islands of Detroit",
+                                    {"venue": "Theory, Culture & Society"}), {"c1": call})
+    assert check.ok
+
+
+async def test_no_builtin_tool_leaves_markup_or_escapes_in_what_the_model_and_ledger_see() -> None:
+    """约束测试：每个内置检索工具喂一条带标记的记录，经工具箱出口后不许残留 `<i>` / `&amp;`。
+    新增内置工具时这里会因为没覆盖而失败，必须补一条样例。read_open_pdf 返回的是 PDF 正文段落，
+    不经 record_block，只受出口的转义还原约束（`test_toolbox_decodes_entities_for_every_tool`）。"""
+    from kacore.adapters.tools import arxiv, crossref, openalex, openlibrary, semantic_scholar
+
+    marked, venue = "<i>Persona</i> Drift &amp; Steering", "Mind &amp; Society"
+    person = "O&#39;Neil"
+    feed = (
+        '<feed xmlns="http://www.w3.org/2005/Atom"><entry><id>http://arxiv.org/abs/2601.1</id>'
+        "<title>&lt;i&gt;Persona&lt;/i&gt; Drift &amp;amp; Steering</title>"
+        f"<author><name>{person}</name></author><summary>Drift grows.</summary></entry></feed>"
+    ).encode()
+    samples = {
+        "crossref_search": [crossref.to_block({"title": [marked], "container-title": [venue],
+                                               "author": [{"family": person}]})],
+        "openalex_search": [openalex.to_block({
+            "title": marked, "authorships": [{"author": {"display_name": person}}],
+            "primary_location": {"source": {"display_name": venue}}})],
+        "semantic_scholar_search": [semantic_scholar.to_block({
+            "title": marked, "venue": venue, "authors": [{"name": person}]})],
+        "openlibrary_search": [openlibrary.to_block({"title": marked, "author_name": [person]})],
+        "arxiv_search": arxiv.parse_feed(feed),
+    }
+    assert set(samples) == {c.spec.name for c in BUILTIN} - {"read_open_pdf"}
+    for name, blocks in samples.items():
+        out = (await _box_of(*blocks).call("fixed", {})).blocks
+        text = "\n".join(b.text for b in out)
+        assert "Persona Drift & Steering" in text, (name, text)
+        assert "<i>" not in text and "&amp;" not in text and "&#39;" not in text, (name, text)
+        assert "O'Neil" in text, (name, text)
+
+
+async def test_toolbox_decodes_entities_for_every_tool_once() -> None:
+    out = (await _box_of(Block("Culture &amp; Society &amp;lt;tag&amp;gt;", "page 2", 2))
+           .call("fixed", {})).blocks
+    assert out[0].text == "Culture & Society &lt;tag&gt;"     # 只还原一次
+    assert (out[0].locator, out[0].page) == ("page 2", 2)
+
+
 async def test_openalex_stops_requesting_after_the_free_quota_is_spent() -> None:
     spent = {"X-RateLimit-Remaining-USD": "0", "X-RateLimit-Cost-USD": "0.001",
              "X-RateLimit-Reset": "3600"}

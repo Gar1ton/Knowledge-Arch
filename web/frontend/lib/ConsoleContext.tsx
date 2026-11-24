@@ -6,7 +6,7 @@ import { getConsoleScopeState, upsertConsoleScopeState } from "@/lib/api";
 export type ConsoleView = "workspace" | "flow";
 /** 偏好设置窗口的分组。 */
 export type PrefsGroup =
-  | "general" | "appearance" | "storage" | "local_models" | "components" | "diagnostics";
+  | "general" | "appearance" | "storage" | "backup" | "local_models" | "components" | "diagnostics";
 
 /** 中间栏的阅读模式：PDF 原件或分块（MD）。全局一个，记在本机；非 PDF 文档总是分块。 */
 export type ReadingMode = "md" | "pdf";

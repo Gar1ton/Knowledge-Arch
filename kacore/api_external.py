@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from kacore.domain.models import DocumentChunk
+from kacore.domain.paper_import import doi_key
 from kacore.domain.tool_calls import ACTOR_AGENT, ACTOR_TEST, CITE_TOOL, Citation, ToolCall
 
 if TYPE_CHECKING:
@@ -36,18 +37,6 @@ SCRAPER_COLUMNS = (
     "description", "favicon",
 )
 KA_COLUMNS = ("tool", "call_id", "block", "locator", "passage", "cited")
-_DOI_PREFIXES = ("https://doi.org/", "http://doi.org/", "https://dx.doi.org/",
-                 "http://dx.doi.org/", "doi:")
-
-
-def doi_key(text: str) -> str:
-    """DOI 比较用的格式规整：去解析前缀、小写。不是 10. 开头的返回空串。"""
-    value = (text or "").strip().lower()
-    for prefix in _DOI_PREFIXES:
-        if value.startswith(prefix):
-            value = value[len(prefix):]
-            break
-    return value if value.startswith("10.") else ""
 
 
 def source_id_of(citation: Citation) -> str:
@@ -117,6 +106,7 @@ class ExternalApiMixin:
             raise ValueError(f"capture not found: {capture_id}")
         calls = await store.list_tool_calls(capture_id)
         by_id = {c.call_id: c for c in calls}
+        imports = await self.capture_imports(capture_id)  # type: ignore[attr-defined]
         sources = []
         for citation in await store.list_citations(capture_id):
             call = by_id.get(citation.call_id)
@@ -126,7 +116,7 @@ class ExternalApiMixin:
                 "locator": citation.locator, "page": citation.page, "cited": citation.cited,
                 "placement": citation.placement, "call_id": citation.call_id,
                 "call_label": f"c{call.ord}" if call else "", "tool": call.tool if call else "",
-                "block": citation.block,
+                "block": citation.block, "import": imports.get(citation.ord),
             })
         return {
             "capture": {"capture_id": capture.capture_id, "conversation_id": capture.conv_id,
@@ -257,25 +247,6 @@ class ExternalApiMixin:
         actor = actor if actor in (ACTOR_AGENT, ACTOR_TEST) else ACTOR_AGENT
         return await ToolSession.open(toolbox, store, conv_id=conversation_id.strip() or actor,
                                       question=question, actor=actor)
-
-    async def _library_dois(self) -> dict[str, str]:
-        """库里有 DOI 的文档：DOI（规整后）→ doc_id。
-
-        Zotero 文档取镜像条目的 DOI，本地文档取书目字段里的 DOI。
-        """
-        out: dict[str, str] = {}
-        docs = await self._source_store.list_documents()
-        by_item = {(d.library_id, d.zotero_item_key): d.doc_id for d in docs if d.zotero_item_key}
-        for item in await self._source_store.list_zotero_items():
-            doc_id = by_item.get((item.library_id, item.item_key))
-            doi = doi_key(getattr(item, "doi", "") or "")
-            if doc_id and doi:
-                out.setdefault(doi, doc_id)
-        for doc in docs:
-            doi = doi_key(str((doc.local_meta or {}).get("doi") or ""))
-            if doi:
-                out.setdefault(doi, doc.doc_id)
-        return out
 
 
 def scraper_rows(detail: dict[str, Any]) -> list[dict[str, Any]]:

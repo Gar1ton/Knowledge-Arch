@@ -1,8 +1,12 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useState } from "react";
+import { useConsole } from "@/lib/ConsoleContext";
+import { openExternalUrl } from "@/lib/backend";
 import { useI18n } from "@/lib/i18n";
 import type { ZoteroMeta } from "@/lib/api";
+import { getImportOrigin, type ImportRecord } from "@/lib/libraryIoApi";
+import { clip } from "@/components/panels/ImportDialog";
 
 export type MetaDraft = Partial<ZoteroMeta> & { title?: string };
 
@@ -149,5 +153,46 @@ export function MetaEditForm({
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * 3.0.0：从联网补充入库的文档，显示出处（哪个回答、哪条来源、哪次工具调用）与下载 PDF 的链接；
+ * 「打开来源栏」回到当时的来源栏。不是入库来的文档什么也不显示。
+ */
+export function ImportOriginRows({ docId }: { docId: string }) {
+  const { t } = useI18n();
+  const { setSourcePanel } = useConsole();
+  const [origin, setOrigin] = useState<ImportRecord | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    getImportOrigin(docId).then((r) => alive && setOrigin(r)).catch(() => alive && setOrigin(null));
+    return () => { alive = false; };
+  }, [docId]);
+
+  if (!origin) return null;
+  const s = origin.source;
+  const where = [s.tool, s.call_label, s.locator].filter(Boolean).join(" · ");
+  return (
+    <>
+      <div style={{ display: "flex", gap: 10, padding: "3px 0" }}>
+        <span style={{ width: 58, flexShrink: 0, fontSize: 11, color: "var(--fg-subtle)" }}>{t("imp_origin")}</span>
+        <span style={{ flex: 1, fontSize: 11.5, lineHeight: 1.45, color: "var(--fg)", wordBreak: "break-word" }}>
+          {t("imp_origin_doc", { q: clip(s.question), id: origin.source_id, where })}{" "}
+          <button type="button" className="src-link"
+            onClick={() => setSourcePanel({ captureId: origin.capture_id, focus: origin.source_id })}>
+            {t("imp_open_sources", { id: origin.source_id })}
+          </button>
+        </span>
+      </div>
+      {origin.pdf_url && (
+        <div style={{ display: "flex", gap: 10, padding: "3px 0" }}>
+          <span style={{ width: 58, flexShrink: 0, fontSize: 11, color: "var(--fg-subtle)" }}>PDF</span>
+          <button type="button" className="src-link imp-url" title={origin.pdf_url}
+            onClick={() => void openExternalUrl(origin.pdf_url)}>{origin.pdf_url}</button>
+        </div>
+      )}
+    </>
   );
 }

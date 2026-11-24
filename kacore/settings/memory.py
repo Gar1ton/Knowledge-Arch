@@ -43,6 +43,9 @@ class MemorySecretStore:
     def has_secret(self, name: str) -> bool:
         return bool(self._values.get(name))
 
+    def list_names(self) -> list[str]:
+        return sorted(self._values)
+
     def forget_master_key(self) -> None:
         self._values.clear()
 

@@ -1,20 +1,35 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { DependencyStatus, PipelineStage } from "@/lib/api";
 import type { FlowConfigSnapshot, QuickConfigUpdate } from "./QuickConfigPanel";
 import type { Provider, ProviderPreset, SettingItem } from "@/lib/settingsApi";
 import type { Lang, TFunc } from "@/lib/i18n";
 import { FitIcon, MinusIcon, PlusIcon } from "./Icons";
-import { EDGES, GRID, isFlowStageId, STAGE_HOME, STAGE_META, type FlowStageId, type FlowStageStatus } from "./model";
+import { EDGES, effectiveStages, GRID, isFlowStageId, STAGE_HOME, type FlowStageId, type FlowStageStatus } from "./model";
 import { FlowNode } from "./FlowNode";
 import { FLOW_FOCUS_EVENT } from "@/lib/tour";
 
 /** 首次使用引导聚焦节点时的最小缩放，节点太小看不清。 */
 const FOCUS_MIN_SCALE = 0.75;
+/** 页头快捷按钮聚焦节点时的最小缩放：要直接在节点里改设置，字要看得清。 */
+const JUMP_MIN_SCALE = 0.9;
+/** 节点比视口高时顶部对齐，离视口上沿留这么多。 */
+const JUMP_TOP_GAP = 24;
+const GLIDE_MS = 380;
 
 type Rect = { x: number; y: number; w: number; h: number };
 type Geo = { rects: Partial<Record<FlowStageId, Rect>> | null; w: number; h: number };
 type View = { s: number; x: number; y: number };
 type PanState = { sx: number; sy: number; ox: number; oy: number } | null;
+/** 页面经 handleRef 调用：页头快捷按钮让画布滑到节点并选中它。 */
+export type FlowDiagramHandle = { focusNode: (id: FlowStageId) => void };
+
+function easeOutCubic(t: number): number {
+  return 1 - (1 - t) ** 3;
+}
+
+function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+}
 
 type Connector = {
   d: string;
@@ -87,6 +102,8 @@ export function FlowDiagram({
   clearingMilvusLock,
   onEditingChange,
   onClose,
+  handleRef,
+  onSelectedChange,
 }: {
   stages: PipelineStage[];
   dependencies: DependencyStatus[];
@@ -111,33 +128,11 @@ export function FlowDiagram({
   onClearMilvusLock?: () => void;
   clearingMilvusLock?: boolean;
   onClose?: () => void;
+  handleRef?: React.Ref<FlowDiagramHandle>;
+  onSelectedChange?: (id: string | null) => void;
 }) {
-  const knownStages = useMemo(() => {
-    const base = stages
-      .filter((stage) => isFlowStageId(stage.id))
-      .sort((a, b) => STAGE_META[a.id as FlowStageId].idx - STAGE_META[b.id as FlowStageId].idx);
-    // 电路级联：沿实线(非 dashed)边把上游的 degraded 向下游传播——一个错误配置的环节会让其后
-    // 的环节也变黄(degraded/受损)而非保持绿色(ready)。base 已按 idx 左→右拓扑排序，上游先计算。
-    const incoming = new Map<FlowStageId, FlowStageId[]>();
-    for (const edge of EDGES) {
-      if (edge.dashed) continue; // 旁路/可选来源(dashed)不传播。
-      const arr = incoming.get(edge.to) ?? [];
-      arr.push(edge.from);
-      incoming.set(edge.to, arr);
-    }
-    const eff = new Map<FlowStageId, FlowStageStatus>();
-    return base.map((stage) => {
-      const id = stage.id as FlowStageId;
-      let status = stage.status;
-      if (status === "ready") {
-        for (const up of incoming.get(id) ?? []) {
-          if (eff.get(up) === "degraded") { status = "degraded"; break; }
-        }
-      }
-      eff.set(id, status);
-      return status === stage.status ? stage : { ...stage, status };
-    });
-  }, [stages]);
+  // 状态级联与页头快捷按钮共用 `effectiveStages`，两处颜色保持一致。
+  const knownStages = useMemo(() => effectiveStages(stages), [stages]);
   const depMap = useMemo(() => new Map(dependencies.map((dep) => [dep.key, dep])), [dependencies]);
   const stageById = useMemo(() => new Map(knownStages.map((stage) => [stage.id as FlowStageId, stage])), [knownStages]);
 
@@ -151,6 +146,76 @@ export function FlowDiagram({
   const [view, setView] = useState<View>({ s: 1, x: 0, y: 0 });
   const [viewReady, setViewReady] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // 选中变化报给页面，页头对应的快捷按钮随之高亮。
+  useEffect(() => {
+    onSelectedChange?.(selectedId);
+  }, [selectedId, onSelectedChange]);
+
+  // 滑动动画：逐帧直接写 DOM（不经 state，避免整张图每帧重渲染），结束时把终点交给 state。
+  // 动画期间 view state 不变，React 不会改写这两个元素的 style。
+  const worldRef = useRef<HTMLDivElement | null>(null);
+  const zoomRef = useRef<HTMLDivElement | null>(null);
+  const bgRef = useRef<HTMLDivElement | null>(null);
+  const viewRef = useRef(view);
+  const glide = useRef<{ raf: number; live: View } | null>(null);
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
+  useEffect(() => () => {
+    if (glide.current) cancelAnimationFrame(glide.current.raf);
+  }, []);
+
+  const paint = useCallback((v: View) => {
+    const world = worldRef.current;
+    const zoomLayer = zoomRef.current;
+    const bg = bgRef.current;
+    if (world) world.style.transform = `translate3d(${v.x}px, ${v.y}px, 0)`;
+    if (zoomLayer) zoomLayer.style.zoom = String(v.s);
+    if (bg) {
+      bg.style.backgroundSize = `${26 * v.s}px ${26 * v.s}px`;
+      bg.style.backgroundPosition = `${v.x}px ${v.y}px`;
+    }
+  }, []);
+
+  /** 中途停下滑动（用户开始拖动 / 缩放）：把画到一半的视图交还给 state 并返回；没在滑动时返回 null。 */
+  const stopGlide = useCallback((): View | null => {
+    const current = glide.current;
+    if (!current) return null;
+    cancelAnimationFrame(current.raf);
+    glide.current = null;
+    viewRef.current = current.live;
+    setView(current.live);
+    return current.live;
+  }, []);
+
+  const glideTo = useCallback((target: View) => {
+    stopGlide();
+    if (prefersReducedMotion()) {
+      setView(target);
+      return;
+    }
+    const from = viewRef.current;
+    const start = performance.now();
+    const step = (now: number) => {
+      const k = easeOutCubic(Math.min(1, (now - start) / GLIDE_MS));
+      if (k >= 1) {
+        // 先画终点：终点某项与上次渲染相同（如缩放不变）时 React 不会重写它，DOM 会停在倒数第二帧。
+        paint(target);
+        glide.current = null;
+        setView(target);
+        return;
+      }
+      const live = {
+        s: from.s + (target.s - from.s) * k,
+        x: from.x + (target.x - from.x) * k,
+        y: from.y + (target.y - from.y) * k,
+      };
+      paint(live);
+      glide.current = { raf: requestAnimationFrame(step), live };
+    };
+    glide.current = { raf: requestAnimationFrame(step), live: from };
+  }, [paint, stopGlide]);
 
   const measure = useCallback(() => {
     const grid = gridRef.current;
@@ -205,32 +270,49 @@ export function FlowDiagram({
     };
   }, [geo.h, geo.w]);
 
+  /** 把节点放到视口中央（不小于 minScale）；alignTop 时节点比视口高则改为顶部对齐，保证设置开头可见。 */
+  const focusView = useCallback((id: string, minScale: number, alignTop: boolean): View | null => {
+    const rect = isFlowStageId(id) ? geo.rects?.[id] : undefined;
+    const viewport = viewportRef.current;
+    if (!rect || !viewport) return null;
+    const s = snapScale(clampScale(Math.max(viewRef.current.s, minScale)));
+    const vh = viewport.clientHeight;
+    const tall = alignTop && rect.h * s > vh - 2 * JUMP_TOP_GAP;
+    return {
+      s,
+      x: snapCoord(viewport.clientWidth / 2 - (rect.x + rect.w / 2) * s),
+      y: snapCoord(tall ? JUMP_TOP_GAP - rect.y * s : vh / 2 - (rect.y + rect.h / 2) * s),
+    };
+  }, [geo.rects]);
+
   // 首次使用引导：把指定节点平移到视口中央（遮罩会挡住拖动，用户没法自己把它拖进来）。
   useEffect(() => {
     const onFocus = (event: Event) => {
       const id = (event as CustomEvent<{ id: string }>).detail?.id;
-      const rect = id && isFlowStageId(id) ? geo.rects?.[id] : undefined;
-      const viewport = viewportRef.current;
-      if (!rect || !viewport) return;
-      setView((prev) => {
-        const s = snapScale(clampScale(Math.max(prev.s, FOCUS_MIN_SCALE)));
-        return {
-          s,
-          x: snapCoord(viewport.clientWidth / 2 - (rect.x + rect.w / 2) * s),
-          y: snapCoord(viewport.clientHeight / 2 - (rect.y + rect.h / 2) * s),
-        };
-      });
+      const next = id ? focusView(id, FOCUS_MIN_SCALE, false) : null;
+      if (!next) return;
+      stopGlide();
+      setView(next);
     };
     window.addEventListener(FLOW_FOCUS_EVENT, onFocus);
     return () => window.removeEventListener(FLOW_FOCUS_EVENT, onFocus);
-  }, [geo.rects]);
+  }, [focusView, stopGlide]);
+
+  useImperativeHandle(handleRef, () => ({
+    focusNode: (id: FlowStageId) => {
+      setSelectedId(id);
+      const next = focusView(id, JUMP_MIN_SCALE, true);
+      if (next) glideTo(next);
+    },
+  }), [focusView, glideTo]);
 
   const fit = useCallback(() => {
     const nextView = buildFitView(false);
     if (!nextView) return;
+    stopGlide();
     setView(nextView);
     setViewReady(true);
-  }, [buildFitView]);
+  }, [buildFitView, stopGlide]);
 
   const applyEntryView = useCallback(() => {
     const nextView = buildFitView(true);
@@ -307,6 +389,7 @@ export function FlowDiagram({
     const rect = viewport.getBoundingClientRect();
     const px = clientX - rect.left;
     const py = clientY - rect.top;
+    stopGlide();
     setView((current) => {
       const nextScale = snapScale(clampScale(current.s * factor));
       const ratio = nextScale / current.s;
@@ -316,7 +399,7 @@ export function FlowDiagram({
         y: snapCoord(py - (py - current.y) * ratio),
       };
     });
-  }, []);
+  }, [stopGlide]);
 
   const handleWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -326,11 +409,12 @@ export function FlowDiagram({
   const handlePointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.target instanceof Element && event.target.closest(".flow-node")) return;
     event.preventDefault();
-    pan.current = { sx: event.clientX, sy: event.clientY, ox: view.x, oy: view.y };
+    const base = stopGlide() ?? view;
+    pan.current = { sx: event.clientX, sy: event.clientY, ox: base.x, oy: base.y };
     event.currentTarget.setPointerCapture(event.pointerId);
     event.currentTarget.classList.add("is-panning");
     setSelectedId(null);
-  }, [view.x, view.y]);
+  }, [stopGlide, view]);
 
   const handlePointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     const currentPan = pan.current;
@@ -368,6 +452,7 @@ export function FlowDiagram({
       onPointerLeave={endPan}
     >
       <div
+        ref={bgRef}
         className="flow-grid-bg"
         style={{
           backgroundSize: `${26 * view.s}px ${26 * view.s}px`,
@@ -376,80 +461,84 @@ export function FlowDiagram({
         }}
       />
       <div
+        ref={worldRef}
         className={`flow-world ${viewReady ? "is-ready" : ""}`}
         style={{
           transform: `translate3d(${view.x}px, ${view.y}px, 0)`,
-          zoom: view.s,
-          willChange: "transform, zoom",
+          willChange: "transform",
           backfaceVisibility: "hidden",
         }}
       >
-        <div ref={gridRef} className="flow-diagram-grid">
-          <Connectors conns={conns} width={geo.w} height={geo.h} />
+        {/* 平移与缩放分两层：Chromium 的 CSS zoom 会连同本元素的 translate 一起缩放（WebKit 不会），
+            同一元素上两者并用时平移量随引擎变化；分开后 view.x / view.y 在各引擎都是屏幕像素。 */}
+        <div ref={zoomRef} className="flow-world-zoom" style={{ zoom: view.s, willChange: "zoom" }}>
+          <div ref={gridRef} className="flow-diagram-grid">
+            <Connectors conns={conns} width={geo.w} height={geo.h} />
 
-          {handles.map(([key, handle]) => (
-            <span
-              key={key}
-              className={`flow-handle ${handle.status !== "off" ? "is-active" : ""} ${handle.status} ${handle.optional ? "flow-handle--optional" : ""}`}
-              style={{ left: handle.x, top: handle.y }}
-            />
-          ))}
+            {handles.map(([key, handle]) => (
+              <span
+                key={key}
+                className={`flow-handle ${handle.status !== "off" ? "is-active" : ""} ${handle.status} ${handle.optional ? "flow-handle--optional" : ""}`}
+                style={{ left: handle.x, top: handle.y }}
+              />
+            ))}
 
-          {conns.filter((conn) => conn.label).map((conn, index) => (
-            <span
-              key={`${conn.label}-${index}`}
-              className={`flow-edge-label ${conn.dashed ? "flow-edge-label--muted" : ""}`}
-              style={{ left: conn.mid.x, top: conn.mid.y }}
-            >
-              {conn.label}
-            </span>
-          ))}
-
-          {knownStages.map((stage) => {
-            const id = stage.id as FlowStageId;
-            const grid = GRID[id];
-            const justActivatedValue = justActivatedId?.startsWith(`${stage.id}-`)
-              ? justActivatedId.slice(stage.id.length + 1)
-              : null;
-            return (
-              <div
-                key={stage.id}
-                className={`flow-node-cell ${id === "retrieval" || id === "graph" ? "flow-node-cell--branch" : ""}`}
-                ref={(node) => { nodeRefs.current[id] = node; }}
-                style={{ gridColumn: grid.col, gridRow: grid.row }}
+            {conns.filter((conn) => conn.label).map((conn, index) => (
+              <span
+                key={`${conn.label}-${index}`}
+                className={`flow-edge-label ${conn.dashed ? "flow-edge-label--muted" : ""}`}
+                style={{ left: conn.mid.x, top: conn.mid.y }}
               >
-                <FlowNode
-                  stage={stage}
-                  depMap={depMap}
-                  lang={lang}
-                  t={t}
-                  saving={savingId === stage.id}
-                  installing={installingKey}
-                  justActivatedValue={justActivatedValue}
-                  rebuildingIndex={rebuildingIndex}
-                  restartPending={restartPendingIds.has(stage.id)}
-                  onEditingChange={onEditingChange}
-                  selected={selectedId === stage.id}
-                  config={config}
-                  settingsItems={settingsItems.filter(
-                    (item) => item.home === STAGE_HOME[stage.id as FlowStageId],
-                  )}
-                  providers={providers}
-                  presets={presets}
-                  onNotify={onNotify}
-                  onSelect={() => setSelectedId(stage.id)}
-                  onSwitch={onSwitch}
-                  onQuickConfigSave={onQuickConfigSave}
-                  onRefresh={onRefresh}
-                  onInstall={onInstall}
-                  onRebuildIndex={onRebuildIndex}
-                  onClearMilvusLock={onClearMilvusLock}
-                  clearingMilvusLock={clearingMilvusLock}
-                  onClose={onClose}
-                />
-              </div>
-            );
-          })}
+                {conn.label}
+              </span>
+            ))}
+
+            {knownStages.map((stage) => {
+              const id = stage.id as FlowStageId;
+              const grid = GRID[id];
+              const justActivatedValue = justActivatedId?.startsWith(`${stage.id}-`)
+                ? justActivatedId.slice(stage.id.length + 1)
+                : null;
+              return (
+                <div
+                  key={stage.id}
+                  className={`flow-node-cell ${id === "retrieval" || id === "graph" ? "flow-node-cell--branch" : ""}`}
+                  ref={(node) => { nodeRefs.current[id] = node; }}
+                  style={{ gridColumn: grid.col, gridRow: grid.row }}
+                >
+                  <FlowNode
+                    stage={stage}
+                    depMap={depMap}
+                    lang={lang}
+                    t={t}
+                    saving={savingId === stage.id}
+                    installing={installingKey}
+                    justActivatedValue={justActivatedValue}
+                    rebuildingIndex={rebuildingIndex}
+                    restartPending={restartPendingIds.has(stage.id)}
+                    onEditingChange={onEditingChange}
+                    selected={selectedId === stage.id}
+                    config={config}
+                    settingsItems={settingsItems.filter(
+                      (item) => item.home === STAGE_HOME[stage.id as FlowStageId],
+                    )}
+                    providers={providers}
+                    presets={presets}
+                    onNotify={onNotify}
+                    onSelect={() => setSelectedId(stage.id)}
+                    onSwitch={onSwitch}
+                    onQuickConfigSave={onQuickConfigSave}
+                    onRefresh={onRefresh}
+                    onInstall={onInstall}
+                    onRebuildIndex={onRebuildIndex}
+                    onClearMilvusLock={onClearMilvusLock}
+                    clearingMilvusLock={clearingMilvusLock}
+                    onClose={onClose}
+                  />
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
 

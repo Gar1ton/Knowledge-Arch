@@ -4,8 +4,9 @@
 //! sidecar 的启停（见 sidecar.rs）。业务全部在 Python 后端；界面是 web/frontend 的静态导出。
 //!
 //! 前端可调用的命令（与 web/frontend/lib/backend.ts 一一对应）：
-//! backend_info / backend_state / restart_backend / pick_folder / open_log_dir / notify /
-//! set_shell_pref / get_shell_prefs / quit_app / wipe_data_and_quit / check_update / install_update。
+//! backend_info / backend_state / restart_backend / pick_folder / pick_file / open_log_dir /
+//! notify / set_shell_pref / get_shell_prefs / quit_app / wipe_data_and_quit / check_update /
+//! install_update。
 //!
 //! 菜单栏只在 macOS 挂（系统顶栏的应用 / 编辑 / 窗口菜单）；Windows / Linux 不挂，
 //! Ctrl+, 与 Ctrl+Q 由前端处理，托盘菜单三平台都有。
@@ -156,6 +157,35 @@ async fn pick_folder(app: AppHandle, title: Option<String>) -> Result<Option<Str
         }
         dialog
             .blocking_pick_folder()
+            .and_then(|path| path.into_path().ok())
+            .map(|path| path.display().to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// 原生选择文件对话框（3.0.0「备份与迁移」导入 .kaarch 用）；extensions 为空时不过滤。
+#[tauri::command]
+async fn pick_file(
+    app: AppHandle,
+    title: Option<String>,
+    extensions: Option<Vec<String>>,
+) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut dialog = app.dialog().file();
+        if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+            dialog = dialog.set_parent(&window);
+        }
+        if let Some(title) = title {
+            dialog = dialog.set_title(title);
+        }
+        let extensions = extensions.unwrap_or_default();
+        if !extensions.is_empty() {
+            let refs: Vec<&str> = extensions.iter().map(String::as_str).collect();
+            dialog = dialog.add_filter("Knowledge Arch", &refs);
+        }
+        dialog
+            .blocking_pick_file()
             .and_then(|path| path.into_path().ok())
             .map(|path| path.display().to_string())
     })
@@ -413,6 +443,7 @@ pub fn run() {
             backend_state,
             restart_backend,
             pick_folder,
+            pick_file,
             open_log_dir,
             notify,
             set_shell_pref,

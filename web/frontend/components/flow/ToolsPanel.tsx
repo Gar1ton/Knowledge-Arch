@@ -1,10 +1,14 @@
 "use client";
 /**
  * 数据流「联网补充」节点的工具面板：开关、设置、试调用、最近调用（用户 11-22：方便调试与管理来源）。
- * 全部由后端的工具声明生成（`GET /api/tools`）：加一个工具，这里自动多一行；本文件不写任何工具名。
+ * 全部由后端的工具声明生成（`GET /api/tools`）：加一个工具，这里自动多一张卡片；本文件不写任何工具名。
  * 设置走通用的设置接口（home = flow.external.tools）；试调用只在用户按「调用」时发出真实请求。
+ *
+ * 11-23 用户反馈「点保存之后卡了，也没有提示是否配置完成」：每个设置有明确的保存中 / 已保存 / 失败状态，
+ * 已配置的 key 常显（掩码），回车保存、Esc 取消；保存结果同时发一条提示。
  */
 import React, { useCallback, useEffect, useState } from "react";
+import { Toggle } from "@/components/ds/Toggle";
 import type { TFunc } from "@/lib/i18n";
 import { getSettingsSchema, patchSetting, type SettingItem } from "@/lib/settingsApi";
 import {
@@ -40,10 +44,14 @@ function shortTime(iso: string): string {
     : "";
 }
 
+function maskedOf(item: SettingItem | undefined): string {
+  const v = item?.value as { set?: boolean; masked?: string } | undefined;
+  return v && typeof v === "object" && v.set ? v.masked || "••••" : "";
+}
+
 export function ToolsPanel({ t, onNotify }: { t: TFunc; onNotify: Notify }) {
   const [tools, setTools] = useState<ToolInfo[] | null>(null);
   const [values, setValues] = useState<Record<string, SettingItem>>({});
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [recent, setRecent] = useState<RecentToolCall[]>([]);
   const [pick, setPick] = useState("");
   const [args, setArgs] = useState("");
@@ -71,11 +79,16 @@ export function ToolsPanel({ t, onNotify }: { t: TFunc; onNotify: Notify }) {
     return () => { alive = false; };
   }, [apply, onNotify]);
 
-  const save = async (key: string, value: unknown) => {
+  /** 写一个设置并刷新面板；失败抛给调用方显示在原地。 */
+  const save = useCallback(async (key: string, value: unknown) => {
+    await patchSetting(key, value);
+    await load();
+  }, [load]);
+
+  const toggle = async (tool: ToolInfo) => {
     try {
-      await patchSetting(key, value);
-      setDrafts((d) => { const next = { ...d }; delete next[key]; return next; });
-      await load();
+      await save(tool.enabled_key, !tool.enabled);
+      onNotify(t(tool.enabled ? "tools_turned_off" : "tools_turned_on", { name: tool.name }), "ok");
     } catch (err) {
       onNotify(err instanceof Error ? err.message : String(err), "error");
     }
@@ -106,49 +119,41 @@ export function ToolsPanel({ t, onNotify }: { t: TFunc; onNotify: Notify }) {
 
   if (!tools) return null;
   const ready = tools.filter((tool) => tool.ready);
+  const missing = tools.filter((tool) => tool.enabled && tool.missing.length).length;
 
   return (
-    <div className="flow-node-actions" onClick={(e) => e.stopPropagation()}>
-      <div className="flow-meta-strip"><span className="flow-meta-chip">{t("tools_title")}</span></div>
-      <div className="flow-tools">
+    <div className="flow-node-actions tl-panel" onClick={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}>
+      <div className="tl-section">
+        <span>{t("tools_title")}</span>
+        <small>{t("tools_summary", { ready: ready.length, total: tools.length })}
+          {missing ? ` · ${t("tools_summary_missing", { n: missing })}` : ""}</small>
+      </div>
+      <div className="tl-cards">
         {tools.map((tool) => (
-          <div key={tool.name} className="flow-tool">
-            <label className="flow-tool-head" title={tool.description}>
-              <input type="checkbox" checked={tool.enabled}
-                onChange={() => void save(tool.enabled_key, !tool.enabled)} />
-              <code>{tool.name}</code>
+          <div key={tool.name} className={`tl-card ${tool.enabled ? "" : "is-off"}`}>
+            <div className="tl-head">
+              <Toggle checked={tool.enabled} onChange={() => void toggle(tool)} />
+              <code title={tool.description}>{tool.name}</code>
               <ToolState tool={tool} t={t} />
-            </label>
+            </div>
+            <div className="tl-desc" title={tool.description}>{tool.description}</div>
             {Object.entries(tool.info).length > 0 && (
-              <div className="flow-tool-info">
+              <div className="tl-info">
                 {Object.entries(tool.info).map(([k, v]) => <span key={k} className="flow-meta-chip">{k}: {v}</span>)}
               </div>
             )}
-            {tool.enabled && tool.settings.map((setting) => {
-              const item = values[setting.key];
-              const secret = setting.kind === "secret";
-              const shown = drafts[setting.key] ?? (secret ? "" : String(item?.value ?? ""));
-              return (
-                <div key={setting.key} className="flow-tool-setting">
-                  <span>{setting.name}{setting.required ? " *" : ""}</span>
-                  <input type={secret ? "password" : "text"} value={shown}
-                    placeholder={secret && item?.is_set ? t("tools_secret_set") : ""}
-                    onChange={(e) => setDrafts((d) => ({ ...d, [setting.key]: e.target.value }))} />
-                  <button type="button" className="flow-dep-button"
-                    disabled={drafts[setting.key] === undefined}
-                    onClick={() => void save(setting.key, setting.kind === "int"
-                      ? Number(drafts[setting.key] || 0) : drafts[setting.key])}>
-                    {t("tools_save")}
-                  </button>
-                </div>
-              );
-            })}
+            {tool.enabled && tool.settings.map((setting) => (
+              <SettingRow key={setting.key} name={setting.name} kind={setting.kind}
+                required={setting.required} item={values[setting.key]} t={t} onNotify={onNotify}
+                onSave={(value) => save(setting.key, value)} />
+            ))}
           </div>
         ))}
       </div>
 
-      <div className="flow-meta-strip"><span className="flow-meta-chip">{t("tools_test")}</span></div>
-      <div className="flow-tool-test" title={t("tools_test_hint")}>
+      <div className="tl-section"><span>{t("tools_test")}</span><small>{t("tools_test_hint")}</small></div>
+      <div className="flow-tool-test">
         <select value={pick} onChange={(e) => {
           setPick(e.target.value);
           setArgs(argsTemplate(tools.find((tool) => tool.name === e.target.value)));
@@ -163,7 +168,7 @@ export function ToolsPanel({ t, onNotify }: { t: TFunc; onNotify: Notify }) {
       </div>
       {result !== null && <pre className="flow-tool-result">{result}</pre>}
 
-      <div className="flow-meta-strip"><span className="flow-meta-chip">{t("tools_recent")}</span></div>
+      <div className="tl-section"><span>{t("tools_recent")}</span></div>
       <div className="flow-tool-log">
         {recent.length === 0 && <div className="flow-tool-empty">{t("tools_recent_empty")}</div>}
         {recent.map((call) => (
@@ -183,16 +188,88 @@ export function ToolsPanel({ t, onNotify }: { t: TFunc; onNotify: Notify }) {
   );
 }
 
+type SaveState = { kind: "idle" } | { kind: "saving" } | { kind: "saved" } | { kind: "error"; message: string };
+
+/** 一项设置：key 已配置时显示掩码 +「更换 / 清除」；编辑时回车保存、Esc 取消；状态写在原地。 */
+function SettingRow({ name, kind, required, item, t, onNotify, onSave }: {
+  name: string; kind: string; required: boolean; item: SettingItem | undefined; t: TFunc;
+  onNotify: Notify; onSave: (value: unknown) => Promise<void>;
+}) {
+  const secret = kind === "secret";
+  const masked = secret ? maskedOf(item) : "";
+  const current = secret ? "" : String(item?.value ?? "");
+  const [draft, setDraft] = useState<string | null>(null);
+  const [state, setState] = useState<SaveState>({ kind: "idle" });
+
+  useEffect(() => {
+    if (state.kind !== "saved") return;
+    const timer = setTimeout(() => setState({ kind: "idle" }), 4000);
+    return () => clearTimeout(timer);
+  }, [state]);
+
+  const commit = async (value: string) => {
+    setState({ kind: "saving" });
+    try {
+      await onSave(kind === "int" ? Number(value || 0) : value);
+      setDraft(null);
+      setState({ kind: "saved" });
+      onNotify(t(value ? "tools_saved" : "tools_cleared", { name }), "ok");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setState({ kind: "error", message });
+      onNotify(t("tools_save_failed", { name, error: message }), "error");
+    }
+  };
+
+  const editing = draft !== null;
+  const showEditor = editing || !secret || !masked;
+  const value = draft ?? (secret ? "" : current);
+  const dirty = editing && draft !== current;
+  return (
+    <div className="tl-setting">
+      <span className="tl-label">{name}{required ? <b title={t("tools_required")}> *</b> : null}</span>
+      {showEditor ? (
+        <span className="tl-edit">
+          <input type={secret ? "password" : "text"} value={value} autoComplete="off"
+            placeholder={secret ? t("tools_key_placeholder") : ""}
+            disabled={state.kind === "saving"}
+            onChange={(e) => { setDraft(e.target.value); if (state.kind !== "saving") setState({ kind: "idle" }); }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && dirty) void commit(draft ?? "");
+              if (e.key === "Escape") { setDraft(null); setState({ kind: "idle" }); }
+            }} />
+          <button type="button" className="flow-dep-button" disabled={!dirty || state.kind === "saving"}
+            onClick={() => void commit(draft ?? "")}>
+            {state.kind === "saving" ? t("tools_saving") : t("tools_save")}
+          </button>
+          {editing && secret && masked && (
+            <button type="button" className="tl-link" onClick={() => setDraft(null)}>{t("btn_cancel")}</button>
+          )}
+        </span>
+      ) : (
+        <span className="tl-edit">
+          <span className="tl-set">✓ {t("tools_key_set", { masked })}</span>
+          <button type="button" className="tl-link" onClick={() => setDraft("")}>{t("tools_key_change")}</button>
+          <button type="button" className="tl-link danger" onClick={() => void commit("")}>{t("tools_key_clear")}</button>
+        </span>
+      )}
+      {state.kind === "saved" && <span className="tl-status ok">{t("tools_saved_inline")}</span>}
+      {state.kind === "error" && <span className="tl-status error" title={state.message}>{t("tools_save_failed_inline", { error: state.message })}</span>}
+      {state.kind === "idle" && secret && !masked && required && <span className="tl-status warn">{t("tools_key_missing")}</span>}
+    </div>
+  );
+}
+
 function ToolState({ tool, t }: { tool: ToolInfo; t: TFunc }) {
-  if (!tool.enabled) return <span className="flow-tool-state muted">{t("tools_off")}</span>;
+  if (!tool.enabled) return <span className="tl-pill muted">{t("tools_off")}</span>;
   if (tool.missing.length) {
-    return <span className="flow-tool-state warn">{t("tools_missing", { names: tool.missing.join(", ") })}</span>;
+    return <span className="tl-pill warn">{t("tools_missing", { names: tool.missing.join(", ") })}</span>;
   }
   const lastOk = tool.last_ok_at ? Date.parse(tool.last_ok_at) : 0;
   const lastErr = tool.last_error_at ? Date.parse(tool.last_error_at) : 0;
   if (tool.last_error && lastErr > lastOk) {
-    return <span className="flow-tool-state error" title={tool.last_error}>{t("tools_last_error", { error: tool.last_error })}</span>;
+    return <span className="tl-pill error" title={tool.last_error}>{t("tools_last_error", { error: tool.last_error })}</span>;
   }
-  if (lastOk) return <span className="flow-tool-state ok">{t("tools_last_ok", { time: shortTime(tool.last_ok_at) })}</span>;
-  return <span className="flow-tool-state muted">{t("tools_ready")} · {t("tools_never")}</span>;
+  if (lastOk) return <span className="tl-pill ok">{t("tools_last_ok", { time: shortTime(tool.last_ok_at) })}</span>;
+  return <span className="tl-pill ok">{t("tools_ready")} · {t("tools_never")}</span>;
 }
