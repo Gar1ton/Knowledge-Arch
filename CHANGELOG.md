@@ -6,7 +6,11 @@
 
 ### 变更 (Changed)
 
-- **文档：中英 README 补充评测结果小节。** 在 `README.md`（`## Benchmarks`）与 `README_ZH.md`（`## 评测结果`）中新增检索档位评测总表与简要说明，记录 ResearchQA（单篇 / 494 篇全库，1,036 题）与 MultiHop-RAG（609 篇跨文档全库，852 题）在 `38446f4` 上的各档位表现（含 `closed_book` 下限与 `fulltext` 上限），以及 v2.2.0 前夕 `deep_thinking` 在 48 题小样本集上的波动与未达显著说明。
+- **文档：中英 README 补充评测结果小节。** 在 `README.md`（`## Benchmarks`）与 `README_ZH.md`（`## 评测结果`）中新增各检索档位的评测结果：
+  ResearchQA（单篇 / 494 篇全库，1,036 题）与 MultiHop-RAG（609 篇跨文档全库，852 题）在 `38446f4` 上的事实正确性，含 `closed_book`
+  下限与 `fulltext` 上限。数据画成图（`assets/benchmark-zh.svg` / `assets/benchmark-en.svg`，由 `tools/readme_benchmark_chart.py`
+  生成，自带亮 / 暗两套颜色），不用表格；开头注明测于 v2.1.2 开发期、3.0 之后尚未重测；不写内部模型别名（只说同一对话模型、
+  另一评审模型）；耗时如实陈述；v2.2.0 小样本结果压成一句「未见显著差异」（用户 11-24 审阅后要求）。
 - **回答的来源栏重构（P35，用户 11-24：「体系」难懂、列表没有层级、块难读、分栏不能拖动）。** 只改前端，后端接口不变。
   - 三种视图（`web/frontend/components/panels/SourcesViews.tsx`）：「按来源」分「回答里引用的 / 登记了但正文没用到」两组，卡片三层
     （编号 + 标题 / 作者 · 年份 · 期刊 / 工具 · 调用 · 第几块）；「按检索过程」先列检索调用（检索词、块数、耗时、被引用的块），
