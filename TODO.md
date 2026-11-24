@@ -874,4 +874,8 @@
       验证（11-23）：tsc / lint / build；真后端（空数据目录）+ next dev + Playwright（Chromium）：12 个按钮逐个点击，节点水平
       居中偏差 0px、缩放 90%、高节点顶距 25px、按钮与节点同步选中；分组与画布状态一致；空白处点击取消选中；滑动中拖动可打断；
       窄窗（980px）滚轮横滚、两端淡出与箭头、点画布节点时按钮自动滚进可见区；中英文案；明暗主题；适应画布左右留白 176 / 177px。
-  - [ ] P7 收尾：版本 3.0.0、README 中英、CHANGELOG、全量 pytest / ruff / mypy / 前端三项、真后端 + Playwright 走查。
+  - [ ] 🚧 P7 收尾：版本 3.0.0、README 中英、CHANGELOG、全量 pytest / ruff / mypy / 前端三项、真后端 + Playwright 走查。
+    用户 11-24：P4–P6 与 11-23 追加项作为 3.1.0 发布（3.0.0 只发过 preview.1）。版本号改为 3.1.0（与 2.2.0 发布提交同样 9 个文件），
+    README 中英把入库 / 推送 / 备份三条标为 3.1，CHANGELOG 的 Unreleased 归入 `[v3.1.0]`。验证（11-24）：全量 pytest
+    1691 passed / 4 skipped；ruff；mypy；前端 lint / tsc / build。Playwright 只在各功能落地时分别走查过，发布前没有整体再走一遍。
+    待：推 `v3.1.0` 标签（须用户本轮批准），CI 出包后填 Release 正文（`data/ka_v3/release_notes_v3.1.0.md`，工作区本地）。
