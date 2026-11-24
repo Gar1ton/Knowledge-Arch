@@ -107,6 +107,20 @@ The top bar switches between **Workspace** and **Data Flow**. The Data Flow page
 | `graph_only` | Pure knowledge graph retrieval using entity-relationship context | ★★ | Requires a bound collection |
 | `fulltext` | Single-paper close reading: sends the full cleaned document text to the LLM without truncation | Varies by length | Requires selecting 1 document |
 
+## Benchmarks
+
+> These results were measured during v2.1.2 development (commit `38446f4`, 2026-11-17 – 11-18). The ask pipeline has been restructured since 3.0 and has not been re-evaluated, so the numbers do not describe the current version.
+
+Knowledge Arch was evaluated black-box over HTTP on two public datasets: **ResearchQA** (slice 1, 1,036 questions; single-paper scope and a 494-paper / 52,477-chunk library scope) and **MultiHop-RAG** (slice 1, 852 cross-document questions over 609 news articles). Every mode used the same chat model (thinking off), with dedicated embedding and rerank models; a separate judge model scored factual accuracy from 1 to 5, blind, with the official ResearchQA grading prompt. `closed_book` is the no-retrieval lower bound and `fulltext` the single-paper upper bound; the LightRAG modes (`graph_mixed` / `graph_only`) were not part of this round. All three batches finished with 0 answer errors and 0 judge failures.
+
+<p align="center">
+  <img src="./assets/benchmark-en.svg" width="760" alt="Factual accuracy (1–5) of each retrieval mode on ResearchQA single-paper, ResearchQA full library and MultiHop-RAG cross-document" />
+</p>
+
+- **Retrieval and mode trade-offs**: Retrieval clearly beats `closed_book` (+2.33 single-paper, +0.85 cross-document). On library-wide and cross-document questions, `enhanced` is the only mode that significantly outperforms `default` (+0.13\* / +0.16\*), at about 7.5–8.7 model calls per question (including rerank) and 8–9 s more median latency (ResearchQA library 25.3→34.0 s; MultiHop-RAG 6.8→14.7 s).
+- **Single paper and `deep_thinking`**: Within a single paper the three retrieval modes score closely and all trail the `fulltext` upper bound (4.87\*). Across full libraries, `deep_thinking` finds the right source documents most often (93.0% / 84.5% vs. 91.1% / 82.4% for `enhanced`), yet its accuracy is not significantly better than `default` (+0.04) and is significantly below `enhanced` on the ResearchQA library (−0.09\*), at about 35–41 calls per question (median 112 s / 241 s).
+- **After v2.2.0**: The v2.2.0 speed-up and verification changes to `deep_thinking` showed no significant difference on a 48-question small sample; a full re-evaluation is still needed for a firm conclusion.
+
 ## Preferences & Optional Components
 
 Open **Preferences** via the application menu (**Preferences…**, macOS `⌘,`, Windows / Linux `Ctrl+,`) or the top-bar button:

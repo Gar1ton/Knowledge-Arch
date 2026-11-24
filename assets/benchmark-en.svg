@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="630" viewBox="0 0 760 630" role="img" aria-label="Benchmarks: factual accuracy by retrieval mode">
+<title>Benchmarks: factual accuracy by retrieval mode</title>
+<style>
+  text { font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei",
+         "Noto Sans CJK SC", sans-serif; font-size: 12.5px; fill: #52514e; }
+  .bg { fill: #fcfcfb; stroke: rgba(11,11,11,0.10); }
+  .head { font-size: 13.5px; font-weight: 600; fill: #0b0b0b; }
+  .label { fill: #52514e; }
+  .muted { fill: #898781; font-size: 11.5px; }
+  .value { fill: #0b0b0b; font-weight: 500; }
+  .value.sig, .diff.sig { font-weight: 700; fill: #0b0b0b; }
+  .diff { fill: #52514e; font-size: 11.5px; }
+  .bar { fill: #2a78d6; }
+  .grid { stroke: #e1e0d9; stroke-width: 1; }
+  .axis { stroke: #c3c2b7; stroke-width: 1; }
+  @media (prefers-color-scheme: dark) {
+    text, .label { fill: #c3c2b7; }
+    .bg { fill: #1a1a19; stroke: rgba(255,255,255,0.10); }
+    .head, .value, .value.sig, .diff.sig { fill: #f0efec; }
+    .diff { fill: #c3c2b7; }
+    .muted { fill: #898781; }
+    .bar { fill: #3987e5; }
+    .grid { stroke: #2c2c2a; }
+    .axis { stroke: #383835; }
+  }
+</style>
+<rect class="bg" x="0.5" y="0.5" width="759" height="629" rx="10"/>
+<line class="axis" x1="214.0" y1="52.0" x2="214.0" y2="186.0"/>
+<line class="grid" x1="315.5" y1="52.0" x2="315.5" y2="186.0"/>
+<line class="grid" x1="417.0" y1="52.0" x2="417.0" y2="186.0"/>
+<line class="grid" x1="518.5" y1="52.0" x2="518.5" y2="186.0"/>
+<line class="grid" x1="620.0" y1="52.0" x2="620.0" y2="186.0"/>
+<line class="axis" x1="214.0" y1="234.0" x2="214.0" y2="368.0"/>
+<line class="grid" x1="315.5" y1="234.0" x2="315.5" y2="368.0"/>
+<line class="grid" x1="417.0" y1="234.0" x2="417.0" y2="368.0"/>
+<line class="grid" x1="518.5" y1="234.0" x2="518.5" y2="368.0"/>
+<line class="grid" x1="620.0" y1="234.0" x2="620.0" y2="368.0"/>
+<line class="axis" x1="214.0" y1="416.0" x2="214.0" y2="550.0"/>
+<line class="grid" x1="315.5" y1="416.0" x2="315.5" y2="550.0"/>
+<line class="grid" x1="417.0" y1="416.0" x2="417.0" y2="550.0"/>
+<line class="grid" x1="518.5" y1="416.0" x2="518.5" y2="550.0"/>
+<line class="grid" x1="620.0" y1="416.0" x2="620.0" y2="550.0"/>
+<text class="muted" x="214.0" y="566" text-anchor="middle">1</text>
+<text class="muted" x="315.5" y="566" text-anchor="middle">2</text>
+<text class="muted" x="417.0" y="566" text-anchor="middle">3</text>
+<text class="muted" x="518.5" y="566" text-anchor="middle">4</text>
+<text class="muted" x="620.0" y="566" text-anchor="middle">5</text>
+<text class="head" x="20" y="38">ResearchQA · single paper</text>
+<text class="muted" x="740" y="38" text-anchor="end">1,036 questions</text>
+<text class="label" x="196" y="71.0" text-anchor="end">closed_book (no retrieval)</text>
+<path class="bar" d="M214.0,60.0 H345.0 Q349.0,60.0 349.0,64.0 V70.0 Q349.0,74.0 345.0,74.0 H214.0 Z"/>
+<text x="357.0" y="71.0"><tspan class="value">2.33</tspan></text>
+<text class="label" x="196" y="97.0" text-anchor="end">default</text>
+<path class="bar" d="M214.0,86.0 H581.5 Q585.5,86.0 585.5,90.0 V96.0 Q585.5,100.0 581.5,100.0 H214.0 Z"/>
+<text x="593.5" y="97.0"><tspan class="value">4.66</tspan><tspan class="diff" dx="6">baseline</tspan></text>
+<text class="label" x="196" y="123.0" text-anchor="end">enhanced</text>
+<path class="bar" d="M214.0,112.0 H580.5 Q584.5,112.0 584.5,116.0 V122.0 Q584.5,126.0 580.5,126.0 H214.0 Z"/>
+<text x="592.5" y="123.0"><tspan class="value">4.65</tspan><tspan class="diff" dx="6">(−0.01)</tspan></text>
+<text class="label" x="196" y="149.0" text-anchor="end">deep_thinking</text>
+<path class="bar" d="M214.0,138.0 H576.4 Q580.4,138.0 580.4,142.0 V148.0 Q580.4,152.0 576.4,152.0 H214.0 Z"/>
+<text x="588.4" y="149.0"><tspan class="value">4.61</tspan><tspan class="diff" dx="6">(−0.05)</tspan></text>
+<text class="label" x="196" y="175.0" text-anchor="end">fulltext (whole paper)</text>
+<path class="bar" d="M214.0,164.0 H602.8 Q606.8,164.0 606.8,168.0 V174.0 Q606.8,178.0 602.8,178.0 H214.0 Z"/>
+<text x="614.8" y="175.0"><tspan class="value sig">4.87*</tspan><tspan class="diff sig" dx="6">(+0.21*)</tspan></text>
+<text class="head" x="20" y="220">ResearchQA · full library (494 papers)</text>
+<text class="muted" x="740" y="220" text-anchor="end">1,036 questions</text>
+<text class="label" x="196" y="253.0" text-anchor="end">closed_book (no retrieval)</text>
+<text class="muted" x="220" y="253.0">not evaluated</text>
+<text class="label" x="196" y="279.0" text-anchor="end">default</text>
+<path class="bar" d="M214.0,268.0 H535.8 Q539.8,268.0 539.8,272.0 V278.0 Q539.8,282.0 535.8,282.0 H214.0 Z"/>
+<text x="547.8" y="279.0"><tspan class="value">4.21</tspan><tspan class="diff" dx="6">baseline</tspan></text>
+<text class="label" x="196" y="305.0" text-anchor="end">enhanced</text>
+<path class="bar" d="M214.0,294.0 H549.0 Q553.0,294.0 553.0,298.0 V304.0 Q553.0,308.0 549.0,308.0 H214.0 Z"/>
+<text x="561.0" y="305.0"><tspan class="value sig">4.34*</tspan><tspan class="diff sig" dx="6">(+0.13*)</tspan></text>
+<text class="label" x="196" y="331.0" text-anchor="end">deep_thinking</text>
+<path class="bar" d="M214.0,320.0 H539.9 Q543.9,320.0 543.9,324.0 V330.0 Q543.9,334.0 539.9,334.0 H214.0 Z"/>
+<text x="551.9" y="331.0"><tspan class="value">4.25</tspan><tspan class="diff" dx="6">(+0.04)</tspan></text>
+<text class="label" x="196" y="357.0" text-anchor="end">fulltext (whole paper)</text>
+<text class="muted" x="220" y="357.0">not evaluated</text>
+<text class="head" x="20" y="402">MultiHop-RAG · cross-document (609 articles)</text>
+<text class="muted" x="740" y="402" text-anchor="end">852 questions</text>
+<text class="label" x="196" y="435.0" text-anchor="end">closed_book (no retrieval)</text>
+<path class="bar" d="M214.0,424.0 H380.5 Q384.5,424.0 384.5,428.0 V434.0 Q384.5,438.0 380.5,438.0 H214.0 Z"/>
+<text x="392.5" y="435.0"><tspan class="value">2.68</tspan></text>
+<text class="label" x="196" y="461.0" text-anchor="end">default</text>
+<path class="bar" d="M214.0,450.0 H466.8 Q470.8,450.0 470.8,454.0 V460.0 Q470.8,464.0 466.8,464.0 H214.0 Z"/>
+<text x="478.8" y="461.0"><tspan class="value">3.53</tspan><tspan class="diff" dx="6">baseline</tspan></text>
+<text class="label" x="196" y="487.0" text-anchor="end">enhanced</text>
+<path class="bar" d="M214.0,476.0 H483.0 Q487.0,476.0 487.0,480.0 V486.0 Q487.0,490.0 483.0,490.0 H214.0 Z"/>
+<text x="495.0" y="487.0"><tspan class="value sig">3.69*</tspan><tspan class="diff sig" dx="6">(+0.16*)</tspan></text>
+<text class="label" x="196" y="513.0" text-anchor="end">deep_thinking</text>
+<path class="bar" d="M214.0,502.0 H470.9 Q474.9,502.0 474.9,506.0 V512.0 Q474.9,516.0 470.9,516.0 H214.0 Z"/>
+<text x="482.9" y="513.0"><tspan class="value">3.57</tspan><tspan class="diff" dx="6">(+0.04)</tspan></text>
+<text class="label" x="196" y="539.0" text-anchor="end">fulltext (whole paper)</text>
+<text class="muted" x="220" y="539.0">not evaluated</text>
+<text class="muted" x="20" y="592">Factual accuracy, 1–5 (blind judging with the official ResearchQA prompt).</text><text class="muted" x="20" y="610">Brackets: paired per-question difference vs. default; * = 95% bootstrap CI excludes 0.</text>
+</svg>
