@@ -69,6 +69,23 @@ async def test_crossref_gives_one_block_per_work_with_authors_and_retraction() -
     assert "Abstract: Drift grows." in block.text and "DOI: 10.1/x" in block.text
 
 
+async def test_crossref_strips_publisher_markup_so_citations_can_quote_the_plain_text() -> None:
+    # 真实 Crossref 记录里的写法：标题带 <i> 且标签紧贴后一个词，期刊名带 &amp;。
+    body = json.dumps({"message": {"items": [{
+        "DOI": "10.1177/x", "title": ["<i>Islands</i>of Detroit: Affect &amp; Whiteness"],
+        "container-title": ["Theory, Culture &amp; Society"],
+        "author": [{"family": "O&#39;Neil", "given": "Ann"}]}]}}).encode()
+    result = await CrossrefSearch(opener=_opener(body)).call({"query": "detroit affect"})
+    [block] = result.blocks
+    assert "Title: Islands of Detroit: Affect & Whiteness" in block.text
+    assert "Venue: Theory, Culture & Society" in block.text and "Authors: O'Neil, Ann" in block.text
+    assert "&amp;" not in block.text and "<i>" not in block.text
+    call = ToolCall("r.1", "r", 1, "crossref_search", {"query": "detroit affect"}, result.blocks)
+    check = trace_check(CiteRequest("c1", "Islands of Detroit",
+                                    {"venue": "Theory, Culture & Society"}), {"c1": call})
+    assert check.ok
+
+
 async def test_openalex_stops_requesting_after_the_free_quota_is_spent() -> None:
     spent = {"X-RateLimit-Remaining-USD": "0", "X-RateLimit-Cost-USD": "0.001",
              "X-RateLimit-Reset": "3600"}

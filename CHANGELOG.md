@@ -104,6 +104,26 @@
 
 ### 修复 (Fixed)
 
+- **3.0.0-preview.1 记下的三个已知问题（用户 11-24：三个都修，进 3.1.0）。**
+  - **没有 DOI 的书重复出现。** 「库里已有」原来只比 DOI（`doi_key` 对 ISBN 返回空串），书作为外部来源再出现，入库会多一份；
+    入库时也只往 local_meta 写 DOI，入库后同一本书下次还会出现。`kacore/domain/paper_import.py` 新增 `isbn_keys`
+    （ISBN-10 按 978 前缀换算成 13 位、末位校验不过的丢掉、一个字段写几个时全取）与 `identifier_keys`（DOI 优先，否则
+    `isbn:` 键）；`kacore/api_external.py` 的 `_library_dois` 换成 `_library_identifiers` / `_in_library`，来源为 Zotero
+    条目的 DOI 与原始字段里的 ISBN（Web API 的 `ISBN`、本地 zotero.sqlite 的 `fields.ISBN`）、本地文档的 DOI、入库记录
+    `paper_imports` 的标识（只算文档还在的）。回答时跳过已在库（`kacore/api.py`）与入库框的「库里已有」
+    （`kacore/api_library_io.py`）共用这份判断。不按书名猜：版次不同 ISBN 不同、纯本地上传又没有 DOI 的书仍认不出。
+  - **Crossref 的 `&amp;` 与 `<i>` 标签。** 真实记录里期刊名带 `&amp;`、标题带 `<i>…</i>`（标签还会紧贴下一个词），
+    原来只清理了摘要。核验要求书目字段逐字出现在工具原文里，模型写对 `&` 反而被拒。`kacore/adapters/tools/crossref.py`
+    的标题、期刊名、作者与摘要统一先去标签再还原转义（`_plain`）；实测 20 条真实记录不再含 `&amp;` 与 `<i>`。
+    OpenAlex 返回的已是干净文字，其他工具不受影响。
+  - **全文模式与只用图谱模式悄悄忽略联网补充开关。** 这两种模式没有可续接的来源编号，仍不联网；现在开关开着时结果与
+    聊天记录带 `external: {"status": "unavailable", "reason": "mode"}`（`kacore/api.py`，模式集合
+    `EXTERNAL_SKIPPED_MODES` 在 `kacore/retrieval_modes.py`），回答下显示「联网补充没有运行：全文模式和只用图谱模式不支持」；
+    对话栏在这两种模式下开关变暗（虚线）并提示切回其他检索方式后生效（`web/frontend/components/panels/ChatPanel.tsx`，
+    文案 `chat_external_mode` / `chat_external_skipped_hint`，样式 `.chat-external-toggle.is-skipped`）。开关关着时不变。
+  - 测试：`tests/backend/test_paper_import.py`（ISBN 规整、Zotero 两种原始格式与入库记录都算已在库）、
+    `tests/backend/test_ask_external.py`（只有 ISBN 的书在 Zotero 里时不作外部证据；两种模式开 / 关开关的结果与聊天记录）、
+    `tests/backend/test_tools.py`（Crossref 标记清理后，写 `&` 的引用能通过核验）。
 - **数据流画布在 Chromium 内核（Windows 的 WebView2）里平移与缩放错位。** `components/flow/FlowDiagram.tsx` 把
   `translate` 与 CSS `zoom` 写在同一个元素上，Chromium 的 zoom 会连 translate 一起缩放，于是拖动只走九成、
   「适应画布」不居中、滚轮缩放的锚点漂移、首次使用引导聚焦偏到一边（90% 时最右一列节点偏 150px）。改为外层只平移、

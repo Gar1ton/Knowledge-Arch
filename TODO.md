@@ -879,3 +879,14 @@
     README 中英把入库 / 推送 / 备份三条标为 3.1，CHANGELOG 的 Unreleased 归入 `[v3.1.0]`。验证（11-24）：全量 pytest
     1691 passed / 4 skipped；ruff；mypy；前端 lint / tsc / build。Playwright 只在各功能落地时分别走查过，发布前没有整体再走一遍。
     待：推 `v3.1.0` 标签（须用户本轮批准），CI 出包后填 Release 正文（`data/ka_v3/release_notes_v3.1.0.md`，工作区本地）。
+    - [x] 发布前修 3.0.0-preview.1 记下的三个已知问题（用户 11-24：三个都修，进 3.1.0）。
+      - [x] ① 没有 DOI 的书重复出现：「库里已有」只比 DOI。改为 DOI + ISBN（ISBN-10 换算成 13 并校验），来源为 Zotero 条目
+        （`raw_zotero_json` 的 ISBN）、本地文档的 DOI、入库记录 `paper_imports` 的标识；回答跳过已在库与入库框提示两处共用。
+        不做书名 + 年份猜测（默认不做，用户未要求）。
+      - [x] ② Crossref 标题 / 期刊名 / 作者带 `&amp;` 与 `<i>` 标签：与摘要一样去标签并还原转义；不修时模型写对 `&` 会被核验拒掉。
+      - [x] ③ 全文模式与只用图谱模式忽略联网补充开关：开着时结果与聊天记录带 `external: {status: unavailable, reason: mode}`，
+        回答下显示原因；对话栏在这两种模式下开关变暗并提示。开关关着时不变。
+      - 验证（11-24）：全量 pytest 1696 passed / 4 skipped；ruff；mypy；前端 lint / tsc / build。Crossref 真实请求 20 条无
+        `&amp;` / `<i>`。真后端（经 hub 的 arc:chat）+ next dev + Playwright：全文模式下开关变虚线、提示正确，打开开关提问后
+        回答下显示「联网补充没有运行：全文模式和只用图谱模式不支持」，聊天记录 meta 里有该原因。只用图谱模式的界面没有走查
+        （测试库没建图谱），由后端测试覆盖。

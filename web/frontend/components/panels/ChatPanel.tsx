@@ -76,6 +76,7 @@ function externalReason(ext: ExternalSummary, t: TFunc): string {
   if (ext.reason === "unsupported") return t("chat_external_unsupported");
   if (ext.reason === "no_tools") return t("chat_external_no_tools");
   if (ext.reason === "no_model") return t("chat_external_no_model");
+  if (ext.reason === "mode") return t("chat_external_mode");
   return ext.error || ext.status;
 }
 
@@ -1415,6 +1416,7 @@ export function ChatPanel({ width }: { width?: number }) {
   // 范围标签显示的就是这次提问实际用的范围：进行中显示锁定的那一轮；空闲时是钉住的文档，
   // 或全文模式下的当前文档（标题，不是内部 ID），其余是聊天自己选的集合。
   const isGraphMode = retrievalMode === "graph_only" || retrievalMode === "graph_mixed";
+  const externalSkipped = retrievalMode === "fulltext" || retrievalMode === "graph_only";
   const shownScope: AnswerScope =
     loading && pendingScope
       ? pendingScope
@@ -1898,11 +1900,15 @@ export function ChatPanel({ width }: { width?: number }) {
                 </Popover>
               </div>
 
-              <Tooltip label={externalOn ? t("chat_external_on_hint") : t("chat_external_off_hint")} side="top">
+              {/* 全文 / 只用图谱不联网补充（后端 EXTERNAL_SKIPPED_MODES）：开关变暗并说明；仍可切换，切回其他检索方式后生效。 */}
+              <Tooltip
+                label={externalSkipped ? t("chat_external_skipped_hint") : externalOn ? t("chat_external_on_hint") : t("chat_external_off_hint")}
+                side="top"
+              >
                 <button
                   type="button"
                   aria-pressed={externalOn}
-                  className={`chat-external-toggle ${externalOn ? "on" : ""}`}
+                  className={`chat-external-toggle ${externalOn ? "on" : ""} ${externalSkipped ? "is-skipped" : ""}`}
                   onClick={() => setExternalFor(externalOn ? null : (conversationId ?? "pending"))}
                 >
                   <Icon name="globe" size={12} /> {t("chat_external_toggle")}

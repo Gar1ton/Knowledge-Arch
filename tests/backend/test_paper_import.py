@@ -325,3 +325,51 @@ async def test_upload_with_import_id_completes_the_pending_import(tmp_path: Path
         assert await resp.json() == [{"import_id": "imp_1"}]
     finally:
         await client.close()
+
+
+# ── 「库里已有」：DOI 之外也认 ISBN（用户 11-24：没有 DOI 的书不该重复出现）─────────────
+
+
+def test_isbn_keys_unify_10_and_13_digit_forms_and_drop_bad_check_digits() -> None:
+    from kacore.domain.paper_import import identifier_keys, isbn_keys
+
+    assert isbn_keys("978-0-8223-4776-7 0-8223-4776-8") == ["9780822347767"]
+    assert isbn_keys("ISBN 0822347768") == ["9780822347767"]
+    assert isbn_keys("080442957X") == ["9780804429573"]
+    assert isbn_keys("9780822347760") == []            # 末位校验不过
+    assert identifier_keys("https://doi.org/10.1/AB") == ["10.1/ab"]   # DOI 优先，只用 DOI
+    assert identifier_keys("978-0-8223-4776-7") == ["isbn:9780822347767"]
+    assert identifier_keys("arXiv:2401.01234") == [] and identifier_keys("") == []
+
+
+async def test_books_in_zotero_or_imported_earlier_count_as_already_in_the_library() -> None:
+    from kacore.domain.models import ZoteroItem
+
+    store = InMemorySourceDocumentStore()
+
+    async def doc(doc_id: str, **kw) -> None:
+        await store.add_document(SourceDocument(
+            doc_id=doc_id, title=doc_id, file_path=f"/{doc_id}.pdf", content_type="application/pdf",
+            size_bytes=1, content_hash=doc_id, collection="c", **kw))
+
+    # Zotero Web API 的原始字段是 ISBN；本地 zotero.sqlite 读出来的在 fields.ISBN 里。
+    await doc("z_web", library_id="9", zotero_item_key="AAA")
+    await store.upsert_zotero_item(ZoteroItem("AAA", "9", "book", raw_zotero_json={
+        "ISBN": "978-0-8223-4776-7 0-8223-4776-8"}))
+    await doc("z_local", library_id="9", zotero_item_key="BBB")
+    await store.upsert_zotero_item(ZoteroItem("BBB", "9", "book", raw_zotero_json={
+        "itemType": "book", "fields": {"ISBN": "0-262-01153-0"}}))
+    # 入库来的书：local_meta 只有 DOI（这本没有），ISBN 只在入库记录里。
+    await doc("imp", local_meta={"title": "Parables"})
+    await store.save_import(ImportRecord("imp_1", "c_1", 1, {"identifier": "9780804429573"},
+                                         "x.pdf", "L1", status=IMPORT_IMPORTED, doc_id="imp"))
+    # 入库后又删掉的文档不算。
+    await store.save_import(ImportRecord("imp_2", "c_1", 2, {"identifier": "9780199253807"},
+                                         "y.pdf", "L1", status=IMPORT_IMPORTED, doc_id="gone"))
+
+    api = KnowledgeRepositoryApi(source_store=store)
+    assert await api._in_library("0822347768") == "z_web"
+    assert await api._in_library("ISBN 978-0-262-01153-2") == "z_local"
+    assert await api._in_library("080442957X") == "imp"
+    assert await api._in_library("9780199253807") is None
+    assert await api._in_library("arXiv:2401.01234") is None

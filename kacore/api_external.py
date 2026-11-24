@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from kacore.domain.models import DocumentChunk
-from kacore.domain.paper_import import doi_key
+from kacore.domain.paper_import import IMPORT_IMPORTED, doi_key, identifier_keys
 from kacore.domain.tool_calls import ACTOR_AGENT, ACTOR_TEST, CITE_TOOL, Citation, ToolCall
 
 if TYPE_CHECKING:
@@ -248,24 +248,43 @@ class ExternalApiMixin:
         return await ToolSession.open(toolbox, store, conv_id=conversation_id.strip() or actor,
                                       question=question, actor=actor)
 
-    async def _library_dois(self) -> dict[str, str]:
-        """库里有 DOI 的文档：DOI（规整后）→ doc_id。
+    async def _library_identifiers(self) -> dict[str, str]:
+        """「库里已有」比对表：标识键（`identifier_keys`：规整 DOI 或 `isbn:` + ISBN-13）→ doc_id。
 
-        Zotero 文档取镜像条目的 DOI，本地文档取书目字段里的 DOI。
+        三处来源：Zotero 文档取镜像条目的 DOI 与 ISBN（ISBN 只在原始字段里：Web API 是
+        `ISBN`，本地 zotero.sqlite 是 `fields.ISBN`）；本地文档取书目字段里的 DOI；入库来的文档取
+        入库记录里的标识（入库时只往 local_meta 写 DOI，书的 ISBN 只留在入库记录里）。
         """
         out: dict[str, str] = {}
         docs = await self._source_store.list_documents()
+        doc_ids = {d.doc_id for d in docs}
         by_item = {(d.library_id, d.zotero_item_key): d.doc_id for d in docs if d.zotero_item_key}
+
+        def add(text: str, doc_id: str) -> None:
+            for key in identifier_keys(text):
+                out.setdefault(key, doc_id)
+
         for item in await self._source_store.list_zotero_items():
             doc_id = by_item.get((item.library_id, item.item_key))
-            doi = doi_key(getattr(item, "doi", "") or "")
-            if doc_id and doi:
-                out.setdefault(doi, doc_id)
+            if not doc_id:
+                continue
+            raw = item.raw_zotero_json or {}
+            add(item.doi or "", doc_id)
+            add(str(raw.get("ISBN") or (raw.get("fields") or {}).get("ISBN") or ""), doc_id)
         for doc in docs:
-            doi = doi_key(str((doc.local_meta or {}).get("doi") or ""))
-            if doi:
-                out.setdefault(doi, doc.doc_id)
+            add(str((doc.local_meta or {}).get("doi") or ""), doc.doc_id)
+        for record in await self._source_store.list_imports(status=IMPORT_IMPORTED):
+            if record.doc_id in doc_ids:
+                add(str(record.fields.get("identifier") or ""), record.doc_id)
         return out
+
+    async def _in_library(self, identifier: str) -> str | None:
+        """这个标识对应库里的哪篇文档；对不上（或不是 DOI / ISBN）返回 None。"""
+        keys = identifier_keys(identifier)
+        if not keys:
+            return None
+        table = await self._library_identifiers()
+        return next((table[k] for k in keys if k in table), None)
 
 
 def scraper_rows(detail: dict[str, Any]) -> list[dict[str, Any]]:

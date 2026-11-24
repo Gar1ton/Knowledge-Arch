@@ -95,6 +95,7 @@ from kacore.pipelines.retrieval_orchestrator import SCOPE_DOCUMENT, RetrievalSco
 from kacore.providers.base import ModelRef
 from kacore.providers.thinking import model_thinking as thinking_flag
 from kacore.retrieval_modes import (
+    EXTERNAL_SKIPPED_MODES,
     FULLTEXT_CONFIRM_THRESHOLD_CHARS,
     MODE_DEEP_THINKING,
     MODE_ENHANCED,
@@ -866,7 +867,8 @@ class KnowledgeRepositoryApi(
         """联网补充：distributor 挑工具调用并登记引用，通过核验的引用就地追加到 sources / chunks /
         context_parts（编号续接）。失败不影响回答：返回 (None, 摘要)，status 为
         unavailable / error。"""
-        from kacore.api_external import doi_key, external_chunk, external_source_entry
+        from kacore.api_external import external_chunk, external_source_entry
+        from kacore.domain.paper_import import identifier_keys
         from kacore.managers.tool_distributor import ExternalUnavailable
 
         if self._tool_distributor is None:
@@ -883,11 +885,12 @@ class KnowledgeRepositoryApi(
         except Exception as exc:  # noqa: BLE001 - 联网补充失败时照常用库内证据回答
             logger.warning("External tools failed, answering from the library only: %s", exc)
             return None, {"status": "error", "error": str(exc)}
-        # 已在库的文献（按 DOI 对上）不作外部证据：库内全文更可靠，检索时已能召回。
-        in_library = await self._library_dois()
+        # 已在库的文献（DOI 或 ISBN 对上）不作外部证据：库内全文更可靠，检索时已能召回。
+        in_library = await self._library_identifiers()
         used = 0
         for citation in session.citations:
-            if doi_key(str(citation.fields.get("identifier") or "")) in in_library:
+            keys = identifier_keys(str(citation.fields.get("identifier") or ""))
+            if any(key in in_library for key in keys):
                 continue
             n = len(sources) + 1
             entry = external_source_entry(session, citation, n)
@@ -2901,8 +2904,8 @@ class KnowledgeRepositoryApi(
 
         external=True（3.0.0 联网补充，对话栏开关）：库内检索之后再去学术索引找外部文献，核验后作为
         追加证据一起合成，编号接在库内来源后面；结果与聊天记录带 `external` 摘要，出处写进账本。
-        全文模式与 graph_only 不走联网补充：两者在联网那一步之前就返回，开关被忽略，
-        结果里没有 `external`。
+        全文模式与 graph_only 不走联网补充（`EXTERNAL_SKIPPED_MODES`）：开关开着时结果与聊天记录带
+        `external: {"status": "unavailable", "reason": "mode"}`，界面据此说明没运行；关着时不带。
 
         candidate_k / use_reranker：研究路径用——候选池宽召回 + cross-encoder 重排再取 top_k
         （仅 default 模式生效；默认 answer top_k 不变）。reranker 为 passthrough 时自动退回 RRF。
@@ -3046,6 +3049,10 @@ class KnowledgeRepositoryApi(
             chat_meta = {"scope": answer_scope}
             if standalone_question:
                 chat_meta["standalone_question"] = standalone_question
+            # 全文 / 只用图谱不走联网补充（没有可续接的来源编号）。开关开着时如实告诉用户没运行，
+            # 回答下显示原因，聊天记录里也留着；开关关着时什么都不加（与 2.2.0 一致）。
+            if external and retrieval_mode in EXTERNAL_SKIPPED_MODES:
+                chat_meta["external"] = {"status": "unavailable", "reason": "mode"}
 
             # 翻译召回查询（当 use_english_retrieval=True 时，将用户问题翻译为英语再送入向量检索）。
             # 仅含中文才翻译：与聊天路径的 _has_cjk 门一致，英文 query 不白耗一次 LLM 调用。
@@ -3093,7 +3100,7 @@ class KnowledgeRepositoryApi(
             # fulltext: 不做任何召回，整篇 clean.md 直接送 LLM。门禁与读盘已在 ask() 入口
             # 完成（fulltext_doc / fulltext_content 已就绪），这里只负责生成与落库。
             if retrieval_mode == MODE_FULLTEXT and fulltext_doc is not None:
-                return await self._answer_from_fulltext(
+                result = await self._answer_from_fulltext(
                     cid=cid,
                     question=question,
                     doc=fulltext_doc,
@@ -3103,6 +3110,9 @@ class KnowledgeRepositoryApi(
                     user_question=user_question,
                     chat_meta=chat_meta,
                 )
+                if "external" in chat_meta:
+                    result["external"] = chat_meta["external"]
+                return result
 
             if retrieval_mode in {MODE_GRAPH_MIXED, MODE_GRAPH_ONLY}:
                 readiness = await self.get_lightrag_readiness(collection or "")
@@ -3180,6 +3190,7 @@ class KnowledgeRepositoryApi(
                     "actual_retrieval_mode": "lightrag_only",
                     "retrieval_engines": ["lightrag"],
                     "fallback_reason": None,
+                    **({"external": chat_meta["external"]} if "external" in chat_meta else {}),
                 }
 
             # DeepThinkingOutcome | None（deep_thinking / enhanced 两条编排路径非空，

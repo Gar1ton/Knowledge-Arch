@@ -2,8 +2,8 @@
 文档信息栏的出处。
 
 只做门面：入库流程在 `managers/paper_importer.py`，这里负责参数校验、把记录转成界面用的 JSON
-（目标集合名、能在浏览器打开的链接），以及「库里已有这篇」的提示（按 DOI，与联网补充跳过已在库
-文献用同一份判断）。
+（目标集合名、能在浏览器打开的链接），以及「库里已有这篇」的提示（按 DOI 或 ISBN，
+与联网补充跳过已在库文献用同一份判断）。
 """
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ from kacore.domain.paper_import import (
     IMPORT_STATUSES,
     ImportRecord,
     browser_links,
-    doi_key,
 )
 
 if TYPE_CHECKING:
@@ -29,7 +28,7 @@ if TYPE_CHECKING:
 
 
 class LibraryIoApiMixin:
-    """组合进 KnowledgeRepositoryApi。依赖：_source_store、_paper_importer、_library_dois()。"""
+    """组合进 KnowledgeRepositoryApi。依赖：_source_store、_paper_importer、_in_library()。"""
 
     _source_store: SourceDocumentStore
     _paper_importer: PaperImporter | None = None
@@ -80,13 +79,12 @@ class LibraryIoApiMixin:
         """入库框：书目、建议文件名、会试的链接数、出处、可选的本地集合、库里是否已有这篇。"""
         preview = await self._importer().preview(capture_id, ord_)
         existing: ImportRecord | None = preview.pop("existing")
-        doi = doi_key(str(preview["fields"].get("identifier") or ""))
         in_library = None
-        if doi:
-            doc_id = (await self._library_dois()).get(doi)  # type: ignore[attr-defined]
-            doc = await self._source_store.get_document(doc_id) if doc_id else None
-            if doc is not None:
-                in_library = {"doc_id": doc.doc_id, "title": doc.title}
+        doc_id = await self._in_library(  # type: ignore[attr-defined]
+            str(preview["fields"].get("identifier") or ""))
+        doc = await self._source_store.get_document(doc_id) if doc_id else None
+        if doc is not None:
+            in_library = {"doc_id": doc.doc_id, "title": doc.title}
         return {
             **preview,
             "candidates": len(preview["candidates"]),

@@ -1861,6 +1861,7 @@
 .chat-external-bar { margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; font-size: 11.5px; color: var(--fg-muted); }
 .chat-external-toggle { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--fg-muted); font-size: 11.5px; cursor: pointer; }
 .chat-external-toggle.on { border-color: var(--info); color: var(--info); background: var(--info-soft); font-weight: 600; }
+.chat-external-toggle.is-skipped { opacity: 0.55; border-style: dashed; }
 /* 3.0.0 入库框、待补 PDF 清单 */
 .imp-body { padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; font-size: 12.5px; }
 .imp-kv { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 10px; align-items: center; }

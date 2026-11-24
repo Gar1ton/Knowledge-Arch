@@ -104,6 +104,50 @@ def doi_key(text: str) -> str:
     return value if value.startswith("10.") else ""
 
 
+# 一串 ISBN 的样子：可选 978/979 前缀，再 9 位数字（中间可夹空格或连字符），最后一位可能是 X。
+# 只认格式，真假由末位校验决定（校验不过的数字串不当 ISBN）。
+_ISBN_RE = re.compile(r"(?<![0-9])(?:97[89][\s-]?)?(?:[0-9][\s-]?){9}[0-9Xx](?![0-9])")
+
+
+def _isbn10_ok(digits: str) -> bool:
+    total = sum((10 - i) * (10 if c == "X" else int(c)) for i, c in enumerate(digits))
+    return total % 11 == 0
+
+
+def _isbn13_check(first12: str) -> str:
+    total = sum(int(c) * (1 if i % 2 == 0 else 3) for i, c in enumerate(first12))
+    return str((10 - total % 10) % 10)
+
+
+def isbn_keys(text: str) -> list[str]:
+    """一段文字里的全部 ISBN，统一成 ISBN-13（ISBN-10 按 978 前缀换算），末位校验不过的丢掉。
+
+    Zotero 的 ISBN 字段常一次写几个（「978-0-8223-4776-7 0-8223-4776-8」），一本书的 10 位与
+    13 位写法换算后是同一个键。"""
+    out: list[str] = []
+    for match in _ISBN_RE.finditer(text or ""):
+        digits = re.sub(r"[\s-]", "", match.group()).upper()
+        if len(digits) == 10 and "X" not in digits[:9] and _isbn10_ok(digits):
+            key = "978" + digits[:9]
+            key += _isbn13_check(key)
+        elif len(digits) == 13 and digits.isdigit() and digits[12] == _isbn13_check(digits[:12]):
+            key = digits
+        else:
+            continue
+        if key not in out:
+            out.append(key)
+    return out
+
+
+def identifier_keys(text: str) -> list[str]:
+    """「库里已有」比对用的键：是 DOI 就只用 DOI（`doi_key`），否则取其中的 ISBN（前缀 `isbn:`）。
+    别的标识（arXiv 号、URL）不比，返回空表。"""
+    doi = doi_key(text)
+    if doi:
+        return [doi]
+    return [f"isbn:{key}" for key in isbn_keys(text)]
+
+
 # ── 文件名 ──────────────────────────────────────────────────
 
 
@@ -232,6 +276,8 @@ __all__ = [
     "browser_links",
     "clean_filename",
     "doi_key",
+    "identifier_keys",
+    "isbn_keys",
     "links_in",
     "paper_filename",
     "pdf_candidates",
