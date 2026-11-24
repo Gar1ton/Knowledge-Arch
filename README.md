@@ -107,6 +107,20 @@ The top bar switches between **Workspace** and **Data Flow**. The Data Flow page
 | `graph_only` | Pure knowledge graph retrieval using entity-relationship context | ★★ | Requires a bound collection |
 | `fulltext` | Single-paper close reading: sends the full cleaned document text to the LLM without truncation | Varies by length | Requires selecting 1 document |
 
+## Benchmarks
+
+Evaluated black-box over HTTP on **commit `38446f4`** (v2.1.2 development, **2026-11-17 – 11-18**) across two public datasets: **ResearchQA** (Slice 1, 1,036 questions; single-paper scope and 494-paper / 52,477-chunk library scope) and **MultiHop-RAG** (Slice 1, 852 cross-document questions across 609 news articles). Knowledge Arch used `arc:chat` (chat / research / vision, thinking disabled), `arc:embedvl` (embedding), and `arc:rerankvl` (rerank); `closed_book` used `arc:chat` (thinking disabled) without retrieval as a lower bound, `fulltext` served as the single-paper upper bound, and LightRAG modes (`graph_mixed` / `graph_only`) were not evaluated. Blind judging used `arc:nexus` (thinking disabled) with the official ResearchQA grading prompt for 1–5 factual accuracy (0 answer errors and 0 judge failures across all three runs; paired per-question differences vs. `default` in parentheses; `*` = 95% bootstrap CI excludes 0):
+
+| Scenario | Questions | `closed_book` | `default` | `enhanced` | `deep_thinking` | `fulltext` |
+|----------|----------:|--------------:|----------:|-----------:|----------------:|-----------:|
+| ResearchQA · Single-paper | 1,036 | 2.33 | 4.66 | 4.65 (−0.01) | 4.61 (−0.05) | **4.87\*** (+0.21\*) |
+| ResearchQA · Full library (494 papers) | 1,036 | — | 4.21 | **4.34\*** (+0.13\*) | 4.25 (+0.04) | — |
+| MultiHop-RAG · Cross-document library (609 articles) | 852 | 2.68 | 3.53 | **3.69\*** (+0.16\*) | 3.57 (+0.04) | — |
+
+- **Retrieval & mode trade-offs**: Retrieval adds +2.33 (single-paper) and +0.85 (cross-document) over `closed_book`. On library-wide and cross-document questions, `enhanced` is the only mode that significantly outperforms `default` (+0.13\* / +0.16\*), costing ~7.5–8.7 model calls per question (including rerank) and ~8–9 s higher median latency (25.3→34.0 s on ResearchQA library; 6.8→14.7 s on MultiHop-RAG).
+- **Single-paper vs. `deep_thinking`**: Within a single paper, all three retrieval modes score closely and trail the `fulltext` upper bound (4.87\*). Across full libraries, `deep_thinking` finds the right source documents most often (93.0% / 84.5% vs. `enhanced` 91.1% / 82.4%), yet on `38446f4` its factual accuracy does not significantly beat `default` (+0.04) and trails `enhanced` on ResearchQA library (−0.09\*), at ~35–41 model calls per question (median 112 s / 241 s).
+- **v2.2.0 small-sample follow-up (`deep_thinking`, 2026-11-19)**: Pre-v2.2.0 speedup, convergence, and verification fixes (`22f5fa7`–`e2a8ca3`) were checked on a 48-question small-sample set (24 ResearchQA + 24 MultiHop-RAG, each in a compact library with 100 distractor documents; accuracy ≥ 4 counted as correct). Baseline `22f5fa7` scored 35/48 across 3 runs (yet 10 questions flipped between consecutive runs of the same commit), while `e2a8ca3` scored 34/36/37 (3×3 pooled difference +0.7 questions, two-sided sign-flip permutation test *p* = 0.87, **not significant**; 22 of 48 questions fluctuated across runs). Because sample size is small and run-to-run variance is high, full-slice re-evaluation is still needed for formal conclusions on v2.2.0 `deep_thinking`.
+
 ## Preferences & Optional Components
 
 Open **Preferences** via the application menu (**Preferences…**, macOS `⌘,`, Windows / Linux `Ctrl+,`) or the top-bar button:
